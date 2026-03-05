@@ -1,0 +1,29 @@
+package framework:runtime;
+
+interface sql {
+    variant param {
+        null,
+        integer(s64),
+        real(f64),
+        text(string),
+        blob(list<u8>),
+    }
+
+    record row { columns: list<string>, values: list<param> }
+    query: func(db: string, sql: string, params: list<param>) -> result<list<row>, string>;
+    execute: func(db: string, sql: string, params: list<param>) -> result<u64, string>;
+}
+
+interface kv {
+    get: func(store: string, key: string) -> result<option<list<u8>>, string>;
+    set: func(store: string, key: string, value: list<u8>) -> result<_, string>;
+    delete: func(store: string, key: string) -> result<bool, string>;
+}
+
+world application {
+    import sql;
+    import kv;
+    export on-request: func(method: string, path: string, body: list<u8>) -> result<list<u8>, string>;
+    export on-schedule: func(name: string) -> result<_, string>;
+    export on-message: func(queue: string, payload: list<u8>) -> result<_, string>;
+}
