@@ -6,6 +6,7 @@ rust-version = "1.89.0"
 
 [dependencies]
 wasmtime = { version = "42.0.1", features = ["component-model", "async"] }
+wasmtime-wasi = "42.0.1"
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net"] }
 axum = "0.8.8"
 anyhow = "1.0.102"
