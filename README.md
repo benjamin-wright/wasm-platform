@@ -99,7 +99,7 @@ The host functions translate the WIT `sql.query` / `kv.get` calls into actual cl
 
 Each trigger type needs a different ingestion path:
 
-- **HTTP** — A lightweight reverse proxy (Envoy, or a custom Go/Rust HTTP gateway) routes by `spec.events[].route` → dispatches to the execution host. Keep the gateway stateless.
+- **HTTP** — A lightweight http server translates requests to event subjects by `spec.events[].route`. Keep the gateway stateless.
 - **Schedule** — A cron controller watches CRDs and emits invocations at the specified schedule. Use Kubernetes `CronJob`-style leader election, or a lightweight library like `tokio-cron-scheduler` in Rust.
 - **MessageQueue** — A consumer pool per queue (NATS JetStream, or RabbitMQ) that pulls messages and dispatches to the execution host. NATS is a strong choice here for its simplicity and built-in persistence.
 
@@ -143,14 +143,12 @@ Your execution hosts should be **stateless workers**. Scaling pattern:
 │  ┌───────────────────┐            │  │  Redis/NATS   │  │           │
 │  │  Gateway (Envoy    │            │  │  (KV + MQ)    │  │           │
 │  │  or custom)        │            │  └──────────────┘  │           │
-│  │  • HTTP routing    │            └────────────────────┘           │
-│  │  • Load balancing  │                                            │
+│  │  • HTTP translation│            └────────────────────┘           │
 │  └───────────────────┘                                            │
 │                                                                    │
 │  ┌───────────────────┐                                            │
 │  │  Trigger Layer     │                                            │
 │  │  • Cron scheduler  │                                            │
-│  │  • MQ consumers    │                                            │
 │  └───────────────────┘                                            │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -160,15 +158,16 @@ Your execution hosts should be **stateless workers**. Scaling pattern:
 | Component | Language | Responsibility |
 |---|---|---|
 | **CRD Controller** | Go | Reconciles `Application` CRDs. Provisions databases, registers routes in the gateway, stores AOT-compiled modules in the cache. |
-| **Execution Host** | Rust | Loads compiled modules, manages instance pools, exposes host functions (SQL, KV), executes invocations. Stateless — scales horizontally. |
-| **Gateway** | Envoy / custom | Routes HTTP requests to execution hosts based on CRD route mappings. Health checks, rate limiting, TLS termination. |
-| **Trigger Layer** | Go or Rust | Cron scheduler and message queue consumers that dispatch invocations to execution hosts via gRPC or an internal queue. |
+| **Execution Host** | Rust | Listens for NATs messages, loads compiled modules, manages instance pools, exposes host functions (SQL, KV), executes invocations. Stateless — scales horizontally. |
+| **Gateway** | Go or Rust | Translates HTTP requests to NATs events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
+| **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
+| **Trigger Layer** | Go or Rust | Cron scheduler that dispatch invocation evens to NATs. |
 | **Module Cache** | Filesystem | Per-node cache of OCI-pulled and AOT-compiled modules. Content-addressable by digest. |
 | **Data Layer** | Managed services | PostgreSQL for SQL databases, Redis/Dragonfly for KV, NATS JetStream for message queuing. |
 
 ### Invocation Flow (HTTP)
 
-1. Request arrives at Gateway → matched to route → forwarded to an Execution Host
+1. Request arrives at Gateway → matched to route → forwarded to a NATs subject.
 2. Host looks up the module by application name → finds AOT-compiled module in cache
 3. Host acquires a pre-allocated instance from the pool → binds host functions scoped to the application's declared databases
 4. Host calls the guest's `on-request` export → guest runs, makes SQL/KV calls via imports → returns response
