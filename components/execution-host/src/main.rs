@@ -60,13 +60,24 @@ async fn main() -> Result<()> {
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
 
-    // Hard-coded path to the hello-world component (POC).
-    // This will be replaced with dynamic loading as part of request routing.
-    let wasm_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/wasm32-wasip2/release/hello_world.wasm"
-    );
-    let component = Component::from_file(&engine, wasm_path)?;
+    // Module path is configured via WASM_MODULE_PATH. Defaults to the local
+    // build output so `make run` works without any extra configuration.
+    let wasm_path = std::env::var("WASM_MODULE_PATH").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/wasm32-wasip2/release/hello_world.wasm"
+        )
+        .to_string()
+    });
+    // .cwasm files are AOT-compiled artifacts produced by the precompile
+    // binary; .wasm files are compiled at load time (used in local dev).
+    let component = if wasm_path.ends_with(".cwasm") {
+        // Safety: the file was produced by the precompile binary using the
+        // same Engine configuration and Wasmtime version as this process.
+        unsafe { Component::deserialize_file(&engine, &wasm_path)? }
+    } else {
+        Component::from_file(&engine, &wasm_path)?
+    };
 
     let state = Arc::new(RuntimeState { engine, component });
 
@@ -137,5 +148,5 @@ fn invoke_on_request(state: &RuntimeState, method: &str, path: &str, body: &[u8]
 
     let result = app.call_on_request(&mut store, method, path, body)?;
 
-    result.map_err(|msg| anyhow::anyhow!("component returned error: {msg}"))
+    result.map_err(|msg| anyhow::anyhow!("component returned errory: {msg}"))
 }
