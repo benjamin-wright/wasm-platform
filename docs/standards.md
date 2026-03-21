@@ -107,7 +107,7 @@ All interaction with an external system (database, message broker, HTTP service)
 - The build context is always the **repo root** so the full workspace is available for cargo-chef dependency resolution.
 - Builds must use `cargo-chef` for dependency caching: a dedicated `planner` stage runs `cargo chef prepare`, a `builder` stage runs `cargo chef cook` before copying source.
 - The builder base image version must match the `rust-version` declared in the component's `Cargo.toml`.
-- WASM guest modules are passed into the image build as a named build context (`--build-context wasm=<path>`) — they are not compiled inside the Dockerfile. The Makefile target is responsible for building the `.wasm` before invoking `docker build`.
+- WASM guest modules are passed into the image build as a named build context (`--build-context wasm=<path>`) — they are not compiled inside the Dockerfile. The component `Tiltfile` builds the `.wasm` via a `local_resource` that `docker_build` depends on (`resource_deps`).
 - WASM modules must be AOT-compiled to a `.cwasm` artifact in a dedicated build stage using the `precompile` binary before being copied to the runtime image. This eliminates JIT compilation at startup.
 - The runtime base image must be `gcr.io/distroless/cc-debian12:nonroot`. Use `distroless/base-debian12:nonroot` only if a verified `ldd` confirms no `libgcc_s` dependency — document the finding in the Dockerfile.
 - The final image must contain no shell, package manager, or build tooling.
@@ -137,6 +137,19 @@ All interaction with an external system (database, message broker, HTTP service)
 - Guard status writes with a state check — skip the write if nothing has changed.
 - Use deterministic names for child objects so optimistic locking detects conflicts naturally.
 - After a write (Create/Update/Patch/Delete), use the object returned by the API server — do not re-read from the cache.
+
+---
+
+## Tilt
+
+- Every component under `components/` must include a `Tiltfile` that defines a single public function named after its directory in `snake_case` (e.g. `execution_host` for `components/execution-host/`).
+- The function owns all Tilt resources for that component: `local_resource` builds, `docker_build`, `helm_resource`, and tests.
+- Every resource within the function must carry `labels=['<component-dir-name>']` so resources are grouped by component in the Tilt UI.
+- WASM guest builds use `local_resource` with `deps` listing the relevant source directories so Tilt triggers rebuilds on change.
+- Docker builds that require `--build-context` use `custom_build` with the full `docker build` command passed as `command`.
+- Unit tests are declared as a `local_resource` with `deps` set to the component's source directory — they run automatically on source change and do not require a running cluster.
+- Integration tests are declared as a `local_resource` with `resource_deps` pointing to the deployed Helm resource and `trigger_mode = TRIGGER_MODE_MANUAL` — they must be triggered explicitly in the Tilt UI.
+- The root `Tiltfile` contains only `allow_k8s_contexts` and component `load` / call statements. No resources are defined at the root level.
 
 ---
 
