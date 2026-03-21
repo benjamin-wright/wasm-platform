@@ -101,13 +101,35 @@ All interaction with an external system (database, message broker, HTTP service)
 
 ---
 
+## Container Images
+
+- Every component under `components/` that produces a binary must include a `Dockerfile` at `components/<name>/Dockerfile`.
+- The build context is always the **repo root** so the full workspace is available for cargo-chef dependency resolution.
+- Builds must use `cargo-chef` for dependency caching: a dedicated `planner` stage runs `cargo chef prepare`, a `builder` stage runs `cargo chef cook` before copying source.
+- The builder base image version must match the `rust-version` declared in the component's `Cargo.toml`.
+- WASM guest modules are passed into the image build as a named build context (`--build-context wasm=<path>`) — they are not compiled inside the Dockerfile. The Makefile target is responsible for building the `.wasm` before invoking `docker build`.
+- WASM modules must be AOT-compiled to a `.cwasm` artifact in a dedicated build stage using the `precompile` binary before being copied to the runtime image. This eliminates JIT compilation at startup.
+- The runtime base image must be `gcr.io/distroless/cc-debian12:nonroot`. Use `distroless/base-debian12:nonroot` only if a verified `ldd` confirms no `libgcc_s` dependency — document the finding in the Dockerfile.
+- The final image must contain no shell, package manager, or build tooling.
+- `readOnlyRootFilesystem: true` must be achievable — binaries must not write to the filesystem at runtime.
+- The `EXPOSE` instruction must declare exactly the port(s) the process listens on.
+
+---
+
 ## Kubernetes
 
 ### Helm Charts
 
-- All Kubernetes manifests live in Helm charts under `helm/`.
-- Charts must be self-contained — a `helm install` should deploy the component and all its direct dependencies (service accounts, RBAC, config maps).
-- Use values for anything environment-specific (image repository, tag, resource limits, replica count).
+- Every component that runs in Kubernetes gets a chart at `components/<component-name>/helm/`.
+- `Chart.yaml` `name` must match the component directory name under `components/`.
+- `appVersion` must match the container image tag deployed by that chart version.
+- `values.yaml` exposes exactly three concerns: `image` (repository, tag, pullPolicy), `resources` (requests and limits), and `replicaCount`. Do not add parameters for things that do not vary across environments.
+- All resource `metadata.name` values use `{{ .Release.Name }}` — no fullname helper, no nameOverride.
+- All resources carry the standard label set from `_helpers.tpl`: `app.kubernetes.io/name`, `app.kubernetes.io/instance`, `app.kubernetes.io/version`, `app.kubernetes.io/managed-by`.
+- Every HTTP service must define liveness and readiness probes against `/healthz`.
+- Pod security context must set `runAsNonRoot: true` and `seccompProfile.type: RuntimeDefault`.
+- Container security context must set `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, and `capabilities.drop: ["ALL"]`.
+- No hardcoded namespaces — use `.Release.Namespace` throughout.
 
 ### Controllers (planned)
 

@@ -16,11 +16,11 @@ Remaining work for the execution-host Helm chart and container image, and the pr
 
 ## Remaining
 
-### 1. Helm chart — `helm/execution-host/`
+### 1. Helm chart — `components/execution-host/helm/`
 
 Create the following files:
 
-#### `helm/execution-host/Chart.yaml`
+#### `components/execution-host/helm/Chart.yaml`
 
 ```yaml
 apiVersion: v2
@@ -31,7 +31,7 @@ version: 0.1.0
 appVersion: latest
 ```
 
-#### `helm/execution-host/values.yaml`
+#### `components/execution-host/helm/values.yaml`
 
 ```yaml
 image:
@@ -50,7 +50,7 @@ resources:
 replicaCount: 1
 ```
 
-#### `helm/execution-host/templates/_helpers.tpl`
+#### `components/execution-host/helm/templates/_helpers.tpl`
 
 Define a single `execution-host.labels` helper emitting the standard `app.kubernetes.io/*` label set:
 
@@ -61,7 +61,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 ```
 
-#### `helm/execution-host/templates/deployment.yaml`
+#### `components/execution-host/helm/templates/deployment.yaml`
 
 - `metadata.name: {{ .Release.Name }}`
 - Labels from `execution-host.labels` helper on both the Deployment and the pod template.
@@ -87,7 +87,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - `resources: {{ toYaml .Values.resources | nindent 10 }}`
 - No namespace hardcoded — use `.Release.Namespace` if a namespace reference is needed.
 
-#### `helm/execution-host/templates/service.yaml`
+#### `components/execution-host/helm/templates/service.yaml`
 
 - `metadata.name: {{ .Release.Name }}`
 - `type: ClusterIP`
@@ -144,11 +144,12 @@ Three small additions:
 
 | `make docker-build` | Build the execution-host container image and tag it for the local registry |
 
-#### Project Layout — replace `helm/` placeholder line:
+#### Project Layout — replace the `components/` entry to show the co-located chart:
 
 ```
-├── helm/
-│   └── execution-host/         # Helm chart for the execution host
+├── components/
+│   └── execution-host/
+│       ├── helm/               # Helm chart for the execution host
 ```
 
 And add `.dockerignore` at the root level entry.
@@ -156,7 +157,7 @@ And add `.dockerignore` at the root level entry.
 #### "Adding a New Component" workflow — append two steps:
 
 5. Add a `Dockerfile` at `components/<name>/Dockerfile` following the container image standards.
-6. Add a Helm chart at `helm/<name>/` following the Helm chart standards.
+6. Add a Helm chart at `components/<name>/helm/` following the Helm chart standards.
 
 ---
 

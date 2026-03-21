@@ -58,6 +58,7 @@ make test            # Sends a sample request to the running execution host
 | `make test` | Send a sample HTTP request to a running execution host |
 | `make cluster-up` | Create the local k3d cluster and registry |
 | `make cluster-down` | Tear down the local k3d cluster and registry |
+| `make docker-build` | Build the execution-host container image and tag it for the local registry |
 
 ## Project Layout
 
@@ -68,9 +69,10 @@ make test            # Sends a sample request to the running execution host
 │   └── runtime.wit             # WIT interface — the platform's API surface
 ├── components/
 │   └── execution-host/         # Rust binary — loads and invokes WASM modules
+│       └── helm/               # Helm chart for the execution host
 ├── examples/
 │   └── hello-world/            # Minimal guest module for testing the interface
-├── helm/                       # Helm charts (planned)
+├── .dockerignore               # Excludes target/ and .git/ from Docker build context
 ├── docs/
 │   ├── standards.md            # Coding conventions and technical decisions
 │   └── contributions.md        # This file
@@ -94,6 +96,8 @@ make test            # Sends a sample request to the running execution host
 2. Add it to the workspace `members` in the root `Cargo.toml`.
 3. Add a `README.md` describing its observable behaviour and interfaces.
 4. Add a Makefile target if it has a standalone build or run step.
+5. Add a `Dockerfile` at `components/<name>/Dockerfile` following the container image standards.
+6. Add a Helm chart at `components/<name>/helm/` following the Helm chart standards.
 
 ### Modifying the WIT Interface
 
