@@ -39,7 +39,7 @@ OCI artifacts for module storage. Libraries:
 - Go: `oras.land/oras-go/v2`
 - Rust: `oci-distribution` crate
 
-Content-addressable caching on each node so repeat cold-starts pull from local disk, not the registry.
+Content-addressable caching in a per-pod PVC so repeat cold-starts load from local disk, not the registry. The module-cache sidecar in each execution host pod handles OCI pulls and AOT compilation.
 
 ---
 
@@ -85,11 +85,12 @@ Each trigger type needs a different ingestion path:
 
 ### Graceful Scaling
 
-Execution hosts are **stateless workers**. Scaling pattern:
+Execution hosts are deployed as a **StatefulSet**. Each pod has a dedicated PVC populated by the module-cache sidecar before invocations are served. Scaling pattern:
 
 - Scale on **concurrent invocations** (not CPU/memory), since WASM instances are tiny.
 - A single execution host process can run thousands of concurrent WASM instances (they share the compiled module and use pooled memory).
 - Use a Kubernetes HPA with a custom metric (active invocations / capacity) or KEDA for event-driven scaling.
+- PVCs are not deleted automatically on scale-down — define a lifecycle policy for stale PVC cleanup.
 
 ---
 
@@ -100,36 +101,34 @@ Execution hosts are **stateless workers**. Scaling pattern:
 │                        Kubernetes Cluster                        │
 │                                                                  │
 │  ┌─────────────────┐    ┌──────────────────────────────────────┐ │
-│  │  CRD Controller  │    │         Execution Hosts (Rust)       │ │
+│  │  CRD Controller  │    │  Execution Host (StatefulSet, Rust)  │ │
 │  │  (Go, kubebuilder)│    │                                      │ │
-│  │                   │    │  ┌────────┐ ┌────────┐ ┌────────┐  │ │
-│  │  • Watches        │    │  │Wasmtime│ │Wasmtime│ │Wasmtime│  │ │
-│  │    Application    │    │  │Instance│ │Instance│ │Instance│  │ │
-│  │    CRDs           │    │  │ Pool   │ │ Pool   │ │ Pool   │  │ │
-│  │  • Provisions DBs │    │  └───┬────┘ └───┬────┘ └───┬────┘  │ │
-│  │  • Registers      │    │      │          │          │        │ │
-│  │    routes/triggers │    │  ┌───┴──────────┴──────────┴────┐  │ │
-│  │  • Pulls & AOT    │    │  │     Host Function Layer       │  │ │
-│  │    compiles modules│    │  │  (SQL proxy, KV proxy, etc.)  │  │ │
-│  └────────┬──────────┘    │  └──────────────┬────────────────┘  │ │
-│           │               └─────────────────┼────────────────────┘ │
-│           │                                 │                      │
-│  ┌────────▼──────────┐            ┌─────────▼─────────┐           │
-│  │  Module Cache      │            │  Data Layer        │           │
-│  │  (OCI + AOT disk   │            │  ┌──────────────┐  │           │
-│  │   cache per node)  │            │  │  PostgreSQL   │  │           │
-│  └───────────────────┘            │  │  (SQL dbs)    │  │           │
-│                                   │  ├──────────────┤  │           │
-│  ┌───────────────────┐            │  │  Redis/NATS   │  │           │
-│  │  Gateway (Envoy    │            │  │  (KV + MQ)    │  │           │
-│  │  or custom)        │            │  └──────────────┘  │           │
-│  │  • HTTP translation│            └────────────────────┘           │
-│  └───────────────────┘                                            │
-│                                                                    │
-│  ┌───────────────────┐                                            │
-│  │  Trigger Layer     │                                            │
-│  │  • Cron scheduler  │                                            │
-│  └───────────────────┘                                            │
+│  │                   │    │  ┌────────────────────────────────┐  │ │
+│  │  • Watches        │    │  │           Pod (×N)             │  │ │
+│  │    Application    │    │  │  ┌─────────────┐ ┌──────────┐  │  │ │
+│  │    CRDs           │    │  │  │execution-   │ │ module-  │  │  │ │
+│  │  • Provisions DBs │    │  │  │host         │ │  cache   │  │  │ │
+│  │  • Registers      │    │  │  │             │ │ sidecar  │  │  │ │
+│  │    routes/triggers│    │  │  │Wasmtime Pool│ │          │  │  │ │
+│  └────────┬──────────┘    │  │  │             │ │ Watches  │  │  │ │
+│           │               │  │  │Host Fn      │ │ CRDs,    │  │  │ │
+│           │               │  │  │Layer        │ │ pulls,   │  │  │ │
+│           │               │  │  │             │ │ AOT      │  │  │ │
+│           │               │  │  └──────┬──────┘ └────┬─────┘  │  │ │
+│           │               │  │         └────PVC───────┘        │  │ │
+│           │               │  └────────────────────────────────┘  │ │
+│           │               └─────────────────────┬────────────────┘ │
+│           │                                     │                  │
+│  ┌────────▼──────────┐            ┌─────────────▼───────┐          │
+│  │  Gateway (Envoy    │            │  Data Layer          │          │
+│  │  or custom)        │            │  ┌──────────────┐   │          │
+│  │  • HTTP translation│            │  │  PostgreSQL   │   │          │
+│  └───────────────────┘            │  │  (SQL dbs)    │   │          │
+│                                   │  ├──────────────┤   │          │
+│  ┌───────────────────┐            │  │  Redis/NATS   │   │          │
+│  │  Trigger Layer     │            │  │  (KV + MQ)    │   │          │
+│  │  • Cron scheduler  │            │  └──────────────┘   │          │
+│  └───────────────────┘            └─────────────────────┘          │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -137,18 +136,18 @@ Execution hosts are **stateless workers**. Scaling pattern:
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **CRD Controller** | Go | Reconciles `Application` CRDs. Provisions databases, registers routes in the gateway, stores AOT-compiled modules in the cache. |
-| **Execution Host** | Rust | Listens for NATS messages, loads compiled modules, manages instance pools, exposes host functions (SQL, KV), executes invocations. Stateless — scales horizontally. |
+| **CRD Controller** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. |
+| **Execution Host** | Rust | Deployed as a StatefulSet. Listens for NATS messages, loads compiled modules from its PVC, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
 | **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
 | **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
 | **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |
-| **Module Cache** | Filesystem | Per-node cache of OCI-pulled and AOT-compiled modules. Content-addressable by digest. |
+| **Module Cache** | Rust (sidecar) | Sidecar in each execution host pod. Watches `Application` CRDs, pulls OCI modules, AOT-compiles, and writes to the pod's shared PVC. Content-addressable by digest. |
 | **Data Layer** | Managed services | PostgreSQL for SQL databases, Redis/Dragonfly for KV, NATS JetStream for message queuing. |
 
 ### Invocation Flow (HTTP)
 
 1. Request arrives at Gateway → matched to route → forwarded to a NATS subject.
-2. Host looks up the module by application name → finds AOT-compiled module in cache.
+2. Host looks up the module by application name → reads AOT-compiled module from the shared PVC.
 3. Host acquires a pre-allocated instance from the pool → binds host functions scoped to the application's declared databases.
 4. Host calls the guest's `on-request` export → guest runs, makes SQL/KV calls via imports → returns response.
 5. Host returns response to Gateway → instance is returned to the pool (memory is reset, not deallocated).
