@@ -1,0 +1,85 @@
+# wp-operator
+
+A Kubernetes operator that watches `Application` CRDs and reconciles platform resources — provisioning database bindings, registering message subscriptions, and managing the lifecycle of deployed WASM modules.
+
+## Application CRD
+
+`Application` is the primary resource. Each instance declares a single deployable WASM module and its runtime requirements.
+
+```yaml
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  module: oci://registry.example.com/my-app@sha256:<digest>
+  topic: my-app.messages
+  env:
+    LOG_LEVEL: info
+  sql: orders
+  keyValue: sessions
+```
+
+### Fields
+
+#### `spec.module`
+
+| Type | Required | Description |
+|------|----------|-------------|
+| string | yes | OCI URI for the `.wasm` module. Use a digest-pinned reference (`@sha256:…`) for deterministic deployments. Format: `oci://<registry>/<repository>@sha256:<digest>`. |
+
+#### `spec.topic`
+
+| Type | Required | Description |
+|------|----------|-------------|
+| string | yes | Message subject the execution host subscribes to. Messages arriving on this subject invoke the module's `on-message` export. |
+
+#### `spec.env` (optional)
+
+A string map of environment variables injected into the module's runtime configuration. Keys must be unique.
+
+```yaml
+env:
+  LOG_LEVEL: info
+  FEATURE_FLAG: enabled
+```
+
+#### `spec.sql` (optional)
+
+| Type | Required | Description |
+|------|----------|-------------|
+| string | no | Logical database name. Exposed to the module via the `sql` host import as the `db` argument. Must correspond to a provisioned database managed by the [db-operator](https://github.com/benjamin-wright/db-operator). Omit to disable SQL access entirely. |
+
+#### `spec.keyValue` (optional)
+
+| Type | Required | Description |
+|------|----------|-------------|
+| string | no | Key prefix for the module's key-value namespace. Keys written by the module are namespaced by `<namespace>/<prefix>/` to prevent conflicts between applications. Must correspond to a provisioned KV store managed by the [db-operator](https://github.com/benjamin-wright/db-operator). Omit to disable KV access entirely. |
+
+## Operator Behaviour
+
+On `Application` create or update, the operator:
+
+1. Resolves the OCI digest for `spec.module` if a mutable tag is given, and writes the resolved digest to the status.
+2. If `spec.sql` is set, ensures the named database exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
+3. If `spec.keyValue` is set, ensures the KV store exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
+4. Creates or updates the message consumer configuration for `spec.topic`.
+5. Writes a config projection (env vars + binding references) that the execution host reads at invocation time.
+
+On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and KV bindings so data is not lost on accidental deletion.
+
+## Status
+
+| Field | Description |
+|-------|-------------|
+| `status.resolvedImage` | Fully qualified OCI reference with resolved digest. |
+| `status.conditions` | Standard Kubernetes condition list (`Ready`, `DatabaseBound`, `StoreBound`). |
+
+## TODO
+
+1. Define the Group/Version/Kind registration and kubebuilder markers.
+2. Specify the exact [db-operator](https://github.com/benjamin-wright/db-operator) resource kinds used to request SQL and KV instances.
+3. Add HTTP route bindings (`spec.routes`) in a future pass.
+4. Add scheduling bindings (`spec.schedules`) in a future pass.
+5. Define RBAC rules required by the operator service account.
