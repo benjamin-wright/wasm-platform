@@ -76,7 +76,7 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 
 1. Create a new crate under `examples/` with `crate-type = ["cdylib"]`.
 2. Add `wit-bindgen` as a dependency and generate bindings for the `application` world from `framework/runtime.wit`.
-3. Implement the `Guest` trait (`on-request`, `on-schedule`, `on-message`).
+3. Implement the `Guest` trait (`on-message`).
 4. Add the crate to the workspace `members` in the root `Cargo.toml`.
 5. Build with `cargo build --manifest-path examples/<name>/Cargo.toml --target wasm32-wasip2 --release`.
 6. Add a `README.md` documenting what the example demonstrates.

@@ -6,15 +6,15 @@ A minimal WebAssembly guest module written in Rust that proves the host/guest in
 
 ## Exports
 
-Implements the `application` world from [`framework/runtime.wit`](../../framework/runtime.wit). Each handler echoes back a human-readable summary of its arguments.
+Implements the `application` world from [`framework/runtime.wit`](../../framework/runtime.wit). The handler echoes back a human-readable summary of its payload.
 
 | Export | Example response |
 |---|---|
-| `on-request` | `"on-request called: method=GET path=/hello body=5 bytes"` |
-| `on-schedule` | `"on-schedule called: name=daily-cleanup"` |
-| `on-message` | `"on-message called: queue=events payload=12 bytes"` |
+| `on-message` | `"on-message called: payload='hello'"` |
 
-The `sql` and `kv` imports are satisfied at link time by the execution host but are never called.
+Returning `Some(bytes)` sends the bytes back to the caller as a response (e.g. an HTTP reply or a NATS reply message). Returning `None` is a fire-and-forget acknowledgement with no response body.
+
+The `sql`, `kv`, and `messaging` imports are satisfied at link time by the execution host but are never called.
 
 ---
 

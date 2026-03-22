@@ -79,7 +79,7 @@ Supporting databases (PostgreSQL, Redis, etc.) are deployed and managed via the 
 
 Each trigger type needs a different ingestion path:
 
-- **HTTP** — A lightweight HTTP server translates requests to event subjects by `spec.events[].route`. Keep the gateway stateless.
+- **HTTP** — A lightweight HTTP server translates requests to NATS messages. The gateway serialises the HTTP context (method, path, headers, body) into a payload and publishes it to the application's NATS subject. The execution host delivers the payload to the module's `on-message` export and forwards any returned response bytes back to the caller.
 - **Schedule** — A cron controller watches CRDs and emits invocations at the specified schedule. Use Kubernetes `CronJob`-style leader election, or `tokio-cron-scheduler` in Rust.
 - **MessageQueue** — A consumer pool per queue (NATS JetStream or RabbitMQ) that pulls messages and dispatches to the execution host. NATS is a strong choice for its simplicity and built-in persistence.
 
@@ -146,10 +146,9 @@ Execution hosts are deployed as a **StatefulSet**. Each pod has a dedicated PVC 
 
 ### Invocation Flow (HTTP)
 
-1. Request arrives at Gateway → matched to route → forwarded to a NATS subject.
+1. Request arrives at Gateway → serialised into a NATS message payload (method, path, headers, body) → published to the application's NATS subject.
 2. Host looks up the module by application name → reads AOT-compiled module from the shared PVC.
 3. Host acquires a pre-allocated instance from the pool → binds host functions scoped to the application's declared databases.
-4. Host calls the guest's `on-request` export → guest runs, makes SQL/KV calls via imports → returns response.
-5. Host returns response to Gateway → instance is returned to the pool (memory is reset, not deallocated).
-
+4. Host calls the guest's `on-message` export with the payload → guest runs, makes SQL/KV/messaging calls via imports → optionally returns response bytes.
+5. Host forwards response bytes (if any) back to Gateway → instance is returned to the pool (memory is reset, not deallocated).
 
