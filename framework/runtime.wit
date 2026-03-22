@@ -20,10 +20,13 @@ interface kv {
     delete: func(store: string, key: string) -> result<bool, string>;
 }
 
+interface messaging {
+    send: func(topic: string, payload: list<u8>) -> result<_, string>;
+}
+
 world application {
     import sql;
     import kv;
-    export on-request: func(method: string, path: string, body: list<u8>) -> result<list<u8>, string>;
-    export on-schedule: func(name: string) -> result<_, string>;
-    export on-message: func(queue: string, payload: list<u8>) -> result<_, string>;
+    import messaging;
+    export on-message: func(payload: list<u8>) -> result<option<list<u8>>, string>;
 }
