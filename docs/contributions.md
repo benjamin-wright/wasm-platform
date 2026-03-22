@@ -60,7 +60,7 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 │   ├── execution-host/         # Rust binary — loads and invokes WASM modules
 │   │   ├── Tiltfile            # Defines execution_host() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the execution host
-│   └── crd-operator/           # Go operator — reconciles Application CRDs
+│   └── wp-operator/            # Go operator — reconciles Application CRDs
 ├── examples/
 │   └── hello-world/            # Minimal guest module for testing the interface
 ├── Tiltfile                    # Root live-development entrypoint — loads component Tiltfiles

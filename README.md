@@ -11,7 +11,7 @@ The project is in its earliest phase: a single Rust binary that loads a `.wasm` 
 | Component | Path | Description |
 |---|---|---|
 | **Execution Host** | `components/execution-host/` | Rust binary — loads WASM modules via Wasmtime, exposes an HTTP endpoint, and calls guest exports. |
-| **CRD Operator** | `components/crd-operator/` | Go operator — watches `Application` CRDs and reconciles database bindings, NATS subscriptions, and module lifecycle. |
+| **WP Operator** | `components/wp-operator/` | Go operator — watches `Application` CRDs and reconciles database bindings, message subscriptions, and module lifecycle. |
 | **Hello World** | `examples/hello-world/` | Minimal guest module that implements the `application` world and echoes back request details. |
 | **WIT Interface** | `framework/runtime.wit` | The platform's API surface — defines `sql`, `kv` imports and `on-request`, `on-schedule`, `on-message` exports. |
 
