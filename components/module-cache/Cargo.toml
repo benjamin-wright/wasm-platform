@@ -1,0 +1,12 @@
+[package]
+name = "module-cache"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.0"
+
+[dependencies]
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net"] }
+axum = "0.8.8"
+anyhow = "1.0.102"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }

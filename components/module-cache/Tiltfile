@@ -1,0 +1,36 @@
+load('ext://helm_resource', 'helm_resource')
+
+IMAGE_REF = 'wasm-platform-registry.localhost:5001/module-cache'
+
+def module_cache():
+    custom_build(
+        IMAGE_REF,
+        command = (
+            'docker build' +
+            ' -f components/module-cache/Dockerfile' +
+            ' -t $EXPECTED_REF' +
+            ' .'
+        ),
+        deps = [
+            'components/module-cache/src',
+            'components/module-cache/Cargo.toml',
+        ],
+        labels = ['module-cache'],
+    )
+
+    helm_resource(
+        'module-cache',
+        chart = 'components/module-cache/helm',
+        image_deps = [IMAGE_REF],
+        image_keys = [('image.repository', 'image.tag')],
+        labels = ['module-cache'],
+    )
+
+    local_resource(
+        'unit-tests',
+        cmd = 'cargo test -p module-cache',
+        deps = ['components/module-cache/src'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+        labels = ['module-cache'],
+    )

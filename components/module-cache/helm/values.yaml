@@ -1,0 +1,14 @@
+image:
+  repository: wasm-platform-registry.localhost:5001/module-cache
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+replicaCount: 1
