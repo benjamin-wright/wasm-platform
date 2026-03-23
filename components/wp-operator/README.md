@@ -69,6 +69,13 @@ On `Application` create or update, the operator:
 
 On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and KV bindings so data is not lost on accidental deletion.
 
+## Config API
+
+The operator exposes two endpoints that execution hosts use to stay in sync:
+
+- **Push (operator → host)** — when an `Application` is created or updated, the operator pushes the full config (env vars, binding references, resolved module reference) to all execution hosts.
+- **List (host → operator)** — execution hosts call this endpoint on startup or after a sync error to request the full current config for all applications, allowing them to recover without waiting for a push event.
+
 ## Status
 
 | Field | Description |
