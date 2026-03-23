@@ -1,39 +1,23 @@
-# module-cache
+# Centralized Cache Design
 
-A sidecar container running alongside each execution host pod. Watches `Application` CRDs, pulls WebAssembly modules from the OCI registry, AOT-compiles them via Wasmtime, and writes the result to a PVC shared with the execution host container. The execution host reads compiled artifacts directly from the shared volume without network overhead.
+This module implements a centralized cache design keyed by digest, architecture, and Wasmtime version.
 
-## Cache Entries
+## Overview
+The cache is designed to serve precompiled modules efficiently, minimizing compile times and resource usage by storing results of previous compilations.
 
-Each entry is keyed by the OCI digest of the source module and contains a single artifact:
+## Cache Key Structure
+- **Digest**: A cryptographic hash representing the contents of the module.
+- **Architecture**: Defines the target architecture for which the module has been compiled (e.g., x86_64, arm).
+- **Wasmtime Version**: Specifies the version of the Wasmtime runtime used for compilation, ensuring compatibility with the execution environment.
 
-| Artifact | Description |
-|----------|-------------|
-| `.cwasm` | Wasmtime AOT-compiled native module serialised to disk |
+## Workflow for Precompiled Modules
+1. **Pulling Precompiled Modules**:
+   - When a module is requested, the cache checks if a valid entry exists keyed by the digest, architecture, and Wasmtime version.
+   - If an entry is found, the module is retrieved from the cache and returned to the requester.
 
-## Interfaces
+2. **Handling Cache Misses**:
+   - If no entry is found (i.e., a cache miss), the module is compiled fresh using the specified Wasmtime version and target architecture.
+   - The newly compiled module is then stored in the cache for future requests.
+   - The cache is updated with the new entry keyed by its digest, architecture, and version.
 
-### Writers
-
-The module-cache sidecar populates the shared PVC:
-
-1. Watches `Application` CRDs for new or updated module digests.
-2. Pulls the `.wasm` module from the OCI registry by digest.
-3. AOT-compiles it via Wasmtime.
-4. Writes the `.cwasm` artifact to the shared volume, keyed by digest.
-
-### Readers
-
-The execution host reads from the shared PVC at invocation time:
-
-1. Resolves the application's current module digest.
-2. Loads the `.cwasm` artifact, memory-mapped, for instantiation.
-
-## Deployment
-
-The module-cache sidecar and execution host container run in the same pod within the execution host StatefulSet. They share the pod's PVC via a mounted volume. The PVC persists across pod restarts; compiled artifacts do not need to be recompiled after a rolling update.
-
-## TODO
-
-1. Define the on-volume directory layout and file naming convention.
-2. Decide cache eviction policy for modules no longer referenced by any `Application` CRD.
-3. Specify PVC size limits and storage class requirements.
+This design aims to improve performance through effective caching strategies, thereby reducing the overhead associated with module compilation.
