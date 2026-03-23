@@ -65,16 +65,84 @@ On `Application` create or update, the operator:
 2. If `spec.sql` is set, ensures the named database exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
 3. If `spec.keyValue` is set, ensures the KV store exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
 4. Creates or updates the message consumer configuration for `spec.topic`.
-5. Pushes a config update (env vars + binding references + resolved module reference) directly to the execution hosts so they can load the new module.
+5. Pushes an incremental config update (env vars + binding references + resolved module reference) to all connected execution hosts via the gRPC `PushIncrementalUpdate` RPC so they can load the new module.
 
 On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and KV bindings so data is not lost on accidental deletion.
 
 ## Config API
 
-The operator exposes two endpoints that execution hosts use to stay in sync:
+The operator exposes a gRPC `ConfigSync` service that execution hosts use to stay in sync.
 
-- **Push (operator → host)** — when an `Application` is created or updated, the operator pushes the full config (env vars, binding references, resolved module reference) to all execution hosts.
-- **List (host → operator)** — execution hosts call this endpoint on startup or after a sync error to request the full current config for all applications, allowing them to recover without waiting for a push event.
+### Service Definition
+
+```proto
+syntax = "proto3";
+package configsync;
+
+service ConfigSync {
+  // Client requests a full configuration (on startup or desync)
+  rpc RequestFullConfig(FullConfigRequest) returns (FullConfigResponse);
+
+  // Server streams incremental updates to the client; client streams acks back
+  rpc PushIncrementalUpdate(stream IncrementalUpdateAck) returns (stream IncrementalUpdateRequest);
+}
+```
+
+### RPCs
+
+- **`RequestFullConfig` (host → operator)** — on startup or when a desync is suspected, the execution host calls this RPC to receive the latest full configuration snapshot for all applications. The response includes the complete `FullConfig` (version, all `ApplicationConfig` entries, and timestamp).
+
+- **`PushIncrementalUpdate` (bidirectional streaming)** — after an execution host connects, it calls this RPC and keeps the stream open. The operator streams `IncrementalUpdateRequest` messages (config deltas) to the host whenever applications are created, updated, or deleted. Each message carries a version identifier, a list of `AppUpdate` entries (add/modify or delete), and a timestamp. The host streams back an `IncrementalUpdateAck` after processing each delta; if the ack reports a failure, the host should close the stream and re-request the full configuration via `RequestFullConfig`.
+
+### Key Message Types
+
+#### Full Configuration Flow
+
+```proto
+message FullConfigRequest {
+  string host_id = 1;                    // Identifier for the execution host
+  optional int64 last_ack_timestamp = 2; // Timestamp of the last successfully applied config; omit or zero if unknown
+}
+
+message FullConfigResponse {
+  FullConfig config = 1; // Full configuration payload
+  bool success = 2;      // Whether the full config was successfully retrieved
+  string message = 3;    // Optional message for errors or metadata
+}
+
+message FullConfig {
+  string version = 1;                          // Config version identifier
+  repeated ApplicationConfig applications = 2; // List of all applications
+  int64 timestamp = 3;                         // Timestamp of full config generation
+}
+```
+
+#### Incremental Update Flow
+
+```proto
+message IncrementalUpdateRequest {
+  IncrementalConfig incremental_config = 1; // Incremental config payload
+  string target_host_id = 2;                // Host ID receiving the update
+}
+
+message IncrementalUpdateAck {
+  string host_id = 1;         // Identifier for the execution host
+  string version_applied = 2; // The last successfully applied version
+  bool success = 3;           // True if the update was successfully applied
+  string message = 4;         // Optional details (e.g., error info)
+}
+
+message IncrementalConfig {
+  string version = 1;             // New version identifier
+  repeated AppUpdate updates = 2; // List of applications to add/modify/delete
+  int64 timestamp = 3;            // Timestamp of the incremental update
+}
+
+message AppUpdate {
+  ApplicationConfig app_config = 1; // Application config for "add" or "modify" actions
+  bool delete = 2;                  // Whether this entry removes the application
+}
+```
 
 ## Status
 

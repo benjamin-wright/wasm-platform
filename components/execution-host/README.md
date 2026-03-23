@@ -2,9 +2,16 @@
 
 The runtime engine of the wasm platform: accepts incoming requests and loads and invokes WASM modules based on its current configuration.
 
+## Configuration Sync
+
+The execution host syncs configuration with the wp-operator over gRPC (see the [wp-operator Config API](../wp-operator/README.md#config-api)):
+
+1. **On startup (or desync)** — requests the full current configuration snapshot.
+2. **Ongoing** — maintains an open bidirectional stream to receive incremental configuration deltas and acknowledge each one. On failure to apply a delta, falls back to requesting the full configuration again.
+
 ## Module Loading
 
-When the wp-operator pushes a new application config, the execution host:
+When the execution host receives a new or updated application config (either from a full config response or an incremental update), it:
 
 1. Queries the module cache for a precompiled artifact keyed by module digest, CPU architecture, and Wasmtime version.
 2. If found, loads the cached `.cwasm` artifact directly (no compilation required).

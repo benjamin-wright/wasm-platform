@@ -85,7 +85,9 @@ Each trigger type needs a different ingestion path:
 
 ### Graceful Scaling
 
-Execution hosts are deployed as a **Deployment**. When the wp-operator pushes a config update, each execution host checks the centralized module cache for a precompiled artifact; on a miss it pulls the OCI artifact, AOT-compiles it, and writes the result back to the cache. On startup or after a sync error, execution hosts can also call the wp-operator's list endpoint to request the full current config. Scaling pattern:
+Execution hosts are deployed as a **Deployment**. The wp-operator communicates with execution hosts over **gRPC** using a hybrid sync model: on startup or when desynced, a host requests the full current configuration; afterwards the operator streams incremental configuration deltas to connected hosts. See the [wp-operator Config API](../components/wp-operator/README.md#config-api) for the service definition.
+
+When a new config is received, each execution host checks the centralized module cache for a precompiled artifact; on a miss it pulls the OCI artifact, AOT-compiles it, and writes the result back to the cache. Scaling pattern:
 
 - Scale on **concurrent invocations** (not CPU/memory), since WASM instances are tiny.
 - A single execution host process can run thousands of concurrent WASM instances (they share the compiled module and use pooled memory).
@@ -99,17 +101,17 @@ Execution hosts are deployed as a **Deployment**. When the wp-operator pushes a 
 ┌──────────────────────────────────────────────────────────────────────┐
 │                          Kubernetes Cluster                          │
 │                                                                      │
-│  ┌──────────────────┐  config push  ┌──────────────────────────────┐ │
+│  ┌──────────────────┐ gRPC push     ┌──────────────────────────────┐ │
 │  │  wp-operator      │──────────────▶│  Execution Host (Deployment) │ │
 │  │  (Go, kubebuilder)│◀ ─ ─ ─ ─ ─ ─ │                              │ │
-│  │                   │  list (on     │  ┌──────────────────────┐   │ │
-│  │  • Watches        │  startup/sync)│  │      Pod (×N)        │   │ │
-│  │    Application    │               │  │  ┌────────────────┐  │   │ │
+│  │                   │ gRPC full cfg │  ┌──────────────────────┐   │ │
+│  │  • Watches        │  (on startup/ │  │      Pod (×N)        │   │ │
+│  │    Application    │   desync)     │  │  ┌────────────────┐  │   │ │
 │  │    CRDs           │               │  │  │ execution-host │  │   │ │
 │  │  • Provisions DBs │               │  │  │                │  │   │ │
 │  │  • Registers      │               │  │  │ Wasmtime Pool  │  │   │ │
 │  │    routes/triggers│               │  │  │                │  │   │ │
-│  │  • List endpoint  │               │  │  │ Host Fn Layer  │  │   │ │
+│  │  • gRPC ConfigSync│               │  │  │ Host Fn Layer  │  │   │ │
 │  └──────────────────┘               │  │  └───────┬────────┘  │   │ │
 │                                     │  └──────────┼───────────┘   │ │
 │                                     └─────────────┼───────────────┘ │
@@ -142,8 +144,8 @@ Execution hosts are deployed as a **Deployment**. When the wp-operator pushes a 
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **WP Operator** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. Pushes config updates to execution hosts when applications change, and exposes a list endpoint that execution hosts can call on startup or to recover from sync errors. |
-| **Execution Host** | Rust | Deployed as a Deployment. Receives config pushes from the wp-operator; can also call the wp-operator's list endpoint on startup or after a sync error. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
+| **WP Operator** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. Exposes a gRPC `ConfigSync` service for execution hosts to fetch full configuration snapshots and receive incremental updates. |
+| **Execution Host** | Rust | Deployed as a Deployment. Syncs configuration from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
 | **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
 | **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
 | **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |
