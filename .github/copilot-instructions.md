@@ -23,6 +23,7 @@ You are an AI agent assisting with code generation and review in this repository
 
 Key points:
 
+- **Never write generated files by hand.** Lock files (`go.sum`, `Cargo.lock`), generated client stubs, and any file marked `// Code generated … DO NOT EDIT.` are owned by tooling — not by you. Run the relevant tool (`go mod tidy`, `go generate`, `cargo`) when possible. If you cannot run the tool in the current environment, note the exact command in your response so the developer or reviewer can run it.
 - **WIT is the API contract.** Changes to `framework/runtime.wit` are breaking changes for all guest modules and the execution host. Understand the current interface before suggesting modifications.
 - **Rust for the execution host, Go for the control plane (planned).** Don't mix concerns — the execution host is a Wasmtime-based Rust binary; Kubernetes operator code will be in Go.
 - **Check sibling code first.** Before adding new patterns, utilities, or conventions, check whether an equivalent already exists in the project.

@@ -85,6 +85,24 @@ All interaction with an external system (database, message broker, HTTP service)
 
 ---
 
+## Go
+
+### Style
+
+- Follow standard `gofmt` conventions. Run `gofmt` (or `goimports`) before committing.
+- Run `go vet` and resolve all warnings.
+- Use structured errors with `fmt.Errorf` and `%w` for wrapping. Define sentinel errors with `errors.New` when callers need to match them.
+
+### Modules and Generated Code
+
+- Never manually write or edit `go.sum` entries or the dependency block in `go.mod`. Run `go mod tidy` to add, update, or remove them.
+- Never manually write code owned by a generator. This includes:
+  - CRD client stubs, informers, and listers produced by `code-generator` or `controller-gen`.
+  - Any file that begins with `// Code generated … DO NOT EDIT.`
+- To regenerate, run the relevant `go generate` target or the generator command documented in the component README. If you cannot run the generator in the current environment, leave a comment in the PR description with the exact command so a reviewer can run it.
+
+---
+
 ## WebAssembly
 
 
