@@ -14,7 +14,7 @@ The project is in its earliest phase: a single Rust binary that loads a `.wasm` 
 | **WP Operator** | `components/wp-operator/` | Go operator — watches `Application` CRDs, reconciles database bindings and message subscriptions, and syncs config to execution hosts via a gRPC `ConfigSync` service. |
 | **Module Cache** | `components/module-cache/` | Centralized cache for AOT-compiled WASM artifacts, keyed by digest, architecture, and Wasmtime version. |
 | **Hello World** | `examples/hello-world/` | Minimal guest module that implements the `application` world and echoes back request details. |
-| **WIT Interface** | `framework/runtime.wit` | The platform's API surface — defines `sql`, `kv` imports and `on-request`, `on-schedule`, `on-message` exports. |
+| **WIT Interface** | `framework/runtime.wit` | The platform's API surface — defines `sql`, `kv`, and `messaging` imports and the `on-message` export. |
 
 ## Quick Start
 
