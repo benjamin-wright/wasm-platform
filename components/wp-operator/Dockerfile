@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1
 
-# Build stage
+# Build context: component directory (components/wp-operator/).
+# Requires BuildKit (default in Docker >= 23.0).
+
 FROM golang:1.24 AS builder
 
 WORKDIR /workspace
-
-COPY components/wp-operator/go.mod components/wp-operator/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
-
-COPY components/wp-operator/ ./
+COPY . ./
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o manager ./cmd/
 
-# Runtime stage — static binary requires no libc
+# Runtime stage — CGO_ENABLED=0 produces a fully static binary; no libc required.
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /workspace/manager /manager

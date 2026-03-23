@@ -7,9 +7,8 @@ def wp_operator():
         IMAGE_REF,
         command = (
             'docker build' +
-            ' -f components/wp-operator/Dockerfile' +
             ' -t $EXPECTED_REF' +
-            ' .'
+            ' components/wp-operator'
         ),
         deps = [
             'components/wp-operator/cmd',
