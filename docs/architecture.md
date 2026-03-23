@@ -85,10 +85,7 @@ Each trigger type needs a different ingestion path:
 
 ### Graceful Scaling
 
-Execution hosts are deployed as a **Deployment**. The wp-operator communicates with execution hosts over **gRPC** using a hybrid sync model:
-
-- On startup or when a desync is suspected, the execution host calls `RequestFullConfig` to fetch the latest complete configuration from the operator.
-- After initialisation, the execution host calls `PushIncrementalUpdate` and keeps a bidirectional stream open with the operator. The operator streams incremental configuration changes to the host; the host streams back an acknowledgment for each delta. If an acknowledgment shows a failure, the host closes the stream and re-requests the full configuration via `RequestFullConfig`.
+Execution hosts are deployed as a **Deployment**. The wp-operator communicates with execution hosts over **gRPC** using a hybrid sync model: on startup or when desynced, a host requests the full current configuration; afterwards the operator streams incremental configuration deltas to connected hosts. See the [wp-operator Config API](../components/wp-operator/README.md#config-api) for the service definition.
 
 When a new config is received, each execution host checks the centralized module cache for a precompiled artifact; on a miss it pulls the OCI artifact, AOT-compiles it, and writes the result back to the cache. Scaling pattern:
 
@@ -147,8 +144,8 @@ When a new config is received, each execution host checks the centralized module
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **WP Operator** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. Exposes a gRPC `ConfigSync` service: pushes incremental config updates to connected execution hosts via `PushIncrementalUpdate`, and serves full configuration snapshots via `RequestFullConfig` for hosts that start up or fall out of sync. |
-| **Execution Host** | Rust | Deployed as a Deployment. On startup (or on suspected desync), calls the wp-operator's gRPC `RequestFullConfig` RPC to fetch the latest full configuration. Afterwards receives incremental config deltas pushed by the operator via `PushIncrementalUpdate` and acknowledges each update. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
+| **WP Operator** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. Exposes a gRPC `ConfigSync` service for execution hosts to fetch full configuration snapshots and receive incremental updates. |
+| **Execution Host** | Rust | Deployed as a Deployment. Syncs configuration from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
 | **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
 | **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
 | **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |

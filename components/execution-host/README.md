@@ -4,10 +4,10 @@ The runtime engine of the wasm platform: accepts incoming requests and loads and
 
 ## Configuration Sync
 
-The execution host stays in sync with the wp-operator via gRPC (`ConfigSync` service):
+The execution host syncs configuration with the wp-operator over gRPC (see the [wp-operator Config API](../wp-operator/README.md#config-api)):
 
-1. **On startup (or desync)** — the host calls `RequestFullConfig` to fetch the latest complete configuration from the operator. This gives it the full list of `ApplicationConfig` entries with all env vars, binding references, and resolved module references.
-2. **Ongoing updates** — the host calls `PushIncrementalUpdate` and keeps the bidirectional stream open. The operator streams config deltas (`IncrementalUpdateRequest` messages) to the host; the host applies each delta and streams back an `IncrementalUpdateAck`. If an update fails to apply, the host closes the stream and recovers by calling `RequestFullConfig` again.
+1. **On startup (or desync)** — requests the full current configuration snapshot.
+2. **Ongoing** — maintains an open bidirectional stream to receive incremental configuration deltas and acknowledge each one. On failure to apply a delta, falls back to requesting the full configuration again.
 
 ## Module Loading
 
