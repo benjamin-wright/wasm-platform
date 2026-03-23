@@ -39,7 +39,7 @@ OCI artifacts for module storage. Libraries:
 - Go: `oras.land/oras-go/v2`
 - Rust: `oci-distribution` crate
 
-Content-addressable caching in a per-pod PVC so repeat cold-starts load from local disk, not the registry. The module-cache sidecar in each execution host pod handles OCI pulls and AOT compilation.
+Content-addressable centralized cache for AOT-compiled modules. On a cache miss, the execution host pulls the raw OCI artifact, AOT-compiles it, and pushes the result back to the cache so all execution hosts can benefit.
 
 ---
 
@@ -85,69 +85,75 @@ Each trigger type needs a different ingestion path:
 
 ### Graceful Scaling
 
-Execution hosts are deployed as a **StatefulSet**. Each pod has a dedicated PVC populated by the module-cache sidecar before invocations are served. Scaling pattern:
+Execution hosts are deployed as a **Deployment**. When the wp-operator pushes a config update, each execution host checks the centralized module cache for a precompiled artifact; on a miss it pulls the OCI artifact, AOT-compiles it, and writes the result back to the cache. On startup or after a sync error, execution hosts can also call the wp-operator's list endpoint to request the full current config. Scaling pattern:
 
 - Scale on **concurrent invocations** (not CPU/memory), since WASM instances are tiny.
 - A single execution host process can run thousands of concurrent WASM instances (they share the compiled module and use pooled memory).
 - Use a Kubernetes HPA with a custom metric (active invocations / capacity) or KEDA for event-driven scaling.
-- PVCs are not deleted automatically on scale-down — define a lifecycle policy for stale PVC cleanup.
 
 ---
 
 ## 3. System Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Kubernetes Cluster                        │
-│                                                                  │
-│  ┌─────────────────┐    ┌──────────────────────────────────────┐ │
-│  │  CRD Controller  │    │  Execution Host (StatefulSet, Rust)  │ │
-│  │  (Go, kubebuilder)│    │                                      │ │
-│  │                   │    │  ┌────────────────────────────────┐  │ │
-│  │  • Watches        │    │  │           Pod (×N)             │  │ │
-│  │    Application    │    │  │  ┌─────────────┐ ┌──────────┐  │  │ │
-│  │    CRDs           │    │  │  │execution-   │ │ module-  │  │  │ │
-│  │  • Provisions DBs │    │  │  │host         │ │  cache   │  │  │ │
-│  │  • Registers      │    │  │  │             │ │ sidecar  │  │  │ │
-│  │    routes/triggers│    │  │  │Wasmtime Pool│ │          │  │  │ │
-│  └────────┬──────────┘    │  │  │             │ │ Watches  │  │  │ │
-│           │               │  │  │Host Fn      │ │ CRDs,    │  │  │ │
-│           │               │  │  │Layer        │ │ pulls,   │  │  │ │
-│           │               │  │  │             │ │ AOT      │  │  │ │
-│           │               │  │  └──────┬──────┘ └────┬─────┘  │  │ │
-│           │               │  │         └────PVC───────┘        │  │ │
-│           │               │  └────────────────────────────────┘  │ │
-│           │               └─────────────────────┬────────────────┘ │
-│           │                                     │                  │
-│  ┌────────▼──────────┐            ┌─────────────▼───────┐          │
-│  │  Gateway (Envoy    │            │  Data Layer          │          │
-│  │  or custom)        │            │  ┌──────────────┐   │          │
-│  │  • HTTP translation│            │  │  PostgreSQL   │   │          │
-│  └───────────────────┘            │  │  (SQL dbs)    │   │          │
-│                                   │  ├──────────────┤   │          │
-│  ┌───────────────────┐            │  │  Redis/NATS   │   │          │
-│  │  Trigger Layer     │            │  │  (KV + MQ)    │   │          │
-│  │  • Cron scheduler  │            │  └──────────────┘   │          │
-│  └───────────────────┘            └─────────────────────┘          │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Kubernetes Cluster                          │
+│                                                                      │
+│  ┌──────────────────┐  config push  ┌──────────────────────────────┐ │
+│  │  wp-operator      │──────────────▶│  Execution Host (Deployment) │ │
+│  │  (Go, kubebuilder)│◀ ─ ─ ─ ─ ─ ─ │                              │ │
+│  │                   │  list (on     │  ┌──────────────────────┐   │ │
+│  │  • Watches        │  startup/sync)│  │      Pod (×N)        │   │ │
+│  │    Application    │               │  │  ┌────────────────┐  │   │ │
+│  │    CRDs           │               │  │  │ execution-host │  │   │ │
+│  │  • Provisions DBs │               │  │  │                │  │   │ │
+│  │  • Registers      │               │  │  │ Wasmtime Pool  │  │   │ │
+│  │    routes/triggers│               │  │  │                │  │   │ │
+│  │  • List endpoint  │               │  │  │ Host Fn Layer  │  │   │ │
+│  └──────────────────┘               │  │  └───────┬────────┘  │   │ │
+│                                     │  └──────────┼───────────┘   │ │
+│                                     └─────────────┼───────────────┘ │
+│                         ┌───────────◀─────────────┘                  │
+│                         │     check / push compiled artifact          │
+│                         ▼                                             │
+│  ┌──────────────────────────────┐                                    │
+│  │  Module Cache (centralized)  │                                    │
+│  │  • Keyed by digest, arch,    │                                    │
+│  │    Wasmtime version          │                                    │
+│  │  • Execution hosts pull from │                                    │
+│  │    OCI registry on miss,     │                                    │
+│  │    AOT-compile, then push    │                                    │
+│  └──────────────────────────────┘                                    │
+│                                                                      │
+│  ┌─────────────────────┐      ┌────────────────────────────────────┐ │
+│  │  Gateway (Envoy      │      │  Data Layer                        │ │
+│  │  or custom)          │      │  ┌──────────────┐                 │ │
+│  │  • HTTP translation  │      │  │  PostgreSQL   │                 │ │
+│  └─────────────────────┘      │  │  (SQL dbs)    │                 │ │
+│                                │  ├──────────────┤                 │ │
+│  ┌─────────────────────┐      │  │  Redis/NATS   │                 │ │
+│  │  Trigger Layer       │      │  │  (KV + MQ)    │                 │ │
+│  │  • Cron scheduler    │      │  └──────────────┘                 │ │
+│  └─────────────────────┘      └────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Component Responsibilities
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **CRD Controller** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. |
-| **Execution Host** | Rust | Deployed as a StatefulSet. Listens for NATS messages, loads compiled modules from its PVC, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
+| **WP Operator** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. Pushes config updates to execution hosts when applications change, and exposes a list endpoint that execution hosts can call on startup or to recover from sync errors. |
+| **Execution Host** | Rust | Deployed as a Deployment. Receives config pushes from the wp-operator; can also call the wp-operator's list endpoint on startup or after a sync error. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
 | **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
 | **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
 | **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |
-| **Module Cache** | Rust (sidecar) | Sidecar in each execution host pod. Watches `Application` CRDs, pulls OCI modules, AOT-compiles, and writes to the pod's shared PVC. Content-addressable by digest. |
+| **Module Cache** | Rust | Centralized cache service. Stores and retrieves AOT-compiled module artifacts keyed by digest, architecture, and Wasmtime version. Execution hosts check the cache on config load, and push newly compiled artifacts back after a cache miss. |
 | **Data Layer** | Managed services | PostgreSQL for SQL databases, Redis/Dragonfly for KV, NATS JetStream for message queuing. |
 
 ### Invocation Flow (HTTP)
 
 1. Request arrives at Gateway → serialised into a NATS message payload (method, path, headers, body) → published to the application's NATS subject.
-2. Host looks up the module by application name → reads AOT-compiled module from the shared PVC.
+2. Host looks up the module by application name → retrieves the AOT-compiled artifact from the module cache (already loaded at config time).
 3. Host acquires a pre-allocated instance from the pool → binds host functions scoped to the application's declared databases.
 4. Host calls the guest's `on-message` export with the payload → guest runs, makes SQL/KV/messaging calls via imports → optionally returns response bytes.
 5. Host forwards response bytes (if any) back to Gateway → instance is returned to the pool (memory is reset, not deallocated).

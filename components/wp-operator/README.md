@@ -65,9 +65,16 @@ On `Application` create or update, the operator:
 2. If `spec.sql` is set, ensures the named database exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
 3. If `spec.keyValue` is set, ensures the KV store exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
 4. Creates or updates the message consumer configuration for `spec.topic`.
-5. Writes a config projection (env vars + binding references) that the execution host reads at invocation time.
+5. Pushes a config update (env vars + binding references + resolved module reference) directly to the execution hosts so they can load the new module.
 
 On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and KV bindings so data is not lost on accidental deletion.
+
+## Config API
+
+The operator exposes two endpoints that execution hosts use to stay in sync:
+
+- **Push (operator → host)** — when an `Application` is created or updated, the operator pushes the full config (env vars, binding references, resolved module reference) to all execution hosts.
+- **List (host → operator)** — execution hosts call this endpoint on startup or after a sync error to request the full current config for all applications, allowing them to recover without waiting for a push event.
 
 ## Status
 
