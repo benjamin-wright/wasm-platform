@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wp-operator
+description: Kubernetes operator for wasm-platform — reconciles Application CRDs and manages platform resources.
+type: application
+version: 0.1.0
+appVersion: latest

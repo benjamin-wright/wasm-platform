@@ -1,0 +1,14 @@
+image:
+  repository: wasm-platform-registry.localhost:5001/wp-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+replicaCount: 1

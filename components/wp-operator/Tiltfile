@@ -1,0 +1,40 @@
+load('ext://helm_resource', 'helm_resource')
+
+IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
+
+def wp_operator():
+    custom_build(
+        IMAGE_REF,
+        command = (
+            'docker build' +
+            ' -t $EXPECTED_REF' +
+            ' components/wp-operator'
+        ),
+        deps = [
+            'components/wp-operator/cmd',
+            'components/wp-operator/api',
+            'components/wp-operator/internal',
+            'components/wp-operator/go.mod',
+            'components/wp-operator/go.sum',
+        ],
+        labels = ['wp-operator'],
+    )
+
+    helm_resource(
+        'wp-operator',
+        chart = 'components/wp-operator/helm',
+        image_deps = [IMAGE_REF],
+        image_keys = [('image.repository', 'image.tag')],
+        labels = ['wp-operator'],
+    )
+
+    local_resource(
+        'unit-tests',
+        cmd = 'cd components/wp-operator && go test ./...',
+        deps = [
+            'components/wp-operator/cmd',
+            'components/wp-operator/api',
+            'components/wp-operator/internal',
+        ],
+        labels = ['wp-operator'],
+    )

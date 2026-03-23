@@ -61,6 +61,8 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 │   │   ├── Tiltfile            # Defines execution_host() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the execution host
 │   └── wp-operator/            # Go operator — reconciles Application CRDs
+│       ├── Tiltfile            # Defines wp_operator() for the root Tiltfile
+│       └── helm/               # Helm chart for the operator
 ├── examples/
 │   └── hello-world/            # Minimal guest module for testing the interface
 ├── Tiltfile                    # Root live-development entrypoint — loads component Tiltfiles
@@ -83,13 +85,12 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 
 ### Adding a New Component
 
-1. Create a new crate under `components/`.
-2. Add it to the workspace `members` in the root `Cargo.toml`.
-3. Add a `README.md` describing its observable behaviour and interfaces.
-4. Add a `Dockerfile` at `components/<name>/Dockerfile` following the container image standards.
-5. Add a Helm chart at `components/<name>/helm/` following the Helm chart standards.
-6. Add a `Tiltfile` at `components/<name>/Tiltfile` following the Tilt standards. Define a single public function named `<dir_snake_case>()` that encapsulates all resources for the component.
-7. Load and call the new function in the root `Tiltfile`.
+1. Create the component directory under `components/` with appropriate language scaffolding (e.g. `go mod init` for Go, a new crate for Rust).
+2. Add a `README.md` describing its observable behaviour and interfaces.
+3. Add a `Dockerfile` at `components/<name>/Dockerfile` following the container image standards.
+4. Add a Helm chart at `components/<name>/helm/` following the Helm chart standards.
+5. Add a `Tiltfile` at `components/<name>/Tiltfile` following the Tilt standards. Define a single public function named `<dir_snake_case>()` that encapsulates all resources for the component.
+6. Load and call the new function in the root `Tiltfile`.
 
 ### Modifying the WIT Interface
 

@@ -153,8 +153,6 @@ message AppUpdate {
 
 ## TODO
 
-1. Define the Group/Version/Kind registration and kubebuilder markers.
-2. Specify the exact [db-operator](https://github.com/benjamin-wright/db-operator) resource kinds used to request SQL and KV instances.
-3. Add HTTP route bindings (`spec.routes`) in a future pass.
-4. Add scheduling bindings (`spec.schedules`) in a future pass.
-5. Define RBAC rules required by the operator service account.
+1. Specify the exact [db-operator](https://github.com/benjamin-wright/db-operator) resource kinds used to request SQL and KV instances.
+2. Add HTTP route bindings (`spec.routes`) in a future pass.
+3. Add scheduling bindings (`spec.schedules`) in a future pass.
