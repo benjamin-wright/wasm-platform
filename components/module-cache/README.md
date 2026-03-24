@@ -1,26 +1,32 @@
-# Centralized Cache Design
+# Module Cache
 
-This module implements a centralized cache design keyed by digest, architecture, and Wasmtime version.
+Centralized HTTP storage service for AOT-compiled WASM artifacts. Execution hosts query this service on config load and push newly compiled artifacts after a cache miss.
 
-## Overview
-The cache is a shared storage service for precompiled WASM modules. It does not perform compilation itself — that responsibility belongs to the execution host. The cache stores and retrieves AOT-compiled artifacts, minimizing redundant compilation across the fleet.
+## HTTP API
 
-## Cache Key Structure
-- **Digest**: A cryptographic hash representing the contents of the module.
-- **Architecture**: Defines the target architecture for which the module has been compiled (e.g., x86_64, arm).
-- **Wasmtime Version**: Specifies the version of the Wasmtime runtime used for compilation, ensuring compatibility with the execution environment.
+### `GET /modules/{digest}/{arch}/{version}`
 
-## Workflow for Precompiled Modules
+Retrieves a precompiled artifact.
 
-The execution host is the active participant in this workflow; the cache is purely a storage layer.
+- **200 OK** — artifact bytes returned in the response body.
+- **404 Not Found** — no entry exists for the given key.
 
-1. **Cache Hit**:
-   - The execution host queries the cache using the digest, architecture, and Wasmtime version as the key.
-   - If an entry is found, the precompiled artifact is returned to the execution host for immediate use.
+| Segment | Description |
+|---|---|
+| `digest` | Cryptographic hash of the source `.wasm` module |
+| `arch` | Target architecture (e.g. `x86_64`, `aarch64`) |
+| `version` | Wasmtime version used to compile the artifact |
 
-2. **Cache Miss**:
-   - If no entry is found, the execution host pulls the raw `.wasm` OCI artifact from the registry.
-   - The execution host AOT-compiles the artifact using its local Wasmtime engine.
-   - The resulting compiled artifact is pushed back to the cache, keyed by digest, architecture, and Wasmtime version, so subsequent requests from any execution host can reuse it.
+### `PUT /modules/{digest}/{arch}/{version}`
 
-This design keeps the cache simple and stateless, while allowing any execution host to warm the cache on behalf of the fleet.
+Stores a precompiled artifact. Request body must be the compiled artifact bytes.
+
+- **204 No Content** — artifact stored successfully.
+
+### `GET /healthz`
+
+- **200 OK** — service is running. Used for liveness and readiness probes.
+
+## Notes
+
+Cache entries are stored in memory. Entries are not persisted across restarts.

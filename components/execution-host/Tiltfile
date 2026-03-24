@@ -39,7 +39,7 @@ def execution_host():
     )
 
     local_resource(
-        'unit-tests',
+        'eh: unit-tests',
         cmd = 'cargo test -p execution-host',
         deps = ['components/execution-host/src'],
         auto_init=False,
@@ -48,8 +48,8 @@ def execution_host():
     )
 
     local_resource(
-        'int-tests',
-        cmd = 'curl -sf -X POST -H "Content-Type: application/json" -d \'{"method": "GET", "path": "/hello", "body": "world"}\' http://localhost:3000/execute',
+        'eh: int-tests',
+        cmd = 'curl -sfvvv -X POST -H "Content-Type: application/json" -d \'{"method": "GET", "path": "/hello", "body": "world"}\' http://localhost:3000/execute',
         resource_deps = ['execution-host'],
         auto_init=False,
         trigger_mode = TRIGGER_MODE_MANUAL,
