@@ -7,9 +7,10 @@ def module_cache():
         IMAGE_REF,
         command = (
             'docker build' +
+            ' --build-context workspace=.' +
             ' -f components/module-cache/Dockerfile' +
             ' -t $EXPECTED_REF' +
-            ' .'
+            ' components/module-cache'
         ),
         deps = [
             'components/module-cache/src',
