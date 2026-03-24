@@ -17,7 +17,6 @@ def wp_operator():
             'components/wp-operator/go.mod',
             'components/wp-operator/go.sum',
         ],
-        labels = ['wp-operator'],
     )
 
     helm_resource(
@@ -29,7 +28,7 @@ def wp_operator():
     )
 
     local_resource(
-        'unit-tests',
+        'wp: unit-tests',
         cmd = 'cd components/wp-operator && go test ./...',
         deps = [
             'components/wp-operator/cmd',
@@ -37,4 +36,6 @@ def wp_operator():
             'components/wp-operator/internal',
         ],
         labels = ['wp-operator'],
+        auto_init=False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
     )

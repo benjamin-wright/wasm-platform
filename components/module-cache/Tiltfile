@@ -16,7 +16,6 @@ def module_cache():
             'components/module-cache/src',
             'components/module-cache/Cargo.toml',
         ],
-        labels = ['module-cache'],
     )
 
     helm_resource(
@@ -28,7 +27,7 @@ def module_cache():
     )
 
     local_resource(
-        'unit-tests',
+        'mc: unit-tests',
         cmd = 'cargo test -p module-cache',
         deps = ['components/module-cache/src'],
         auto_init = False,
