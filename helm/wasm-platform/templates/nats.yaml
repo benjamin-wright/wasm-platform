@@ -1,0 +1,31 @@
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsCluster
+metadata:
+  name: {{ .Release.Name }}-nats
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wasm-platform.labels" . | nindent 4 }}
+spec:
+  natsVersion: {{ .Values.nats.version | quote }}
+  jetStream:
+    storageSize: {{ .Values.nats.jetStream.storageSize }}
+---
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsAccount
+metadata:
+  name: {{ .Release.Name }}-nats-wp-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wasm-platform.labels" . | nindent 4 }}
+spec:
+  clusterRef: {{ .Release.Name }}-nats
+  users:
+    - username: {{ .Values.nats.wpOperator.username }}
+      secretName: {{ .Values.nats.wpOperator.secretName }}
+      permissions:
+        publish:
+          allow:
+            - ">"
+        subscribe:
+          allow:
+            - ">"

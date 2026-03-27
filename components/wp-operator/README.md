@@ -101,6 +101,5 @@ This requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, and `controller-g
 
 ## TODO
 
-1. Specify the exact [db-operator](https://github.com/benjamin-wright/db-operator) CRD kinds to include in the platform Helm chart for provisioning the shared PostgreSQL, Redis, and NATS instances and the wp-operator's own admin credentials.
-2. Add HTTP route bindings (`spec.routes`) in a future pass.
-3. Add scheduling bindings (`spec.schedules`) in a future pass.
+1. Add HTTP route bindings (`spec.routes`) in a future pass.
+2. Add scheduling bindings (`spec.schedules`) in a future pass.

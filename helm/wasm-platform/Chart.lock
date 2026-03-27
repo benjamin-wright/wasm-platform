@@ -1,0 +1,12 @@
+dependencies:
+- name: wp-operator
+  repository: file://../../components/wp-operator/helm
+  version: 0.1.0
+- name: execution-host
+  repository: file://../../components/execution-host/helm
+  version: 0.1.0
+- name: module-cache
+  repository: file://../../components/module-cache/helm
+  version: 0.1.0
+digest: sha256:e8eb3aded14fc8b0c8e97fb971052174d99a4bb644dae2cd0f50eae30ed57bfe
+generated: "2026-03-27T17:43:55.533994381Z"
