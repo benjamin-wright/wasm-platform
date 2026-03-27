@@ -10,6 +10,10 @@ REGISTRY_NAME    ?= $(CLUSTER_NAME)-registry.localhost
 REGISTRY_PORT    ?= 5001
 IMAGE_TAG        ?= latest
 
+.PHONY: generate
+generate: ## Run all code generators.
+	$(MAKE) -C components/wp-operator generate
+
 .PHONY: hello
 hello:
 	cargo build \

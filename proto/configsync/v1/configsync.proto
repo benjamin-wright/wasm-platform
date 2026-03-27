@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package configsync.v1;
+
+option go_package = "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync";
+
+service ConfigSync {
+  // Host requests full configuration snapshot (on startup or desync)
+  rpc RequestFullConfig(FullConfigRequest) returns (FullConfigResponse);
+
+  // Bidirectional stream: operator pushes incremental updates; host streams acks
+  rpc PushIncrementalUpdate(stream IncrementalUpdateAck) returns (stream IncrementalUpdateRequest);
+}
+
+// ── Full config flow ──────────────────────────────────────────────────────────
+
+message FullConfigRequest {
+  string host_id = 1;
+  optional int64 last_ack_timestamp = 2;
+}
+
+message FullConfigResponse {
+  FullConfig config = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+message FullConfig {
+  string version = 1;
+  repeated ApplicationConfig applications = 2;
+  int64 timestamp = 3;
+}
+
+// ── Incremental update flow ───────────────────────────────────────────────────
+
+message IncrementalUpdateRequest {
+  IncrementalConfig incremental_config = 1;
+  string target_host_id = 2;
+}
+
+message IncrementalUpdateAck {
+  string host_id = 1;
+  string version_applied = 2;
+  bool success = 3;
+  string message = 4;
+}
+
+message IncrementalConfig {
+  string version = 1;
+  repeated AppUpdate updates = 2;
+  int64 timestamp = 3;
+}
+
+message AppUpdate {
+  ApplicationConfig app_config = 1;
+  bool delete = 2;
+}
+
+// ── Shared application model ──────────────────────────────────────────────────
+
+message ApplicationConfig {
+  string name = 1;
+  string namespace = 2;
+  string module_ref = 3;
+  string topic = 4;
+  map<string, string> env = 5;
+  optional SqlConfig sql = 6;
+  optional KeyValueConfig key_value = 7;
+}
+
+message SqlConfig {
+  string database_name = 1;
+  string connection_url = 2;
+}
+
+message KeyValueConfig {
+  string prefix = 1;
+  string connection_url = 2;
+}

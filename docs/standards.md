@@ -103,6 +103,16 @@ All interaction with an external system (database, message broker, HTTP service)
 
 ---
 
+## Component Build Ownership
+
+Each component owns every aspect of its build that is not shared across components.
+
+- If a generator, tool invocation, or build step applies to exactly one component, it must live in a `Makefile` at `components/<name>/Makefile`, not in the root `Makefile`.
+- The root `Makefile` may provide a convenience target that delegates to component `Makefile`s (e.g. `$(MAKE) -C components/<name> generate`), but the authoritative target is always in the component.
+- A component `Makefile` may expose multiple targets for distinct generation steps, but must also expose a single `generate` target that depends on all of them so callers have one entry point.
+
+---
+
 ## WebAssembly
 
 
