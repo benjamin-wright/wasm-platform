@@ -1,0 +1,19 @@
+REPO_ROOT := $(shell git rev-parse --show-toplevel)
+
+.PHONY: generate
+generate: generate-crds generate-proto ## Run all code generators.
+
+.PHONY: generate-crds
+generate-crds: ## Regenerate CRD deepcopy functions via controller-gen.
+	controller-gen object paths="./..."
+
+.PHONY: generate-proto
+generate-proto: ## Regenerate Go gRPC stubs from proto/configsync/v1/configsync.proto.
+	protoc \
+		--proto_path=$(REPO_ROOT)/proto \
+		--go_out=. \
+		--go_opt=module=github.com/benjamin-wright/wasm-platform/wp-operator \
+		--go-grpc_out=. \
+		--go-grpc_opt=module=github.com/benjamin-wright/wasm-platform/wp-operator \
+		configsync/v1/configsync.proto
+	go mod tidy

@@ -81,13 +81,13 @@ The operator exposes a gRPC `ConfigSync` service that execution hosts use to sta
 
 ## Generated Code
 
-Go gRPC stubs are generated from the proto schema into `internal/grpc/configsync/` (files marked `DO NOT EDIT`). To regenerate, run from the repository root:
+Go gRPC stubs are generated from the proto schema into `internal/grpc/configsync/` (files marked `DO NOT EDIT`). CRD deepcopy functions are generated into `api/v1alpha1/` (also `DO NOT EDIT`). To regenerate all generated code, run from `components/wp-operator/`:
 
 ```sh
-make proto
+make generate
 ```
 
-This requires `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` to be installed.
+This requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, and `controller-gen` to be installed.
 
 ## Status
 
