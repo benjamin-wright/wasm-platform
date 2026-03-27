@@ -12,3 +12,8 @@ axum = "0.8.8"
 anyhow = "1.0.102"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tonic = "0.12"
+prost = "0.13"
+
+[build-dependencies]
+tonic-build = "0.12"

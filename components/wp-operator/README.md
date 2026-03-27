@@ -71,22 +71,7 @@ On `Application` delete, the operator removes the message consumer and releases 
 
 ## Config API
 
-The operator exposes a gRPC `ConfigSync` service that execution hosts use to stay in sync.
-
-### Service Definition
-
-```proto
-syntax = "proto3";
-package configsync;
-
-service ConfigSync {
-  // Client requests a full configuration (on startup or desync)
-  rpc RequestFullConfig(FullConfigRequest) returns (FullConfigResponse);
-
-  // Server streams incremental updates to the client; client streams acks back
-  rpc PushIncrementalUpdate(stream IncrementalUpdateAck) returns (stream IncrementalUpdateRequest);
-}
-```
+The operator exposes a gRPC `ConfigSync` service that execution hosts use to stay in sync. The canonical schema is at [`proto/configsync/v1/configsync.proto`](../../proto/configsync/v1/configsync.proto).
 
 ### RPCs
 
@@ -94,55 +79,15 @@ service ConfigSync {
 
 - **`PushIncrementalUpdate` (bidirectional streaming)** — after an execution host connects, it calls this RPC and keeps the stream open. The operator streams `IncrementalUpdateRequest` messages (config deltas) to the host whenever applications are created, updated, or deleted. Each message carries a version identifier, a list of `AppUpdate` entries (add/modify or delete), and a timestamp. The host streams back an `IncrementalUpdateAck` after processing each delta; if the ack reports a failure, the host should close the stream and re-request the full configuration via `RequestFullConfig`.
 
-### Key Message Types
+## Generated Code
 
-#### Full Configuration Flow
+Go gRPC stubs are generated from the proto schema into `internal/grpc/configsync/` (files marked `DO NOT EDIT`). To regenerate, run from the repository root:
 
-```proto
-message FullConfigRequest {
-  string host_id = 1;                    // Identifier for the execution host
-  optional int64 last_ack_timestamp = 2; // Timestamp of the last successfully applied config; omit or zero if unknown
-}
-
-message FullConfigResponse {
-  FullConfig config = 1; // Full configuration payload
-  bool success = 2;      // Whether the full config was successfully retrieved
-  string message = 3;    // Optional message for errors or metadata
-}
-
-message FullConfig {
-  string version = 1;                          // Config version identifier
-  repeated ApplicationConfig applications = 2; // List of all applications
-  int64 timestamp = 3;                         // Timestamp of full config generation
-}
+```sh
+make proto
 ```
 
-#### Incremental Update Flow
-
-```proto
-message IncrementalUpdateRequest {
-  IncrementalConfig incremental_config = 1; // Incremental config payload
-  string target_host_id = 2;                // Host ID receiving the update
-}
-
-message IncrementalUpdateAck {
-  string host_id = 1;         // Identifier for the execution host
-  string version_applied = 2; // The last successfully applied version
-  bool success = 3;           // True if the update was successfully applied
-  string message = 4;         // Optional details (e.g., error info)
-}
-
-message IncrementalConfig {
-  string version = 1;             // New version identifier
-  repeated AppUpdate updates = 2; // List of applications to add/modify/delete
-  int64 timestamp = 3;            // Timestamp of the incremental update
-}
-
-message AppUpdate {
-  ApplicationConfig app_config = 1; // Application config for "add" or "modify" actions
-  bool delete = 2;                  // Whether this entry removes the application
-}
-```
+This requires `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` to be installed.
 
 ## Status
 

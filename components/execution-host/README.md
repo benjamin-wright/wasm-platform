@@ -4,10 +4,12 @@ The runtime engine of the wasm platform: accepts incoming requests and loads and
 
 ## Configuration Sync
 
-The execution host syncs configuration with the wp-operator over gRPC (see the [wp-operator Config API](../wp-operator/README.md#config-api)):
+The execution host syncs configuration with the wp-operator over gRPC (see [`proto/configsync/v1/configsync.proto`](../../proto/configsync/v1/configsync.proto)):
 
 1. **On startup (or desync)** — requests the full current configuration snapshot.
 2. **Ongoing** — maintains an open bidirectional stream to receive incremental configuration deltas and acknowledge each one. On failure to apply a delta, falls back to requesting the full configuration again.
+
+Rust gRPC stubs are generated at build time via `build.rs` using `tonic-build` and included with `tonic::include_proto!("configsync.v1")`.
 
 ## Module Loading
 

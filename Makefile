@@ -10,6 +10,17 @@ REGISTRY_NAME    ?= $(CLUSTER_NAME)-registry.localhost
 REGISTRY_PORT    ?= 5001
 IMAGE_TAG        ?= latest
 
+.PHONY: proto
+proto: ## Regenerate Go gRPC stubs from proto/configsync/v1/configsync.proto.
+	protoc \
+		--proto_path=proto \
+		--go_out=components/wp-operator \
+		--go_opt=module=github.com/benjamin-wright/wasm-platform/wp-operator \
+		--go-grpc_out=components/wp-operator \
+		--go-grpc_opt=module=github.com/benjamin-wright/wasm-platform/wp-operator \
+		configsync/v1/configsync.proto
+	cd components/wp-operator && go mod tidy
+
 .PHONY: hello
 hello:
 	cargo build \

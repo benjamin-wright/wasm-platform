@@ -56,3 +56,12 @@ make cluster-down   # Tear down the cluster when done
 ## Contributing
 
 See [docs/contributions.md](docs/contributions.md) for development setup and workflow.
+
+## Open Questions
+
+| Item | Notes |
+|---|---|
+| `ApplicationConfig` connection URLs | The operator has no documented credential-resolution mechanism yet. `SqlConfig.connection_url` / `KeyValueConfig.connection_url` are placeholders — the exact form needs deciding when db-operator integration is specified (see wp-operator TODO #1). |
+| `host_id` format | Not yet specified. Could be the Pod name (Kubernetes-native) or a UUID. Must be pinned before implementation. |
+| Proto versioning strategy | `configsync/v1/` implies a future `v2` is possible. A policy (e.g. bump when a field is removed or semantics change) should be established before the service is live. |
+| gRPC service address/port | Not yet in the Helm chart or operator configuration. Needs a `values.yaml` entry and a `ConfigMap`/env-var wiring so the execution host can discover the operator's gRPC endpoint. |
