@@ -1,6 +1,6 @@
 # execution-host
 
-The runtime engine of the wasm platform: accepts incoming requests and loads and invokes WASM modules based on its current configuration.
+The runtime engine of the wasm platform: subscribes to NATS messages and invokes WASM modules based on its current configuration.
 
 ## Configuration Sync
 
@@ -12,6 +12,22 @@ The execution host syncs configuration with the wp-operator over gRPC (see [`pro
 Each application config includes the per-application database credentials provisioned by the wp-operator, so the execution host can connect directly to the shared PostgreSQL instance on behalf of each module.
 
 Rust gRPC stubs are generated at build time via `build.rs` using `tonic-build` and included with `tonic::include_proto!("configsync.v1")`.
+
+## NATS Message Handling
+
+The execution host connects to the shared NATS instance using credentials provisioned by the db-operator (via the `NatsAccount` CRD in the platform Helm chart). On each incoming NATS message:
+
+1. The payload is passed to the WASM module's `on-message` export.
+2. If the message includes a NATS reply subject, the response bytes returned by the module are published to that subject.
+
+The NATS connection is configured via environment variables injected from the db-operator-managed secret:
+
+| Variable | Description |
+|---|---|
+| `NATS_URL` | Full NATS URL, e.g. `nats://user:pass@host:4222`. Composed from the individual `NATS_USERNAME`, `NATS_PASSWORD`, `NATS_HOST`, `NATS_PORT` vars that the db-operator populates in the secret. |
+| `NATS_TOPIC` | NATS subject to subscribe to. Set in the Helm chart values (`nats.topic`). |
+
+A minimal HTTP server continues to run on port 3000 exclusively to serve `/healthz` for Kubernetes liveness and readiness probes.
 
 ## Module Loading
 

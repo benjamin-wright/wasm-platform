@@ -27,10 +27,9 @@ run: hello
 
 .PHONY: test
 test:
-	curl -X POST \
-		-H "Content-Type: application/json" \
-		-d '{"method": "GET", "path": "/hello", "body": "world"}' \
-		http://localhost:3000/execute
+	nats pub execute \
+		'{"method": "GET", "path": "/hello", "body": "world"}' \
+		--server nats://localhost:4222
 
 .PHONY: docker-build
 docker-build: hello ## Build the execution-host container image.

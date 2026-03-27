@@ -1,14 +1,10 @@
 use anyhow::Result;
-use axum::{
-    Router,
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-};
+use axum::{Router, routing::get};
+use futures_util::StreamExt as _;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use wasmtime::{
-    Engine,
-    Store,
+    Engine, Store,
     component::{Component, Linker, ResourceTable, bindgen},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -35,7 +31,10 @@ struct HostState {
 
 impl WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -83,47 +82,112 @@ async fn main() -> Result<()> {
 
     tracing::info!("execution-host starting");
 
-    let app = Router::new()
-        .route("/execute", post(execute_handler))
-        .route("/healthz", get(healthz_handler))
-        .with_state(state);
+    // NATS connection — credentials are injected from the db-operator-managed
+    // secret.  The URL is constructed here so it is never exposed as a
+    // pre-composed environment variable containing the password.
+    let nats_url = build_nats_url()?;
+    let nats_topic = std::env::var("NATS_TOPIC").unwrap_or_else(|_| "execute".to_string());
 
+    let nats_client = async_nats::connect(&nats_url).await?;
+    tracing::info!(%nats_topic, "connected to NATS");
+
+    let mut subscriber = nats_client.subscribe(nats_topic).await?;
+
+    // Bound concurrent WASM invocations to avoid resource exhaustion under
+    // high message volume.  Each permit corresponds to one in-flight guest
+    // execution; callers that cannot acquire a permit are dropped with a log.
+    let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64);
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
+
+    // Health-check HTTP server — Kubernetes liveness/readiness probes hit
+    // /healthz on port 3000.  This runs concurrently with the NATS loop.
+    let health_app = Router::new().route("/healthz", get(healthz_handler));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(listener, app).await?;
+    let health_server = axum::serve(listener, health_app);
+
+    tokio::select! {
+        result = health_server => {
+            result?;
+        }
+        _ = async {
+            while let Some(message) = subscriber.next().await {
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        tracing::warn!("max concurrent invocations reached; dropping message");
+                        continue;
+                    }
+                };
+
+                let state = Arc::clone(&state);
+                let reply = message.reply.clone();
+                let client = nats_client.clone();
+                let payload = message.payload.to_vec();
+
+                // WASM execution is CPU-bound; run it on the blocking thread
+                // pool so the async runtime stays responsive.
+                tokio::spawn(async move {
+                    let _permit = permit; // held until the spawn completes
+                    let result = tokio::task::spawn_blocking(move || {
+                        invoke_on_message(&state, &payload)
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(Some(response_body))) => {
+                            if let Some(reply_subject) = reply
+                                && let Err(err) = client
+                                    .publish(reply_subject.clone(), response_body.into())
+                                    .await
+                            {
+                                tracing::error!(
+                                    %reply_subject,
+                                    "failed to publish reply: {err:#}"
+                                );
+                            }
+                        }
+                        Ok(Ok(None)) => {}
+                        Ok(Err(err)) => {
+                            tracing::error!("invoke_on_message failed: {err:#}");
+                        }
+                        Err(join_err) => {
+                            tracing::error!("spawn_blocking panicked: {join_err}");
+                        }
+                    }
+                });
+            }
+        } => {}
+    }
+
     Ok(())
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-async fn execute_handler(
-    State(state): State<Arc<RuntimeState>>,
-    body: axum::body::Bytes,
-) -> (StatusCode, String) {
-    tracing::info!("execute_handler called");
-
-    // WASM execution is CPU-bound; run it on the blocking thread pool so the
-    // async runtime stays responsive.
-    let result = tokio::task::spawn_blocking(move || {
-        invoke_on_message(&state, &body)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(Some(response_body))) => {
-            let text = String::from_utf8_lossy(&response_body).into_owned();
-            (StatusCode::OK, text)
-        }
-        Ok(Ok(None)) => (StatusCode::OK, String::new()),
-        Ok(Err(err)) => {
-            tracing::error!("invoke_on_message failed: {err:#}");
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("error: {err:#}"))
-        }
-        Err(join_err) => {
-            tracing::error!("spawn_blocking panicked: {join_err}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-        }
+// Constructs the NATS URL from the individual credential environment variables
+// populated by the db-operator secret, falling back to a local development
+// default when none are set.  Building the URL in code (rather than via
+// shell variable interpolation in the Helm chart) keeps the composed URL —
+// which embeds the password — out of the process environment.
+fn build_nats_url() -> Result<String> {
+    if let (Ok(username), Ok(password), Ok(host), Ok(port)) = (
+        std::env::var("NATS_USERNAME"),
+        std::env::var("NATS_PASSWORD"),
+        std::env::var("NATS_HOST"),
+        std::env::var("NATS_PORT"),
+    ) {
+        return Ok(format!(
+            "nats://{}:{}@{}:{}",
+            username, password, host, port
+        ));
     }
+    Ok("nats://localhost:4222".to_string())
 }
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn healthz_handler() -> &'static str {
     tracing::info!("healthz_handler called");

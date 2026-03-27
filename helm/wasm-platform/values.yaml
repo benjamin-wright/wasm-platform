@@ -15,3 +15,6 @@ nats:
   wpOperator:
     username: wp-operator
     secretName: wp-operator-nats-credentials
+  executionHost:
+    username: execution-host
+    secretName: execution-host-nats-credentials
