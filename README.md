@@ -61,7 +61,11 @@ See [docs/contributions.md](docs/contributions.md) for development setup and wor
 
 | Item | Notes |
 |---|---|
-| `ApplicationConfig` connection URLs | The operator has no documented credential-resolution mechanism yet. `SqlConfig.connection_url` / `KeyValueConfig.connection_url` are placeholders — the exact form needs deciding when db-operator integration is specified (see wp-operator TODO #1). |
 | `host_id` format | Not yet specified. Could be the Pod name (Kubernetes-native) or a UUID. Must be pinned before implementation. |
 | Proto versioning strategy | `configsync/v1/` implies a future `v2` is possible. A policy (e.g. bump when a field is removed or semantics change) should be established before the service is live. |
 | gRPC service address/port | Not yet in the Helm chart or operator configuration. Needs a `values.yaml` entry and a `ConfigMap`/env-var wiring so the execution host can discover the operator's gRPC endpoint. |
+| Shared infrastructure deployment | How are the shared PostgreSQL, Redis, and NATS instances themselves deployed? As Helm subcharts bundled with the platform, or as separate releases managed outside the platform chart? |
+| Credential transmission security | Database credentials are passed from the wp-operator to execution hosts via gRPC. Should they be transmitted in plain text proto fields, or should the proto carry only a Kubernetes Secret name that the execution host resolves itself? |
+| PostgreSQL database deletion policy | When an `Application` is deleted, should the wp-operator drop the corresponding Postgres database and user (destroying data), retain them indefinitely, or archive them? |
+| NATS isolation granularity | Is per-application isolation enforced by subject naming alone (i.e. the declared `spec.topic`), or should the wp-operator also manage NATS accounts or JetStream stream-per-application boundaries? |
+| Redis key prefix format | What is the canonical key prefix format — `<app-name>/`, `<namespace>/<app-name>/`, or the value of `spec.keyValue` verbatim? Who is the source of truth for the prefix that is actually applied? |

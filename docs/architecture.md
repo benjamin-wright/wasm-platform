@@ -68,12 +68,12 @@ Proxy to existing database engines — don't build new ones:
 
 | CRD `kind` | Backing Implementation |
 |---|---|
-| `SQL` | Logical database in a shared **PostgreSQL** cluster (or per-tenant if isolation requires it) |
-| `KeyValue` | Namespace in **Redis** or **DragonflyDB**, or embedded **SQLite** with WAL mode for single-node deployments |
+| `SQL` | Per-application logical database and dedicated user inside the **single shared PostgreSQL** instance. The wp-operator creates the database, user, and grants. Credentials are delivered to execution hosts via the gRPC `ConfigSync` service alongside the rest of the app config. |
+| `KeyValue` | Key-prefixed isolation in the **single shared Redis** instance. The execution host prepends the application's declared prefix to every key it reads or writes. |
 
 The host functions translate the WIT `sql.query` / `kv.get` calls into actual client calls. This keeps the WASM module ignorant of the backing store.
 
-Supporting databases (PostgreSQL, Redis, etc.) are deployed and managed via the **[db-operator](https://github.com/benjamin-wright/db-operator)** — a custom Kubernetes operator for provisioning and lifecycle management of the backing data stores.
+The shared PostgreSQL, Redis, and NATS instances are deployed as part of the platform — the wp-operator does **not** need an external db-operator to provision databases. Instead, it connects directly to the shared PostgreSQL instance and manages databases, users, and permissions itself.
 
 ### Event Trigger Architecture
 
@@ -81,7 +81,7 @@ Each trigger type needs a different ingestion path:
 
 - **HTTP** — A lightweight HTTP server translates requests to NATS messages. The gateway serialises the HTTP context (method, path, headers, body) into a payload and publishes it to the application's NATS subject. The execution host delivers the payload to the module's `on-message` export and forwards any returned response bytes back to the caller.
 - **Schedule** — A cron controller watches CRDs and emits invocations at the specified schedule. Use Kubernetes `CronJob`-style leader election, or `tokio-cron-scheduler` in Rust.
-- **MessageQueue** — A consumer pool per queue (NATS JetStream or RabbitMQ) that pulls messages and dispatches to the execution host. NATS is a strong choice for its simplicity and built-in persistence.
+- **MessageQueue** — A consumer pool per queue on the **single shared NATS** instance. Applications are isolated by NATS subject prefix; the execution host subscribes only to the subjects declared for each application. NATS JetStream is the strong choice for built-in persistence.
 
 ### Graceful Scaling
 
@@ -108,13 +108,13 @@ When a new config is received, each execution host checks the centralized module
 │  │  • Watches        │  (on startup/ │  │      Pod (×N)        │   │ │
 │  │    Application    │   desync)     │  │  ┌────────────────┐  │   │ │
 │  │    CRDs           │               │  │  │ execution-host │  │   │ │
-│  │  • Provisions DBs │               │  │  │                │  │   │ │
-│  │  • Registers      │               │  │  │ Wasmtime Pool  │  │   │ │
-│  │    routes/triggers│               │  │  │                │  │   │ │
-│  │  • gRPC ConfigSync│               │  │  │ Host Fn Layer  │  │   │ │
-│  └──────────────────┘               │  │  └───────┬────────┘  │   │ │
-│                                     │  └──────────┼───────────┘   │ │
-│                                     └─────────────┼───────────────┘ │
+│  │  • Manages DBs,   │               │  │  │                │  │   │ │
+│  │    users, creds   │               │  │  │ Wasmtime Pool  │  │   │ │
+│  │    in shared PG   │               │  │  │                │  │   │ │
+│  │  • Registers      │               │  │  │ Host Fn Layer  │  │   │ │
+│  │    routes/triggers│               │  │  └───────┬────────┘  │   │ │
+│  │  • gRPC ConfigSync│               │  └──────────┼───────────┘   │ │
+│  └──────────────────┘               └─────────────┼───────────────┘ │
 │                         ┌───────────◀─────────────┘                  │
 │                         │     check / push compiled artifact          │
 │                         ▼                                             │
@@ -128,15 +128,19 @@ When a new config is received, each execution host checks the centralized module
 │  └──────────────────────────────┘                                    │
 │                                                                      │
 │  ┌─────────────────────┐      ┌────────────────────────────────────┐ │
-│  │  Gateway (Envoy      │      │  Data Layer                        │ │
-│  │  or custom)          │      │  ┌──────────────┐                 │ │
-│  │  • HTTP translation  │      │  │  PostgreSQL   │                 │ │
-│  └─────────────────────┘      │  │  (SQL dbs)    │                 │ │
-│                                │  ├──────────────┤                 │ │
-│  ┌─────────────────────┐      │  │  Redis/NATS   │                 │ │
-│  │  Trigger Layer       │      │  │  (KV + MQ)    │                 │ │
-│  │  • Cron scheduler    │      │  └──────────────┘                 │ │
-│  └─────────────────────┘      └────────────────────────────────────┘ │
+│  │  Gateway (Envoy      │      │  Shared Data Layer                 │ │
+│  │  or custom)          │      │  ┌──────────────────────────────┐ │ │
+│  │  • HTTP translation  │      │  │  PostgreSQL (single shared)  │ │ │
+│  └─────────────────────┘      │  │  Per-app DB + user managed    │ │ │
+│                                │  │  by wp-operator               │ │ │
+│  ┌─────────────────────┐      │  ├──────────────────────────────┤ │ │
+│  │  Trigger Layer       │      │  │  Redis (single shared)       │ │ │
+│  │  • Cron scheduler    │      │  │  Isolated by key prefix      │ │ │
+│  └─────────────────────┘      │  ├──────────────────────────────┤ │ │
+│                                │  │  NATS (single shared)        │ │ │
+│                                │  │  Isolated by subject prefix  │ │ │
+│                                │  └──────────────────────────────┘ │ │
+│                                └────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,13 +148,13 @@ When a new config is received, each execution host checks the centralized module
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **WP Operator** | Go | Reconciles `Application` CRDs. Provisions databases and registers routes in the gateway. Exposes a gRPC `ConfigSync` service for execution hosts to fetch full configuration snapshots and receive incremental updates. |
-| **Execution Host** | Rust | Deployed as a Deployment. Syncs configuration from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages, manages instance pools, exposes host functions (SQL, KV), executes invocations. |
+| **WP Operator** | Go | Reconciles `Application` CRDs. Creates and manages per-application databases, users, and permissions inside the shared PostgreSQL instance. Passes database credentials to execution hosts via the gRPC `ConfigSync` service alongside app configs. Registers routes in the gateway. |
+| **Execution Host** | Rust | Deployed as a Deployment. Syncs configuration (including per-app database credentials) from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages (isolated by subject prefix), manages instance pools, exposes host functions (SQL with per-app credentials, KV with per-app key prefix), executes invocations. |
 | **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
 | **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
 | **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |
 | **Module Cache** | Rust | Centralized cache service. Stores and retrieves AOT-compiled module artifacts keyed by digest, architecture, and Wasmtime version. Execution hosts check the cache on config load, and push newly compiled artifacts back after a cache miss. |
-| **Data Layer** | Managed services | PostgreSQL for SQL databases, Redis/Dragonfly for KV, NATS JetStream for message queuing. |
+| **Data Layer** | Managed services | Single shared PostgreSQL instance (per-app databases managed by wp-operator), single shared Redis (per-app key-prefix isolation), single shared NATS (per-app subject-prefix isolation). |
 
 ### Invocation Flow (HTTP)
 

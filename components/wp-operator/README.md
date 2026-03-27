@@ -49,25 +49,25 @@ env:
 
 | Type | Required | Description |
 |------|----------|-------------|
-| string | no | Logical database name. Exposed to the module via the `sql` host import as the `db` argument. Must correspond to a provisioned database managed by the [db-operator](https://github.com/benjamin-wright/db-operator). Omit to disable SQL access entirely. |
+| string | no | Logical database name. The wp-operator creates a dedicated database and user with this name inside the shared PostgreSQL instance, and provisions the necessary permissions. Connection credentials are passed to execution hosts via the gRPC `ConfigSync` service. Exposed to the module via the `sql` host import as the `db` argument. Omit to disable SQL access entirely. |
 
 #### `spec.keyValue` (optional)
 
 | Type | Required | Description |
 |------|----------|-------------|
-| string | no | Key prefix for the module's key-value namespace. Keys written by the module are namespaced by `<namespace>/<prefix>/` to prevent conflicts between applications. Must correspond to a provisioned KV store managed by the [db-operator](https://github.com/benjamin-wright/db-operator). Omit to disable KV access entirely. |
+| string | no | Key prefix for the module's key-value namespace inside the shared Redis instance. The execution host prepends this value to every key it reads or writes on behalf of the module, preventing conflicts between applications. The exact prefix format applied at runtime is still under discussion (see open questions in the [README](../../README.md)). Omit to disable KV access entirely. |
 
 ## Operator Behaviour
 
 On `Application` create or update, the operator:
 
 1. Resolves the OCI digest for `spec.module` if a mutable tag is given, and writes the resolved digest to the status.
-2. If `spec.sql` is set, ensures the named database exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
-3. If `spec.keyValue` is set, ensures the KV store exists (via [db-operator](https://github.com/benjamin-wright/db-operator) resources) and that credentials are provisioned.
+2. If `spec.sql` is set, creates a dedicated database and user with the given name inside the shared PostgreSQL instance (if they do not already exist), grants the appropriate permissions, and retrieves the connection credentials.
+3. If `spec.keyValue` is set, validates the key prefix and records it for inclusion in the app config (no external provisioning required — isolation is enforced by the execution host at runtime).
 4. Creates or updates the message consumer configuration for `spec.topic`.
-5. Pushes an incremental config update (env vars + binding references + resolved module reference) to all connected execution hosts via the gRPC `PushIncrementalUpdate` RPC so they can load the new module.
+5. Pushes an incremental config update (env vars + binding references + database credentials + resolved module reference) to all connected execution hosts via the gRPC `PushIncrementalUpdate` RPC so they can load the new module.
 
-On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and KV bindings so data is not lost on accidental deletion.
+On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and user so data is not lost on accidental deletion.
 
 ## Config API
 
@@ -98,6 +98,6 @@ This requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, and `controller-g
 
 ## TODO
 
-1. Specify the exact [db-operator](https://github.com/benjamin-wright/db-operator) resource kinds used to request SQL and KV instances.
+1. Specify how the wp-operator connects to the shared PostgreSQL instance (connection string, credentials, and Helm configuration).
 2. Add HTTP route bindings (`spec.routes`) in a future pass.
 3. Add scheduling bindings (`spec.schedules`) in a future pass.
