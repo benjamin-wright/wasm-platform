@@ -73,7 +73,7 @@ Proxy to existing database engines — don't build new ones:
 
 The host functions translate the WIT `sql.query` / `kv.get` calls into actual client calls. This keeps the WASM module ignorant of the backing store.
 
-The shared PostgreSQL, Redis, and NATS instances are deployed as part of the platform — the wp-operator does **not** need an external db-operator to provision databases. Instead, it connects directly to the shared PostgreSQL instance and manages databases, users, and permissions itself.
+The shared PostgreSQL, Redis, and NATS instances are deployed as part of the platform via CRD instances for the **[db-operator](https://github.com/benjamin-wright/db-operator)** included in the platform Helm chart. The db-operator provisions these shared instances and creates the credentials the wp-operator uses to connect to them. The wp-operator then manages per-application databases, users, and permissions within the shared PostgreSQL instance, and passes per-application credentials to execution hosts in plain text via the gRPC `ConfigSync` service.
 
 ### Event Trigger Architecture
 
@@ -148,13 +148,13 @@ When a new config is received, each execution host checks the centralized module
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **WP Operator** | Go | Reconciles `Application` CRDs. Creates and manages per-application databases, users, and permissions inside the shared PostgreSQL instance. Passes database credentials to execution hosts via the gRPC `ConfigSync` service alongside app configs. Registers routes in the gateway. |
-| **Execution Host** | Rust | Deployed as a Deployment. Syncs configuration (including per-app database credentials) from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages (isolated by subject prefix), manages instance pools, exposes host functions (SQL with per-app credentials, KV with per-app key prefix), executes invocations. |
+| **WP Operator** | Go | Reconciles `Application` CRDs. Creates and manages per-application databases, users, and permissions inside the shared PostgreSQL instance (credentials from db-operator). Passes per-application database credentials in plain text to execution hosts via the gRPC `ConfigSync` service alongside app configs. Registers routes in the gateway. On `Application` deletion, decrements a Redis reference count for the database; when the count reaches zero a TTL is set, and the database is dropped only when the TTL elapses. |
+| **Execution Host** | Rust | Deployed as a Deployment. Uses the Pod name as its `host_id`. Syncs configuration (including per-app database credentials) from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages (isolated by `spec.topic`), manages instance pools, exposes host functions (SQL with per-app credentials, KV with `<namespace>/<spec.keyValue>/` prefix), executes invocations. |
 | **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
 | **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
 | **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |
 | **Module Cache** | Rust | Centralized cache service. Stores and retrieves AOT-compiled module artifacts keyed by digest, architecture, and Wasmtime version. Execution hosts check the cache on config load, and push newly compiled artifacts back after a cache miss. |
-| **Data Layer** | Managed services | Single shared PostgreSQL instance (per-app databases managed by wp-operator), single shared Redis (per-app key-prefix isolation), single shared NATS (per-app subject-prefix isolation). |
+| **Data Layer** | Managed services | Single shared PostgreSQL instance (per-app databases managed by wp-operator), single shared Redis (per-app key-prefix isolation, also used by wp-operator for reference-count tracking), single shared NATS (per-app subject isolation). All three instances are provisioned by the **[db-operator](https://github.com/benjamin-wright/db-operator)** via CRDs in the platform Helm chart. |
 
 ### Invocation Flow (HTTP)
 

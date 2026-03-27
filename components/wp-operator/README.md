@@ -55,7 +55,7 @@ env:
 
 | Type | Required | Description |
 |------|----------|-------------|
-| string | no | Key prefix for the module's key-value namespace inside the shared Redis instance. The execution host prepends this value to every key it reads or writes on behalf of the module, preventing conflicts between applications. The exact prefix format applied at runtime is still under discussion (see open questions in the [README](../../README.md)). Omit to disable KV access entirely. |
+| string | no | Key prefix for the module's key-value namespace inside the shared Redis instance. The execution host prepends `<namespace>/<spec.keyValue>/` to every key it reads or writes on behalf of the module, preventing conflicts between applications. Applications in the same namespace that declare the same `spec.keyValue` intentionally share keys, supporting the FaaS pattern of composing independent functions. Omit to disable KV access entirely. |
 
 ## Operator Behaviour
 
@@ -67,7 +67,10 @@ On `Application` create or update, the operator:
 4. Creates or updates the message consumer configuration for `spec.topic`.
 5. Pushes an incremental config update (env vars + binding references + database credentials + resolved module reference) to all connected execution hosts via the gRPC `PushIncrementalUpdate` RPC so they can load the new module.
 
-On `Application` delete, the operator removes the message consumer and releases (but does not destroy) the database and user so data is not lost on accidental deletion.
+On `Application` delete, the operator:
+
+1. Removes the NATS message consumer for `spec.topic`.
+2. If `spec.sql` is set, decrements a Redis reference count for the named database. If the count reaches zero, sets a TTL on the counter key. When the TTL elapses, the operator drops the database and its user. This prevents accidental data loss on spurious deletes while still recovering storage over time.
 
 ## Config API
 
@@ -98,6 +101,6 @@ This requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, and `controller-g
 
 ## TODO
 
-1. Specify how the wp-operator connects to the shared PostgreSQL instance (connection string, credentials, and Helm configuration).
+1. Specify the exact [db-operator](https://github.com/benjamin-wright/db-operator) CRD kinds to include in the platform Helm chart for provisioning the shared PostgreSQL, Redis, and NATS instances and the wp-operator's own admin credentials.
 2. Add HTTP route bindings (`spec.routes`) in a future pass.
 3. Add scheduling bindings (`spec.schedules`) in a future pass.

@@ -25,7 +25,7 @@ When the execution host receives a new or updated application config (either fro
 
 The execution host enforces per-application data isolation for the shared Redis and NATS instances:
 
-- **Redis** — every key read or written for an application is prefixed with the application's `spec.keyValue` prefix. The module sees unqualified keys; the host transparently applies the prefix on all Redis operations. The exact prefix format is still under discussion (see open questions in the project README).
+- **Redis** — every key read or written for an application is prefixed with `<namespace>/<spec.keyValue>/`. The module sees unqualified keys; the host transparently applies the prefix on all Redis operations. Applications in the same namespace that share a `spec.keyValue` value intentionally share key-space.
 - **NATS** — each application subscribes and publishes only to the subject declared in its config (`spec.topic`). The execution host binds each module instance to its own NATS subject.
 
 ## TODO
