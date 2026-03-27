@@ -1,0 +1,17 @@
+postgres:
+  version: "16"
+  storageSize: 1Gi
+
+redis:
+  storageSize: 1Gi
+  wpOperator:
+    username: wp-operator
+    secretName: wp-operator-redis-credentials
+
+nats:
+  version: "2.10"
+  jetStream:
+    storageSize: 1Gi
+  wpOperator:
+    username: wp-operator
+    secretName: wp-operator-nats-credentials

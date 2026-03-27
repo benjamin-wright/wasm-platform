@@ -1,0 +1,16 @@
+apiVersion: v2
+name: wasm-platform
+description: Platform umbrella chart — deploys the shared data layer (PostgreSQL, Redis, NATS) and all platform components.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: wp-operator
+    version: "0.1.0"
+    repository: "file://../../components/wp-operator/helm"
+  - name: execution-host
+    version: "0.1.0"
+    repository: "file://../../components/execution-host/helm"
+  - name: module-cache
+    version: "0.1.0"
+    repository: "file://../../components/module-cache/helm"
