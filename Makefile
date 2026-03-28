@@ -25,12 +25,6 @@ hello:
 run: hello
 	cargo run --manifest-path components/execution-host/Cargo.toml
 
-.PHONY: test
-test:
-	nats pub execute \
-		'{"method": "GET", "path": "/hello", "body": "world"}' \
-		--server nats://localhost:4222
-
 .PHONY: docker-build
 docker-build: hello ## Build the execution-host container image.
 	docker build \
