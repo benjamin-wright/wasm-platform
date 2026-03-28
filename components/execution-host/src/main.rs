@@ -2,7 +2,6 @@ use anyhow::Result;
 use axum::{Router, routing::get};
 use futures_util::StreamExt as _;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker, ResourceTable, bindgen},
@@ -86,21 +85,22 @@ async fn main() -> Result<()> {
     // secret.  The URL is constructed here so it is never exposed as a
     // pre-composed environment variable containing the password.
     let nats_url = build_nats_url()?;
-    let nats_topic = std::env::var("NATS_TOPIC").unwrap_or_else(|_| "execute".to_string());
+    // Subscribe to all subjects under the configured prefix using the NATS `>`
+    // wildcard.  Each application publishes to `{prefix}{spec.topic}`, so a
+    // single wildcard subscription covers all deployed apps while reserving
+    // other subject namespaces for other platform components.
+    let topic_prefix = std::env::var("NATS_TOPIC_PREFIX").unwrap_or_else(|_| "fn.".to_string());
+    let nats_subject = format!("{}>", topic_prefix);
 
     let nats_client = async_nats::connect(&nats_url).await?;
-    tracing::info!(%nats_topic, "connected to NATS");
+    tracing::info!(%nats_subject, "connected to NATS");
 
-    let mut subscriber = nats_client.subscribe(nats_topic).await?;
+    let subscriber = nats_client.subscribe(nats_subject).await?;
 
-    // Bound concurrent WASM invocations to avoid resource exhaustion under
-    // high message volume.  Each permit corresponds to one in-flight guest
-    // execution; callers that cannot acquire a permit are dropped with a log.
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(64);
-    let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
     // Health-check HTTP server — Kubernetes liveness/readiness probes hit
     // /healthz on port 3000.  This runs concurrently with the NATS loop.
@@ -112,54 +112,46 @@ async fn main() -> Result<()> {
         result = health_server => {
             result?;
         }
-        _ = async {
-            while let Some(message) = subscriber.next().await {
-                let permit = match semaphore.clone().try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        tracing::warn!("max concurrent invocations reached; dropping message");
-                        continue;
-                    }
-                };
-
-                let state = Arc::clone(&state);
+        // for_each_concurrent drives the subscriber stream with a built-in
+        // concurrency limit; it back-pressures the NATS client when all slots
+        // are occupied, preventing unbounded resource consumption.
+        _ = subscriber.for_each_concurrent(max_concurrent, |message| {
+            let state = Arc::clone(&state);
+            let client = nats_client.clone();
+            async move {
                 let reply = message.reply.clone();
-                let client = nats_client.clone();
                 let payload = message.payload.to_vec();
 
                 // WASM execution is CPU-bound; run it on the blocking thread
                 // pool so the async runtime stays responsive.
-                tokio::spawn(async move {
-                    let _permit = permit; // held until the spawn completes
-                    let result = tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &payload)
-                    })
-                    .await;
+                let result = tokio::task::spawn_blocking(move || {
+                    invoke_on_message(&state, &payload)
+                })
+                .await;
 
-                    match result {
-                        Ok(Ok(Some(response_body))) => {
-                            if let Some(reply_subject) = reply
-                                && let Err(err) = client
-                                    .publish(reply_subject.clone(), response_body.into())
-                                    .await
-                            {
-                                tracing::error!(
-                                    %reply_subject,
-                                    "failed to publish reply: {err:#}"
-                                );
-                            }
-                        }
-                        Ok(Ok(None)) => {}
-                        Ok(Err(err)) => {
-                            tracing::error!("invoke_on_message failed: {err:#}");
-                        }
-                        Err(join_err) => {
-                            tracing::error!("spawn_blocking panicked: {join_err}");
+                match result {
+                    Ok(Ok(Some(response_body))) => {
+                        if let Some(reply_subject) = reply
+                            && let Err(err) = client
+                                .publish(reply_subject.clone(), response_body.into())
+                                .await
+                        {
+                            tracing::error!(
+                                %reply_subject,
+                                "failed to publish reply: {err:#}"
+                            );
                         }
                     }
-                });
+                    Ok(Ok(None)) => {}
+                    Ok(Err(err)) => {
+                        tracing::error!("invoke_on_message failed: {err:#}");
+                    }
+                    Err(join_err) => {
+                        tracing::error!("spawn_blocking panicked: {join_err}");
+                    }
+                }
             }
-        } => {}
+        }) => {}
     }
 
     Ok(())

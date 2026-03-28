@@ -26,8 +26,8 @@ spec:
           env:
             - name: WASM_MODULE_PATH
               value: /opt/wasm/hello_world.cwasm
-            - name: NATS_TOPIC
-              value: {{ .Values.nats.topic }}
+            - name: NATS_TOPIC_PREFIX
+              value: {{ .Values.nats.topicPrefix | quote }}
           envFrom:
             - secretRef:
                 name: {{ .Values.nats.secretName }}

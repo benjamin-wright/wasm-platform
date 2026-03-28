@@ -15,4 +15,4 @@ replicaCount: 1
 
 nats:
   secretName: execution-host-nats-credentials
-  topic: execute
+  topicPrefix: "fn."
