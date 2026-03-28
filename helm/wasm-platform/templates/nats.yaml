@@ -29,3 +29,23 @@ spec:
         subscribe:
           allow:
             - ">"
+---
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsAccount
+metadata:
+  name: {{ .Release.Name }}-nats-execution-host
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wasm-platform.labels" . | nindent 4 }}
+spec:
+  clusterRef: {{ .Release.Name }}-nats
+  users:
+    - username: {{ .Values.nats.executionHost.username }}
+      secretName: {{ .Values.nats.executionHost.secretName }}
+      permissions:
+        publish:
+          allow:
+            - ">"
+        subscribe:
+          allow:
+            - ">"

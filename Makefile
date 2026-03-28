@@ -25,13 +25,6 @@ hello:
 run: hello
 	cargo run --manifest-path components/execution-host/Cargo.toml
 
-.PHONY: test
-test:
-	curl -X POST \
-		-H "Content-Type: application/json" \
-		-d '{"method": "GET", "path": "/hello", "body": "world"}' \
-		http://localhost:3000/execute
-
 .PHONY: docker-build
 docker-build: hello ## Build the execution-host container image.
 	docker build \

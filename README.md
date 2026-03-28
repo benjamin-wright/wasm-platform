@@ -4,13 +4,13 @@ A serverless application platform that runs WebAssembly guest modules on Kuberne
 
 ## Current Status — Phase 0 (Proof of Concept)
 
-The project is in its earliest phase: a single Rust binary that loads a `.wasm` guest module and invokes it over HTTP. SQL and KV host functions are defined in the WIT interface but not yet wired to backing stores.
+The project is in its earliest phase: a single Rust binary that loads a `.wasm` guest module and invokes it on incoming NATS messages. SQL and KV host functions are defined in the WIT interface but not yet wired to backing stores.
 
 ## Components
 
 | Component | Path | Description |
 |---|---|---|
-| **Execution Host** | `components/execution-host/` | Rust binary — syncs config from the wp-operator via gRPC, checks the module cache, pulls and AOT-compiles WASM modules on a cache miss, exposes an HTTP endpoint, and calls guest exports. |
+| **Execution Host** | `components/execution-host/` | Rust binary — syncs config from the wp-operator via gRPC, checks the module cache, pulls and AOT-compiles WASM modules on a cache miss, subscribes to a NATS subject, and calls guest exports on each message. |
 | **WP Operator** | `components/wp-operator/` | Go operator — watches `Application` CRDs, reconciles database bindings and message subscriptions, and syncs config to execution hosts via a gRPC `ConfigSync` service. |
 | **Module Cache** | `components/module-cache/` | Centralized cache for AOT-compiled WASM artifacts, keyed by digest, architecture, and Wasmtime version. |
 | **Hello World** | `examples/hello-world/` | Minimal guest module that implements the `application` world and echoes back request details. |
@@ -28,13 +28,13 @@ The project is in its earliest phase: a single Rust binary that loads a `.wasm` 
 ### Run Locally
 
 ```sh
-make run        # Builds the hello-world guest, then starts the execution host on :3000
+make run        # Builds the hello-world guest, then starts the execution host (requires a local NATS server)
 ```
 
 In a separate terminal:
 
 ```sh
-make test       # Sends a sample POST to /execute and prints the response
+make test       # Publishes a sample message to the 'execute' NATS subject (requires the nats CLI)
 ```
 
 ### Local Kubernetes Cluster

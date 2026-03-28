@@ -49,7 +49,7 @@ def execution_host():
 
     local_resource(
         'eh: int-tests',
-        cmd = 'curl -sfvvv -X POST -H "Content-Type: application/json" -d \'{"method": "GET", "path": "/hello", "body": "world"}\' http://localhost:3000/execute',
+        cmd = 'nats pub fn.hello \'{"method": "GET", "path": "/hello", "body": "world"}\' --server nats://localhost:4222',
         resource_deps = ['execution-host'],
         auto_init=False,
         trigger_mode = TRIGGER_MODE_MANUAL,
