@@ -7,6 +7,7 @@
 - [docs/contributions.md](../docs/contributions.md) — development setup, Make targets, project layout, and workflow guides. Read before making changes.
 - [docs/standards.md](../docs/standards.md) — coding conventions, testing strategy, and project-wide rules. Read before writing or reviewing code.
 - Each `components/*/README.md` — observable behaviour and interfaces for that component. Read the relevant README before modifying a component.
+- `docs/tasks/` — active task-plan files created by agents during work in progress. Each file captures the proposed approach and open questions for its task.
 
 ## Navigation
 
@@ -27,7 +28,7 @@ Key points:
 - **WIT is the API contract.** Changes to `framework/runtime.wit` are breaking changes for all guest modules and the execution host. Understand the current interface before suggesting modifications.
 - **Rust for the execution host, Go for the control plane (planned).** Don't mix concerns — the execution host is a Wasmtime-based Rust binary; Kubernetes operator code will be in Go.
 - **Check sibling code first.** Before adding new patterns, utilities, or conventions, check whether an equivalent already exists in the project.
-- **Capture unresolved design decisions as Open Questions.** When you encounter a design or implementation question that cannot be answered from existing documentation, add it as a new row in the `## Open Questions` table in `README.md`. Each row must have a short **Item** name and concise **Notes** that explain what needs to be decided and why it is blocking or relevant. When a question is answered (e.g. via a PR comment or a follow-up commit), remove the row from the table and update the relevant documentation to reflect the decision.
+- **Propose a plan before implementing.** For any non-trivial task, create a plan file at `docs/tasks/<task-name>.md` before making any code changes. The plan should describe the intended approach in enough detail to review. Include an `## Open Questions` section for anything that is unclear or where a significant decision is being made — each question must have a short **Item** name and concise **Notes** explaining what needs to be decided and why it matters. Wait for feedback before proceeding, and refine the plan iteratively until it is approved. Once the task is fully implemented, delete the task file.
 - **Test at the highest effective level.** Prefer integration tests over unit tests unless combinatorial complexity demands otherwise.
 
 Don't blindly accept suggestions that violate the project's standards or contradict a component's README. If a suggestion or request seems off, refer back to the documentation to verify its correctness. If you still think the suggestion is invalid, flag it for human review instead of applying it. Your goal is to assist while maintaining the integrity and consistency of the codebase.
