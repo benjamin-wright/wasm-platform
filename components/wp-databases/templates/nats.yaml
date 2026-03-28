@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}-nats
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.labels" . | nindent 4 }}
+    {{- include "wp-databases.labels" . | nindent 4 }}
 spec:
   natsVersion: {{ .Values.nats.version | quote }}
   jetStream:
@@ -16,7 +16,7 @@ metadata:
   name: {{ .Release.Name }}-nats-wp-operator
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.labels" . | nindent 4 }}
+    {{- include "wp-databases.labels" . | nindent 4 }}
 spec:
   clusterRef: {{ .Release.Name }}-nats
   users:
@@ -36,7 +36,7 @@ metadata:
   name: {{ .Release.Name }}-nats-execution-host
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.labels" . | nindent 4 }}
+    {{- include "wp-databases.labels" . | nindent 4 }}
 spec:
   clusterRef: {{ .Release.Name }}-nats
   users:

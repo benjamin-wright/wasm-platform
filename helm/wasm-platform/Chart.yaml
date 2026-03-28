@@ -5,6 +5,9 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 dependencies:
+  - name: wp-databases
+    version: "0.1.0"
+    repository: "file://../../components/wp-databases"
   - name: wp-operator
     version: "0.1.0"
     repository: "file://../../components/wp-operator/helm"

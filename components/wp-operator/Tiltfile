@@ -2,7 +2,7 @@ load('ext://helm_resource', 'helm_resource')
 
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 
-def wp_operator():
+def wp_operator(namespace):
     custom_build(
         IMAGE_REF,
         command = (
@@ -25,6 +25,7 @@ def wp_operator():
         image_deps = [IMAGE_REF],
         image_keys = [('image.repository', 'image.tag')],
         labels = ['wp-operator'],
+        namespace=namespace,
     )
 
     local_resource(

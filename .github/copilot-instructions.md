@@ -6,6 +6,7 @@
 - [docs/architecture.md](../docs/architecture.md) — technology decisions, system design, component responsibilities, and design constraints. Read before making design-level changes.
 - [docs/contributions.md](../docs/contributions.md) — development setup, Make targets, project layout, and workflow guides. Read before making changes.
 - [docs/standards.md](../docs/standards.md) — coding conventions, testing strategy, and project-wide rules. Read before writing or reviewing code.
+- [docs/todo.md](../docs/todo.md) — the active implementation plan. All planned work lives here. Read before starting any implementation task.
 - Each `components/*/README.md` — observable behaviour and interfaces for that component. Read the relevant README before modifying a component.
 - `docs/tasks/` — active task-plan files created by agents during work in progress. Each file captures the proposed approach and open questions for its task.
 
@@ -24,11 +25,12 @@ You are an AI agent assisting with code generation and review in this repository
 
 Key points:
 
+- **Always write plans before implementing.** Before writing any code, write a plan to `docs/todo.md`. If a plan already exists there, read it first and update it as needed. Never start implementation without a plan recorded in that file.
 - **Never write generated files by hand.** Lock files (`go.sum`, `Cargo.lock`), generated client stubs, and any file marked `// Code generated … DO NOT EDIT.` are owned by tooling — not by you. Run the relevant tool (`go mod tidy`, `go generate`, `cargo`) when possible. If you cannot run the tool in the current environment, note the exact command in your response so the developer or reviewer can run it.
 - **WIT is the API contract.** Changes to `framework/runtime.wit` are breaking changes for all guest modules and the execution host. Understand the current interface before suggesting modifications.
 - **Rust for the execution host, Go for the control plane (planned).** Don't mix concerns — the execution host is a Wasmtime-based Rust binary; Kubernetes operator code will be in Go.
 - **Check sibling code first.** Before adding new patterns, utilities, or conventions, check whether an equivalent already exists in the project.
-- **Propose a plan before implementing.** For any non-trivial task, create a plan file at `docs/tasks/<task-name>.md` before making any code changes. The plan should describe the intended approach in enough detail to review. Include an `## Open Questions` section for anything that is unclear or where a significant decision is being made — each question must have a short **Item** name and concise **Notes** explaining what needs to be decided and why it matters. Wait for feedback before proceeding, and refine the plan iteratively until it is approved. Once the task is fully implemented, delete the task file.
 - **Test at the highest effective level.** Prefer integration tests over unit tests unless combinatorial complexity demands otherwise.
+- **Interview me about any ambiguity or new technical decisions** I fully expect that my requests will not contain all necessary context. Quiz me to identify gaps in your context and assumptions, providing options and recommendations when you do. If you identify a gap that you cannot fill, flag it for human review instead of making an assumption.
 
 Don't blindly accept suggestions that violate the project's standards or contradict a component's README. If a suggestion or request seems off, refer back to the documentation to verify its correctness. If you still think the suggestion is invalid, flag it for human review instead of applying it. Your goal is to assist while maintaining the integrity and consistency of the codebase.

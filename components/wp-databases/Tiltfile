@@ -1,0 +1,23 @@
+load('ext://helm_resource', 'helm_resource')
+load('../../tilt/namespace.Tiltfile', 'k8s_namespace')
+
+def db_operator(namespace):
+    k8s_namespace(namespace)
+    helm_resource(
+        'db-operator',
+        namespace=namespace,
+        chart='oci://docker.io/benwright/db-operator-chart:v1.0.6',
+        labels=['db-operator'],
+        flags=[
+            '--set=image.repository=docker.io/benwright/db-operator',
+            '--set=image.tag=v1.0.6',
+        ],
+    )
+
+def wp_databases(namespace):
+    helm_resource(
+        'wp-databases',
+        chart='components/wp-databases',
+        namespace=namespace,
+        labels=['wp-databases'],
+    )

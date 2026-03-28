@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}-redis
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.labels" . | nindent 4 }}
+    {{- include "wp-databases.labels" . | nindent 4 }}
 spec:
   storageSize: {{ .Values.redis.storageSize }}
 ---
@@ -14,7 +14,7 @@ metadata:
   name: {{ .Release.Name }}-redis-wp-operator
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.labels" . | nindent 4 }}
+    {{- include "wp-databases.labels" . | nindent 4 }}
 spec:
   databaseRef: {{ .Release.Name }}-redis
   username: {{ .Values.redis.wpOperator.username }}

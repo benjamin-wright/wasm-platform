@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}-postgres
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.labels" . | nindent 4 }}
+    {{- include "wp-databases.labels" . | nindent 4 }}
 spec:
   postgresVersion: {{ .Values.postgres.version | quote }}
   storageSize: {{ .Values.postgres.storageSize }}

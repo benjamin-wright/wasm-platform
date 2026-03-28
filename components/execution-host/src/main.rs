@@ -82,9 +82,9 @@ async fn main() -> Result<()> {
     tracing::info!("execution-host starting");
 
     // NATS connection — credentials are injected from the db-operator-managed
-    // secret.  The URL is constructed here so it is never exposed as a
-    // pre-composed environment variable containing the password.
-    let nats_url = build_nats_url()?;
+    // secret.  Credentials are passed via ConnectOptions rather than embedded
+    // in the URL; async-nats 0.46 does not parse user:pass from URL strings.
+    let (nats_url, nats_opts) = build_nats_connect_config()?;
     // Subscribe to all subjects under the configured prefix using the NATS `>`
     // wildcard.  Each application publishes to `{prefix}{spec.topic}`, so a
     // single wildcard subscription covers all deployed apps while reserving
@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
     let topic_prefix = std::env::var("NATS_TOPIC_PREFIX").unwrap_or_else(|_| "fn.".to_string());
     let nats_subject = format!("{}>", topic_prefix);
 
-    let nats_client = async_nats::connect(&nats_url).await?;
+    let nats_client = nats_opts.connect(&nats_url).await?;
     tracing::info!(%nats_subject, "connected to NATS");
 
     let subscriber = nats_client.subscribe(nats_subject).await?;
@@ -159,24 +159,23 @@ async fn main() -> Result<()> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Constructs the NATS URL from the individual credential environment variables
-// populated by the db-operator secret, falling back to a local development
-// default when none are set.  Building the URL in code (rather than via
-// shell variable interpolation in the Helm chart) keeps the composed URL —
-// which embeds the password — out of the process environment.
-fn build_nats_url() -> Result<String> {
+// Returns the NATS server URL and a ConnectOptions configured with credentials
+// from the db-operator-managed secret, falling back to unauthenticated
+// localhost for local development.  Credentials are passed through
+// ConnectOptions rather than embedded in the URL; async-nats 0.46 does not
+// parse user:pass from a URL string.
+fn build_nats_connect_config() -> Result<(String, async_nats::ConnectOptions)> {
     if let (Ok(username), Ok(password), Ok(host), Ok(port)) = (
         std::env::var("NATS_USERNAME"),
         std::env::var("NATS_PASSWORD"),
         std::env::var("NATS_HOST"),
         std::env::var("NATS_PORT"),
     ) {
-        return Ok(format!(
-            "nats://{}:{}@{}:{}",
-            username, password, host, port
-        ));
+        let url = format!("nats://{}:{}", host, port);
+        let opts = async_nats::ConnectOptions::new().user_and_password(username, password);
+        return Ok((url, opts));
     }
-    Ok("nats://localhost:4222".to_string())
+    Ok(("nats://localhost:4222".to_string(), async_nats::ConnectOptions::new()))
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
