@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Wire the gRPC ConfigSync service defined in `configsync.proto` end-to-end: implement the server in the Go operator, implement the client in the Rust execution host, add Helm plumbing for service discovery, and fill in the operator's `Reconcile()` loop to drive config pushes. Data-layer provisioning (DB, Redis, NATS consumers) is stubbed — this plan focuses on the config sync flow itself.
+Wire the gRPC ConfigSync service defined in `configsync.proto` end-to-end: implement the server in the Go operator, implement the client in the Rust execution host, add Helm plumbing for service discovery, and fill in the operator's `Reconcile()` loop to drive config pushes. Real PostgreSQL, Redis, and NATS instances are running via the `wp-databases` chart — the reconciler should wire real connection details rather than stubs.
 
 ---
 
@@ -54,9 +54,9 @@ Fill in the `ApplicationReconciler.Reconcile()` method so that each CRD change u
 6. **Handle create/update** (*depends on step 1*)
    - Read the `Application` CR
    - **Stub**: resolve OCI digest — for now, copy `spec.module` directly into `resolvedImage` status field and `module_ref` proto field. Leave a `// TODO: resolve mutable tags via OCI registry` comment
-   - **Stub**: database provisioning — if `spec.sql` is set, populate `SqlConfig` with placeholder `connection_url` = `"stub://not-yet-provisioned"`. Leave `// TODO: create DB via db-operator CRD`
-   - **Stub**: key-value provisioning — same pattern for `KeyValueConfig`
-   - **Stub**: NATS consumer creation — leave `// TODO: create NATS consumer for topic`
+   - **Real**: database provisioning — if `spec.sql` is set, look up the PostgreSQL connection URL from the provisioned db-operator `Database` CR (or a well-known Secret produced by the db-operator) and populate `SqlConfig.connection_url` with the real value
+   - **Real**: key-value provisioning — look up the Redis connection URL from the provisioned db-operator `Redis` CR / Secret and populate `KeyValueConfig.connection_url`
+   - **Real**: NATS consumer creation — use the NATS connection details from the `wp-databases` chart (service `nats:4222` by default) to create the consumer and populate `NatsConfig`
    - Build `ApplicationConfig` proto message from spec + stubs
    - Call `store.Set(namespacedName, appConfig)`, then `store.BroadcastUpdate(...)` with `delete: false`
    - Update status conditions (`Ready` → reason `ConfigPushed` or `ProvisioningStubbed`)
@@ -167,7 +167,7 @@ Wire Kubernetes networking so execution-host pods can reach the operator's gRPC 
 ## Decisions
 
 - **Proto is frozen** for this plan — no changes to `configsync.proto`
-- **Data-layer provisioning is stubbed** — DB creation, Redis ref-counting, NATS consumer management are out of scope; placeholder values used
+- **Data-layer provisioning is real** — PostgreSQL, Redis, and NATS are live via the `wp-databases` chart; the reconciler reads connection details from the db-operator-produced Secrets / CRs and passes real URLs into the config proto
 - **Per-app module loading is out of scope** — all apps use the single preloaded module for now; this is tracked separately
 - **Host-side reconnection** uses simple retry-with-backoff → full config re-request; no partial resync logic needed yet
 - **No TLS for gRPC** in-cluster — operators and hosts communicate within the cluster network; mTLS can be added later via a service mesh if needed
@@ -181,11 +181,13 @@ Wire Kubernetes networking so execution-host pods can reach the operator's gRPC 
 
 ---
 
-# Plan: Factor DB CRDs into wp-databases chart
+# ~~Plan: Factor DB CRDs into wp-databases chart~~ ✅ COMPLETE
 
 ## TL;DR
 
-Extract the three db-operator CRD templates (`postgres.yaml`, `redis.yaml`, `nats.yaml`) from the `wasm-platform` umbrella chart into a new `wp-databases` Helm chart at `components/wp-databases/` (no extra `helm/` nesting — no source code). Wire it back as a file dependency of `wasm-platform`. Create `components/wp-databases/Tiltfile` (co-located with the chart, matching other component conventions) exporting `db_operator(namespace)` and `wp_databases(namespace)` as separate functions.
+~~Extract the three db-operator CRD templates (`postgres.yaml`, `redis.yaml`, `nats.yaml`) from the `wasm-platform` umbrella chart into a new `wp-databases` Helm chart at `components/wp-databases/` (no extra `helm/` nesting — no source code). Wire it back as a file dependency of `wasm-platform`. Create `components/wp-databases/Tiltfile` (co-located with the chart, matching other component conventions) exporting `db_operator(namespace)` and `wp_databases(namespace)` as separate functions.~~
+
+The `wp-databases` chart is implemented and the databases (PostgreSQL, Redis, NATS) are deployed and running.
 
 ---
 

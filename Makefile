@@ -14,26 +14,6 @@ IMAGE_TAG        ?= latest
 generate: ## Run all code generators.
 	$(MAKE) -C components/wp-operator generate
 
-.PHONY: hello
-hello:
-	cargo build \
-		--manifest-path examples/hello-world/Cargo.toml \
-		--target wasm32-wasip2 \
-		--release
-
-.PHONY: run
-run: hello
-	cargo run --manifest-path components/execution-host/Cargo.toml
-
-.PHONY: docker-build
-docker-build: hello ## Build the execution-host container image.
-	docker build \
-		--build-context wasm=target/wasm32-wasip2/release \
-		-f components/execution-host/Dockerfile \
-		-t $(REGISTRY_NAME)/execution-host:$(IMAGE_TAG) \
-		.
-
-
 ##@ Cluster
 
 .PHONY: cluster-up

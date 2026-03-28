@@ -45,9 +45,7 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 |--------|-------------|
 | `make cluster-up` | Create the local k3d cluster and registry |
 | `make cluster-down` | Tear down the local k3d cluster and registry |
-| `make hello` | Build the hello-world guest module to `target/wasm32-wasip2/release/hello_world.wasm` |
-| `make run` | Build the guest, then run the execution host locally (no cluster) |
-| `make docker-build` | Build the execution-host container image and tag it for the local registry |
+| `make generate` | Run all code generators (delegates to `components/wp-operator/Makefile`) |
 
 ## Project Layout
 
@@ -60,6 +58,11 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 │   ├── execution-host/         # Rust binary — loads and invokes WASM modules
 │   │   ├── Tiltfile            # Defines execution_host() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the execution host
+│   ├── module-cache/           # Rust HTTP service — caches AOT-compiled WASM artifacts
+│   │   ├── Tiltfile            # Defines module_cache() for the root Tiltfile
+│   │   └── helm/               # Helm chart for the module cache
+│   ├── wp-databases/           # Helm chart — db-operator CRDs for shared PG, Redis, NATS
+│   │   └── Tiltfile            # Defines db_operator() and wp_databases() for the root Tiltfile
 │   └── wp-operator/            # Go operator — reconciles Application CRDs
 │       ├── Tiltfile            # Defines wp_operator() for the root Tiltfile
 │       └── helm/               # Helm chart for the operator

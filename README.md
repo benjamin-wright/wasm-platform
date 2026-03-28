@@ -13,6 +13,7 @@ The project is in its earliest phase: a single Rust binary that loads a `.wasm` 
 | **Execution Host** | `components/execution-host/` | Rust binary — syncs config from the wp-operator via gRPC, checks the module cache, pulls and AOT-compiles WASM modules on a cache miss, subscribes to a NATS subject, and calls guest exports on each message. |
 | **WP Operator** | `components/wp-operator/` | Go operator — watches `Application` CRDs, reconciles database bindings and message subscriptions, and syncs config to execution hosts via a gRPC `ConfigSync` service. |
 | **Module Cache** | `components/module-cache/` | Centralized cache for AOT-compiled WASM artifacts, keyed by digest, architecture, and Wasmtime version. |
+| **WP Databases** | `components/wp-databases/` | Helm chart — db-operator CRDs that provision the shared PostgreSQL, Redis, and NATS instances. |
 | **Hello World** | `examples/hello-world/` | Minimal guest module that implements the `application` world and echoes back request details. |
 | **WIT Interface** | `framework/runtime.wit` | The platform's API surface — defines `sql`, `kv`, and `messaging` imports and the `on-message` export. |
 
@@ -24,18 +25,6 @@ The project is in its earliest phase: a single Rust binary that loads a `.wasm` 
   ```sh
   rustup target add wasm32-wasip2
   ```
-
-### Run Locally
-
-```sh
-make run        # Builds the hello-world guest, then starts the execution host (requires a local NATS server)
-```
-
-In a separate terminal:
-
-```sh
-make test       # Publishes a sample message to the 'execute' NATS subject (requires the nats CLI)
-```
 
 ### Local Kubernetes Cluster
 

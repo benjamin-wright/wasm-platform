@@ -29,7 +29,7 @@ type ApplicationSpec struct {
 
 	// KeyValue is the key prefix for the module's key-value namespace.
 	// Keys written by the module are namespaced by <namespace>/<prefix>/ to prevent conflicts.
-	// Must correspond to a provisioned KV store managed by the db-operator.
+	// No external provisioning required — isolation is enforced by the execution host at runtime.
 	// Omit to disable KV access.
 	// +optional
 	KeyValue string `json:"keyValue,omitempty"`

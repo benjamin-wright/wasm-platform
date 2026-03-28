@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 )
 
 // ApplicationReconciler reconciles Application resources.
@@ -19,6 +20,7 @@ import (
 type ApplicationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Store  *configstore.Store
 }
 
 // Reconcile is the main reconciliation loop for Application resources.
