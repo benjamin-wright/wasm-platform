@@ -1,7 +1,9 @@
+mod config_sync;
+
 use anyhow::Result;
 use axum::{Router, routing::get};
 use futures_util::StreamExt as _;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker, ResourceTable, bindgen},
@@ -44,6 +46,8 @@ impl WasiView for HostState {
 struct RuntimeState {
     engine: Engine,
     component: Component,
+    #[allow(dead_code)]
+    config: Arc<RwLock<config_sync::AppConfig>>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -77,7 +81,26 @@ async fn main() -> Result<()> {
         Component::from_file(&engine, &wasm_path)?
     };
 
-    let state = Arc::new(RuntimeState { engine, component });
+    // Config sync — the shared state is populated on startup by the full-config
+    // RPC and kept up to date via the incremental update stream.
+    let app_config = Arc::new(RwLock::new(config_sync::AppConfig::default()));
+    let operator_endpoint = std::env::var("OPERATOR_GRPC_ENDPOINT")
+        .unwrap_or_else(|_| "http://wp-operator:50051".to_string());
+    // POD_NAME is injected by the Kubernetes downward API (fieldRef: metadata.name)
+    // and is used as the host identifier in gRPC messages to the operator.
+    let host_id = std::env::var("POD_NAME").unwrap_or_else(|_| "execution-host-local".to_string());
+
+    tokio::spawn(config_sync::sync(
+        operator_endpoint,
+        host_id,
+        Arc::clone(&app_config),
+    ));
+
+    let state = Arc::new(RuntimeState {
+        engine,
+        component,
+        config: Arc::clone(&app_config),
+    });
 
     tracing::info!("execution-host starting");
 

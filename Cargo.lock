@@ -809,6 +809,7 @@ dependencies = [
  "futures-util",
  "prost",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tracing",
