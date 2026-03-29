@@ -16,9 +16,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
-	dboperator "github.com/benjamin-wright/wasm-platform/wp-operator/internal/dboperator"
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
 )
 
@@ -288,10 +288,10 @@ func buildPostgresCredential(name, namespace, secretName string, app *wasmplatfo
 			DatabaseRef: pgdbName,
 			Username:    username,
 			SecretName:  secretName,
-			Permissions: []dboperator.PostgresPermissionEntry{
+			Permissions: []dboperator.DatabasePermissionEntry{
 				{
 					Databases:   []string{app.Spec.SQL},
-					Permissions: []string{"SELECT", "INSERT", "UPDATE", "DELETE"},
+					Permissions: []dboperator.DatabasePermission{dboperator.PermissionSelect, dboperator.PermissionInsert, dboperator.PermissionUpdate, dboperator.PermissionDelete},
 				},
 			},
 		},

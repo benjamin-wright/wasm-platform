@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.19.0
   name: applications.wasm-platform.io
 spec:
   group: wasm-platform.io
@@ -61,7 +61,7 @@ spec:
                 description: |-
                   KeyValue is the key prefix for the module's key-value namespace.
                   Keys written by the module are namespaced by <namespace>/<prefix>/ to prevent conflicts.
-                  Must correspond to a provisioned KV store managed by the db-operator.
+                  No external provisioning required — isolation is enforced by the execution host at runtime.
                   Omit to disable KV access.
                 type: string
               module:

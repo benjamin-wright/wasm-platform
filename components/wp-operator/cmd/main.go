@@ -15,10 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/controller"
-	dboperator "github.com/benjamin-wright/wasm-platform/wp-operator/internal/dboperator"
 	grpcserver "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc"
 )
 
