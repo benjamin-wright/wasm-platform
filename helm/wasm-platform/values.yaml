@@ -1,0 +1,14 @@
+# Values that override subchart defaults for a full wasm-platform deployment.
+# The wp-databases subchart names its PostgresDatabase as
+# "{{ .Release.Name }}-postgres" — when this chart is released as
+# "wasm-platform" that resolves to "wasm-platform-postgres".
+wp-operator:
+  databases:
+    # Must match the PostgresDatabase CR name created by the wp-databases subchart.
+    postgresDatabaseName: "wasm-platform-postgres"
+    # Secret names are fixed in wp-databases/values.yaml.
+    redisSecretName: "wp-operator-redis-credentials"
+
+execution-host:
+  configSync:
+    serverAddr: "http://wp-operator-grpc:50051"

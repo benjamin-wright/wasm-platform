@@ -7,6 +7,10 @@ generate: generate-crds generate-proto ## Run all code generators.
 generate-crds: ## Regenerate CRD deepcopy functions via controller-gen.
 	controller-gen object paths="./..."
 
+.PHONY: test
+test: ## Run integration tests (requires KUBEBUILDER_ASSETS to be set via setup-envtest).
+	go test ./... -v
+
 .PHONY: generate-proto
 generate-proto: ## Regenerate Go gRPC stubs from proto/configsync/v1/configsync.proto.
 	protoc \

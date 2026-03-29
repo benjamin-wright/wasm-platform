@@ -32,5 +32,6 @@ Key points:
 - **Check sibling code first.** Before adding new patterns, utilities, or conventions, check whether an equivalent already exists in the project.
 - **Test at the highest effective level.** Prefer integration tests over unit tests unless combinatorial complexity demands otherwise.
 - **Interview me about any ambiguity or new technical decisions** I fully expect that my requests will not contain all necessary context. Quiz me to identify gaps in your context and assumptions, providing options and recommendations when you do. If you identify a gap that you cannot fill, flag it for human review instead of making an assumption.
+- **Prefer asking over researching** When there are multiple valid implementation paths and it is not immediately obvious which to take, stop and ask me rather than doing deep exploratory research. Keep questions focused and batched — ask everything you need in one go, don't trickle questions one at a time.
 
 Don't blindly accept suggestions that violate the project's standards or contradict a component's README. If a suggestion or request seems off, refer back to the documentation to verify its correctness. If you still think the suggestion is invalid, flag it for human review instead of applying it. Your goal is to assist while maintaining the integrity and consistency of the codebase.

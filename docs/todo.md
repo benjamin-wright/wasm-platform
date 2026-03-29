@@ -6,7 +6,7 @@ Wire the gRPC ConfigSync service defined in `configsync.proto` end-to-end: imple
 
 ---
 
-## Phase 1 — Operator gRPC Server
+## ~~Phase 1 — Operator gRPC Server~~ ✅ COMPLETE
 
 Stand up the ConfigSync gRPC server inside the wp-operator process, backed by an in-memory config store that the reconciler will write to.
 
@@ -41,9 +41,9 @@ Stand up the ConfigSync gRPC server inside the wp-operator process, backed by an
 
 ---
 
-## Phase 2 — Operator Reconcile Loop
+## ~~Phase 2 — Operator Reconcile Loop~~ ✅ COMPLETE
 
-Fill in the `ApplicationReconciler.Reconcile()` method so that each CRD change updates the config store and triggers a push.
+~~Fill in the `ApplicationReconciler.Reconcile()` method so that each CRD change updates the config store and triggers a push.~~
 
 ### Steps
 

@@ -18,6 +18,7 @@ import (
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/controller"
+	dboperator "github.com/benjamin-wright/wasm-platform/wp-operator/internal/dboperator"
 	grpcserver "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc"
 )
 
@@ -26,6 +27,7 @@ var scheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(wasmplatformv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(dboperator.AddToScheme(scheme))
 }
 
 func main() {
@@ -76,6 +78,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Store:  store,
+		Config: configFromEnv(),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "Application")
 		os.Exit(1)
@@ -113,4 +116,28 @@ func main() {
 	}
 
 	grpcSrv.GracefulStop()
+}
+
+// configFromEnv builds a controller.Config from well-known environment
+// variables. POD_NAMESPACE (injected via the downward API) is used as the
+// default namespace for secrets and CRs when a more specific override is absent.
+func configFromEnv() controller.Config {
+	podNS := os.Getenv("POD_NAMESPACE")
+
+	pgCredNS := os.Getenv("POSTGRES_CREDENTIAL_NAMESPACE")
+	if pgCredNS == "" {
+		pgCredNS = podNS
+	}
+
+	redisSecretNS := os.Getenv("REDIS_SECRET_NAMESPACE")
+	if redisSecretNS == "" {
+		redisSecretNS = podNS
+	}
+
+	return controller.Config{
+		PostgresDatabaseName:        os.Getenv("POSTGRES_DATABASE_NAME"),
+		PostgresCredentialNamespace: pgCredNS,
+		RedisSecretName:             os.Getenv("REDIS_SECRET_NAME"),
+		RedisSecretNamespace:        redisSecretNS,
+	}
 }
