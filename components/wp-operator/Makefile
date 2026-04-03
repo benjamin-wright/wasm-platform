@@ -1,4 +1,9 @@
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
+LOCALBIN ?= $(shell pwd)/bin
+ENVTEST_K8S_VERSION ?= 1.32.0
+
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
 
 .PHONY: generate
 generate: generate-crds generate-proto ## Run all code generators.
@@ -13,9 +18,13 @@ generate-crds: ## Regenerate CRD manifests and deepcopy functions via controller
 	controller-gen crd paths="./..." output:crd:artifacts:config=helm/crds
 	controller-gen object paths="./..."
 
+.PHONY: setup-envtest
+setup-envtest: $(LOCALBIN) ## Download setup-envtest into ./bin.
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
 .PHONY: test
-test: ## Run integration tests (requires KUBEBUILDER_ASSETS to be set via setup-envtest).
-	go test ./... -v
+test: ## Run integration tests.
+	KUBEBUILDER_ASSETS="$(shell $(LOCALBIN)/setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./... -v
 
 .PHONY: generate-proto
 generate-proto: ## Regenerate Go gRPC stubs from proto/configsync/v1/configsync.proto.

@@ -61,15 +61,19 @@ Stand up the ConfigSync gRPC server inside the wp-operator process, backed by an
    - Call `store.Set(namespacedName, appConfig)`, then `store.BroadcastUpdate(...)` with `delete: false`
    - Update status conditions (`Ready` → reason `ConfigPushed` or `ProvisioningStubbed`)
 
-7. **Write integration tests** (*parallel with steps 5–6*)
-   - Use envtest (controller-runtime's test harness) to verify:
-     - Creating an `Application` CR adds it to the store
-     - Updating an `Application` CR replaces it in the store
-     - Deleting an `Application` CR removes it and broadcasts a delete update
+7. **Write integration tests** (*parallel with steps 5–6*) ✅ COMPLETE
+   - Tests run against the deployed operator in the local k3d cluster via Tilt.
+   - A minimal Go gRPC client (in `internal/integration/`) connects to the operator's port-forwarded endpoint (`localhost:50051`) and acts as an execution host by opening a `PushIncrementalUpdate` stream.
+   - Each test creates a uniquely-named namespace (cleaned up afterwards) and asserts the expected `IncrementalUpdateRequest` messages arrive on the stream:
+     - Creating an `Application` CR triggers an upsert update with the correct `topic` and `module_ref`.
+     - Updating an `Application` CR triggers a new upsert update reflecting the changed field.
+     - Deleting an `Application` CR triggers a delete update.
+   - Tests are gated behind the `integration` build tag and will not run under `go test ./...`.
+   - In Tilt, they appear as the `wp: integration-tests` resource (manually triggered, depends on `wp-operator`).
 
 ### Files to modify
 - **Modify** `components/wp-operator/internal/controller/application_controller.go` — implement `Reconcile()`, inject `Store`
-- **Create** `components/wp-operator/internal/controller/application_controller_test.go` — envtest integration tests
+- **Create** `components/wp-operator/internal/integration/integration_test.go` — real-cluster integration tests
 
 ---
 

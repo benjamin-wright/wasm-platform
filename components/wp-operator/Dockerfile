@@ -3,7 +3,7 @@
 # Build context: component directory (components/wp-operator/).
 # Requires BuildKit (default in Docker >= 23.0).
 
-FROM golang:1.24 AS builder
+FROM golang:1.25 AS builder
 
 WORKDIR /workspace
 COPY go.mod go.sum ./

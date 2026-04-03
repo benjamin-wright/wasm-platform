@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -36,12 +37,20 @@ func (s *Store) Version() uint64 {
 	return atomic.LoadUint64(&s.version)
 }
 
-// Set stores or replaces the config for key and increments the version.
-func (s *Store) Set(key types.NamespacedName, cfg *configsync.ApplicationConfig) {
+// Set stores or replaces the config for key. It returns true if the config
+// materially changed (i.e. the new value differs from the existing one).
+// The version counter is only incremented on a real change.
+func (s *Store) Set(key types.NamespacedName, cfg *configsync.ApplicationConfig) bool {
 	s.mu.Lock()
+	existing := s.configs[key]
+	if proto.Equal(existing, cfg) {
+		s.mu.Unlock()
+		return false
+	}
 	s.configs[key] = cfg
 	s.mu.Unlock()
 	atomic.AddUint64(&s.version, 1)
+	return true
 }
 
 // Delete removes the config for key and increments the version.

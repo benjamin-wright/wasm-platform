@@ -159,8 +159,9 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		cfg.KeyValue = kvCfg
 	}
 
-	r.Store.Set(key, cfg)
-	r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
+	if r.Store.Set(key, cfg) {
+		r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
+	}
 
 	// TODO: replace with real digest resolution from the OCI registry.
 	app.Status.ResolvedImage = app.Spec.Module

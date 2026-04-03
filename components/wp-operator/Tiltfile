@@ -26,6 +26,7 @@ def wp_operator(namespace):
         image_keys = [('image.repository', 'image.tag')],
         labels = ['wp-operator'],
         namespace=namespace,
+        port_forwards = ['50051:50051'],
     )
 
     local_resource(
@@ -36,6 +37,18 @@ def wp_operator(namespace):
             'components/wp-operator/api',
             'components/wp-operator/internal',
         ],
+        labels = ['wp-operator'],
+        auto_init=False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+
+    local_resource(
+        'wp: integration-tests',
+        cmd = 'cd components/wp-operator && go test -tags integration -v ./internal/integration/...',
+        deps = [
+            'components/wp-operator/internal/integration',
+        ],
+        resource_deps = ['wp-operator'],
         labels = ['wp-operator'],
         auto_init=False,
         trigger_mode = TRIGGER_MODE_MANUAL,

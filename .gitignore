@@ -1,2 +1,3 @@
 **/target/
+**/bin/
 helm/wasm-platform/charts/
