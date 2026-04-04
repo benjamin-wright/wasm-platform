@@ -36,36 +36,38 @@ impl WasiView for HostState {
 
 // ── Shared (process-wide) state ───────────────────────────────────────────────
 // The Engine and Linker are expensive to create and safe to share across
-// threads.  The Component is the pre-compiled wasm binary, also shareable.
-// Building the Linker once here avoids repeating add_to_linker_sync on every
-// message invocation.
+// threads.  Building the Linker once here avoids repeating add_to_linker_sync
+// on every message invocation.
 
 pub struct RuntimeState {
-    engine: Engine,
-    component: Component,
+    pub engine: Engine,
     linker: Linker<HostState>,
 }
 
 impl RuntimeState {
-    pub fn new(engine: Engine, component: Component) -> Result<Self> {
+    pub fn new(engine: Engine) -> Result<Self> {
         let mut linker: Linker<HostState> = Linker::new(&engine);
         // Add WASI host functions.  When kv/sql/messaging are ready, call their
         // equivalent `add_to_linker` functions here.
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
-        Ok(Self { engine, component, linker })
+        Ok(Self { engine, linker })
     }
 }
 
 // ── WASM invocation ───────────────────────────────────────────────────────────
 
-pub fn invoke_on_message(state: &RuntimeState, payload: &[u8]) -> Result<Option<Vec<u8>>> {
+pub fn invoke_on_message(
+    state: &RuntimeState,
+    component: &Component,
+    payload: &[u8],
+) -> Result<Option<Vec<u8>>> {
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
     };
     let mut store = Store::new(&state.engine, host_state);
 
-    let app = Application::instantiate(&mut store, &state.component, &state.linker)?;
+    let app = Application::instantiate(&mut store, component, &state.linker)?;
 
     let result = app.call_on_message(&mut store, payload)?;
 

@@ -103,3 +103,4 @@ This requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, and `controller-g
 
 1. Add HTTP route bindings (`spec.routes`) in a future pass.
 2. Add scheduling bindings (`spec.schedules`) in a future pass.
+3. Deal with topic duplication: Avoid updating execution-hosts and put the app CR into a failed state if another application already exists with the same topic. Only one should be active at any one time.

@@ -24,8 +24,8 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
-            - name: WASM_MODULE_PATH
-              value: /opt/wasm/hello_world.cwasm
+            - name: MODULE_CACHE_ADDR
+              value: {{ .Values.moduleCache.addr | quote }}
             - name: CONFIG_SYNC_ADDR
               value: {{ .Values.configSync.serverAddr | quote }}
             - name: HOSTNAME
