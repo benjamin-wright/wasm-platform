@@ -15,4 +15,6 @@ replicaCount: 1
 
 nats:
   secretName: execution-host-nats-credentials
-  topicPrefix: "fn."
+
+configSync:
+  serverAddr: "http://wp-operator-grpc:50051"

@@ -1,7 +1,13 @@
+mod config;
+
 use anyhow::Result;
 use axum::{Router, routing::get};
+use config::{
+    AppRegistry,
+    configsync::{FullConfigRequest, IncrementalUpdateAck, config_sync_client::ConfigSyncClient},
+};
 use futures_util::StreamExt as _;
-use std::sync::Arc;
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::Duration};
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker, ResourceTable, bindgen},
@@ -81,21 +87,31 @@ async fn main() -> Result<()> {
 
     tracing::info!("execution-host starting");
 
+    // Build the app registry and populate it with the operator's current config
+    // snapshot.  CONFIG_SYNC_ADDR is required — the host cannot serve any apps
+    // without knowing which topics to subscribe to.
+    let addr = std::env::var("CONFIG_SYNC_ADDR")
+        .map_err(|_| anyhow::anyhow!("CONFIG_SYNC_ADDR environment variable is required"))?;
+    let host_id = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+    let registry = AppRegistry::new();
+    // Watch channel for topic-set changes published by the config sync loop.
+    let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
+    // Channel through which all per-topic NATS subscribers forward messages.
+    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<async_nats::Message>(256);
+
     // NATS connection — credentials are injected from the db-operator-managed
     // secret.  Credentials are passed via ConnectOptions rather than embedded
     // in the URL; async-nats 0.46 does not parse user:pass from URL strings.
     let (nats_url, nats_opts) = build_nats_connect_config()?;
-    // Subscribe to all subjects under the configured prefix using the NATS `>`
-    // wildcard.  Each application publishes to `{prefix}{spec.topic}`, so a
-    // single wildcard subscription covers all deployed apps while reserving
-    // other subject namespaces for other platform components.
-    let topic_prefix = std::env::var("NATS_TOPIC_PREFIX").unwrap_or_else(|_| "fn.".to_string());
-    let nats_subject = format!("{}>", topic_prefix);
-
     let nats_client = nats_opts.connect(&nats_url).await?;
-    tracing::info!(%nats_subject, "connected to NATS");
+    tracing::info!("connected to NATS");
 
-    let subscriber = nats_client.subscribe(nats_subject).await?;
+    // Config sync loop — fetches a full snapshot on startup then maintains the
+    // incremental update stream, reconnecting automatically on failure.
+    tokio::spawn(run_config_sync_loop(addr, host_id, registry, topics_tx));
+    // Subscription manager — watches the topic set and subscribes/unsubscribes
+    // NATS subjects, forwarding all messages into msg_tx.
+    tokio::spawn(manage_nats_subscriptions(nats_client.clone(), topics_rx, msg_tx));
 
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
         .ok()
@@ -112,52 +128,106 @@ async fn main() -> Result<()> {
         result = health_server => {
             result?;
         }
-        // for_each_concurrent drives the subscriber stream with a built-in
-        // concurrency limit; it back-pressures the NATS client when all slots
-        // are occupied, preventing unbounded resource consumption.
-        _ = subscriber.for_each_concurrent(max_concurrent, |message| {
-            let state = Arc::clone(&state);
-            let client = nats_client.clone();
-            async move {
-                let reply = message.reply.clone();
-                let payload = message.payload.to_vec();
-
-                // WASM execution is CPU-bound; run it on the blocking thread
-                // pool so the async runtime stays responsive.
-                let result = tokio::task::spawn_blocking(move || {
-                    invoke_on_message(&state, &payload)
-                })
-                .await;
-
-                match result {
-                    Ok(Ok(Some(response_body))) => {
-                        if let Some(reply_subject) = reply
-                            && let Err(err) = client
-                                .publish(reply_subject.clone(), response_body.into())
-                                .await
-                        {
-                            tracing::error!(
-                                %reply_subject,
-                                "failed to publish reply: {err:#}"
-                            );
-                        }
-                    }
-                    Ok(Ok(None)) => {}
-                    Ok(Err(err)) => {
-                        tracing::error!("invoke_on_message failed: {err:#}");
-                    }
-                    Err(join_err) => {
-                        tracing::error!("spawn_blocking panicked: {join_err}");
-                    }
-                }
-            }
-        }) => {}
+        _ = process_nats_messages(msg_rx, Arc::clone(&state), nats_client, max_concurrent) => {}
     }
 
     Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Loops forever: fetches a full config snapshot then maintains the incremental
+// update stream.  On any error or clean stream close, backs off and retries.
+async fn run_config_sync_loop(
+    addr: String,
+    host_id: String,
+    registry: AppRegistry,
+    topics_tx: tokio::sync::watch::Sender<Vec<String>>,
+) {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        match run_config_sync(&addr, &host_id, &registry, &topics_tx).await {
+            Ok(()) => {
+                tracing::warn!("config sync stream closed; reconnecting");
+                backoff = Duration::from_secs(1);
+            }
+            Err(err) => {
+                tracing::warn!("config sync error: {err:#}; reconnecting in {backoff:?}");
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+        }
+        tokio::time::sleep(backoff).await;
+    }
+}
+
+// Fetches a full config snapshot then drives a single incremental update stream
+// session until it closes or errors.
+async fn run_config_sync(
+    addr: &str,
+    host_id: &str,
+    registry: &AppRegistry,
+    topics_tx: &tokio::sync::watch::Sender<Vec<String>>,
+) -> Result<()> {
+    fetch_full_config(addr.to_string(), host_id.to_string(), registry).await?;
+    topics_tx.send(registry.topics()).ok();
+
+    tracing::info!("opening incremental update stream");
+    let mut client = ConfigSyncClient::connect(addr.to_string()).await?;
+
+    // Bridge tokio mpsc → futures Stream so tonic can consume acks.
+    let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<IncrementalUpdateAck>(16);
+    let ack_stream = futures_util::stream::unfold(ack_rx, |mut rx| async move {
+        rx.recv().await.map(|ack| (ack, rx))
+    });
+
+    let mut update_stream = client
+        .push_incremental_update(ack_stream)
+        .await?
+        .into_inner();
+
+    while let Some(request) = update_stream.message().await? {
+        if let Some(incremental) = request.incremental_config {
+            let version = incremental.version.clone();
+            let update_count = incremental.updates.len();
+            registry.apply_incremental(incremental.updates);
+            topics_tx.send(registry.topics()).ok();
+            tracing::debug!(version, update_count, "incremental config applied");
+            let ack = IncrementalUpdateAck {
+                host_id: host_id.to_string(),
+                version_applied: version,
+                success: true,
+                message: String::new(),
+            };
+            if ack_tx.send(ack).await.is_err() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Connects to the operator's gRPC endpoint, requests a full config snapshot,
+// and applies it to the registry.  Returns an error if the connection or RPC
+// fails so that the process exits rather than silently running unconfigured.
+async fn fetch_full_config(addr: String, host_id: String, registry: &AppRegistry) -> Result<()> {
+    tracing::info!(%addr, "connecting to operator for full config");
+    let mut client = ConfigSyncClient::connect(addr).await?;
+    let response = client
+        .request_full_config(FullConfigRequest {
+            host_id,
+            last_ack_timestamp: None,
+        })
+        .await?
+        .into_inner();
+    if let Some(full) = response.config {
+        let app_count = full.applications.len();
+        registry.apply_full_config(full);
+        tracing::info!(app_count, "full config applied");
+    } else {
+        tracing::warn!("operator returned empty full config response");
+    }
+    Ok(())
+}
 
 // Returns the NATS server URL and a ConnectOptions configured with credentials
 // from the db-operator-managed secret, falling back to unauthenticated
@@ -176,6 +246,108 @@ fn build_nats_connect_config() -> Result<(String, async_nats::ConnectOptions)> {
         return Ok((url, opts));
     }
     Ok(("nats://localhost:4222".to_string(), async_nats::ConnectOptions::new()))
+}
+
+// Watches the topic set published by the config sync loop and maintains one
+// NATS subscription per topic.  All messages are forwarded into msg_tx.
+async fn manage_nats_subscriptions(
+    client: async_nats::Client,
+    mut topics_rx: tokio::sync::watch::Receiver<Vec<String>>,
+    msg_tx: tokio::sync::mpsc::Sender<async_nats::Message>,
+) {
+    // Keys are topic strings; values are oneshot senders used to cancel the
+    // per-topic forwarding task (dropping the sender signals the task to stop,
+    // which drops the Subscriber and sends UNSUB to the server).
+    let mut subscriptions: HashMap<String, tokio::sync::oneshot::Sender<()>> = HashMap::new();
+
+    loop {
+        if topics_rx.changed().await.is_err() {
+            break;
+        }
+        let desired: HashSet<String> = topics_rx.borrow_and_update().iter().cloned().collect();
+        let current: HashSet<String> = subscriptions.keys().cloned().collect();
+
+        for topic in current.difference(&desired) {
+            subscriptions.remove(topic);
+            tracing::info!(%topic, "unsubscribed from NATS topic");
+        }
+
+        for topic in desired.difference(&current) {
+            match client.subscribe(topic.clone()).await {
+                Ok(sub) => {
+                    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                    let tx = msg_tx.clone();
+                    let t = topic.clone();
+                    tokio::spawn(async move {
+                        let mut sub = sub;
+                        tokio::select! {
+                            _ = cancel_rx => {}
+                            _ = async move {
+                                while let Some(msg) = sub.next().await {
+                                    if tx.send(msg).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            } => {}
+                        }
+                    });
+                    subscriptions.insert(topic.clone(), cancel_tx);
+                    tracing::info!(%t, "subscribed to NATS topic");
+                }
+                Err(err) => {
+                    tracing::error!(%topic, "failed to subscribe to NATS topic: {err:#}");
+                }
+            }
+        }
+    }
+}
+
+// Receives NATS messages from all per-topic subscribers and dispatches them
+// concurrently up to max_concurrent in-flight invocations.
+async fn process_nats_messages(
+    mut msg_rx: tokio::sync::mpsc::Receiver<async_nats::Message>,
+    state: Arc<RuntimeState>,
+    client: async_nats::Client,
+    max_concurrent: usize,
+) {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+    while let Some(message) = msg_rx.recv().await {
+        let permit = match Arc::clone(&semaphore).acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        let state = Arc::clone(&state);
+        let client = client.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let reply = message.reply.clone();
+            let payload = message.payload.to_vec();
+
+            // WASM execution is CPU-bound; run it on the blocking thread
+            // pool so the async runtime stays responsive.
+            let result = tokio::task::spawn_blocking(move || invoke_on_message(&state, &payload))
+                .await;
+
+            match result {
+                Ok(Ok(Some(response_body))) => {
+                    if let Some(reply_subject) = reply
+                        && let Err(err) = client
+                            .publish(reply_subject.clone(), response_body.into())
+                            .await
+                    {
+                        tracing::error!(%reply_subject, "failed to publish reply: {err:#}");
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(err)) => {
+                    tracing::error!("invoke_on_message failed: {err:#}");
+                }
+                Err(join_err) => {
+                    tracing::error!("spawn_blocking panicked: {join_err}");
+                }
+            }
+        });
+    }
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
