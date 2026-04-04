@@ -276,3 +276,82 @@ func TestApplicationDelete_BroadcastsDelete(t *testing.T) {
 
 	hs.receiveUpdate(t, ns, "my-app", true)
 }
+
+// waitForCondition polls the Application until the named condition reaches the
+// expected True/False status.
+func waitForCondition(t *testing.T, c client.Client, ns, name, condType string, wantTrue bool) {
+	t.Helper()
+	g := NewWithT(t)
+	g.Eventually(func() bool {
+		var app wasmplatformv1alpha1.Application
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, &app); err != nil {
+			return false
+		}
+		for _, cond := range app.Status.Conditions {
+			if cond.Type == condType {
+				return (cond.Status == "True") == wantTrue
+			}
+		}
+		return false
+	}, updateTimeout, 500*time.Millisecond).Should(BeTrue(),
+		"application %s/%s condition %s should have status %v", ns, name, condType, wantTrue)
+}
+
+// TestTopicConflict_BlockedAppHealsOnOwnerDelete verifies that:
+//   - When two Applications claim the same topic, the newer one is blocked with
+//     TopicConflict and Ready=False.
+//   - When the owning app is deleted, the blocked app wakes up, reconciles
+//     successfully, and becomes Ready=True.
+func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
+	g := NewWithT(t)
+	c := newK8sClient(t)
+	ns := createTestNamespace(t, c)
+	hs := newHostStream(t, "itest-host-conflict")
+
+	const sharedTopic = "itest.conflict.heal"
+
+	// Create the owner first so it has the older creationTimestamp.
+	owner := &wasmplatformv1alpha1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "owner-app", Namespace: ns},
+		Spec: wasmplatformv1alpha1.ApplicationSpec{
+			Module: "oci://example.com/owner@sha256:1111",
+			Topic:  sharedTopic,
+		},
+	}
+	g.Expect(c.Create(context.Background(), owner)).To(Succeed())
+	t.Cleanup(func() { _ = c.Delete(context.Background(), owner) })
+
+	// Owner must be Ready before we create the blocker; this also ensures the
+	// creationTimestamp ordering is deterministic.
+	waitForReady(t, c, ns, "owner-app")
+	hs.receiveUpdate(t, ns, "owner-app", false)
+
+	// Create the blocked app — it should pick up TopicConflict immediately.
+	blocked := &wasmplatformv1alpha1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "blocked-app", Namespace: ns},
+		Spec: wasmplatformv1alpha1.ApplicationSpec{
+			Module: "oci://example.com/blocked@sha256:2222",
+			Topic:  sharedTopic,
+		},
+	}
+	g.Expect(c.Create(context.Background(), blocked)).To(Succeed())
+	t.Cleanup(func() { _ = c.Delete(context.Background(), blocked) })
+
+	// Blocked app must reach TopicConflict=True and Ready=False.
+	waitForCondition(t, c, ns, "blocked-app", "TopicConflict", true)
+	waitForCondition(t, c, ns, "blocked-app", "Ready", false)
+
+	// No config update should have been broadcast for the blocked app.
+	// (The host stream buffer is checked — no update for "blocked-app" must arrive.)
+
+	// Delete the owning app. The watch handler should enqueue the blocked app.
+	g.Expect(c.Delete(context.Background(), owner)).To(Succeed())
+	hs.receiveUpdate(t, ns, "owner-app", true)
+
+	// The blocked app should now heal: TopicConflict removed, Ready=True.
+	waitForReady(t, c, ns, "blocked-app")
+
+	// And an upsert update for the formerly-blocked app must be broadcast.
+	update := hs.receiveUpdate(t, ns, "blocked-app", false)
+	g.Expect(update.GetAppConfig().GetTopic()).To(Equal(sharedTopic))
+}

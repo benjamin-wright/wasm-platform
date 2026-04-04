@@ -53,15 +53,15 @@ Independent of Phases 1, 3, and 4. Must be completed before any Application reac
 
 #### Tasks
 
-- [ ] Add `+kubebuilder:validation:Pattern` marker to `spec.topic` in `application_types.go` — reject any value containing `*` or `>` (pattern: `^[^*>]+$`). Regenerate CRD manifest (`make generate`).
-- [ ] Add cluster-scoped RBAC marker for listing Applications — `+kubebuilder:rbac:groups=wasm-platform.io,resources=applications,verbs=list;watch` with no namespace qualifier, and update the operator's `ClusterRole` in the Helm chart accordingly.
-- [ ] Register a `spec.topic` field index on the Application cache in `SetupWithManager` — used by both `findTopicOwner` and the watch handler to avoid full-list scans.
-- [ ] Implement `findTopicOwner(ctx, client, topic, self) (*Application, error)` helper — queries the cache via the `spec.topic` index, excludes self, returns the app with the oldest `creationTimestamp` (tiebreak: `namespace/name` lexicographic order). Returns `nil` if the calling app is the rightful owner.
-- [ ] Add conflict short-circuit to `reconcileUpsert` — call `findTopicOwner` before any side-effectful work; if an owner is found, set `Ready: False / TopicConflict` with the owner named in the message, update status, and return without requeueing.
-- [ ] Add secondary `Watches` in `SetupWithManager` using `TypedUpdateEvent` — on delete, use the topic index to enqueue all apps sharing the deleted app's `spec.topic`; on update where `spec.topic` changed, enqueue all apps sharing `ObjectOld.Spec.Topic`; skip on create.
-- [ ] Clear `TopicConflict` condition on successful reconcile — ensure `setReadyCondition(True, ...)` removes or supersedes any stale `TopicConflict` condition.
-- [ ] Update `components/wp-operator/README.md` — document the wildcard ban, the cluster-wide uniqueness rule, the `TopicConflict` condition, and the self-healing behaviour.
-- [ ] Tests — table-driven unit tests for `findTopicOwner` covering: sole owner, two apps same topic (older wins), two apps same topic same timestamp (name tiebreak), three-way race; integration test for the blocked→unblocked healing flow.
+- [x] Add `+kubebuilder:validation:Pattern` marker to `spec.topic` in `application_types.go` — reject any value containing `*` or `>` (pattern: `^[^*>]+$`). Regenerate CRD manifest (`make generate`).
+- [x] Add cluster-scoped RBAC marker for listing Applications — `+kubebuilder:rbac:groups=wasm-platform.io,resources=applications,verbs=list;watch` with no namespace qualifier, and update the operator's `ClusterRole` in the Helm chart accordingly.
+- [x] Register a `spec.topic` field index on the Application cache in `SetupWithManager` — used by both `findTopicOwner` and the watch handler to avoid full-list scans.
+- [x] Implement `findTopicOwner(ctx, client, topic, self) (*Application, error)` helper — queries the cache via the `spec.topic` index, excludes self, returns the app with the oldest `creationTimestamp` (tiebreak: `namespace/name` lexicographic order). Returns `nil` if the calling app is the rightful owner.
+- [x] Add conflict short-circuit to `reconcileUpsert` — call `findTopicOwner` before any side-effectful work; if an owner is found, set `Ready: False / TopicConflict` with the owner named in the message, update status, and return without requeueing.
+- [x] Add secondary `Watches` in `SetupWithManager` using `TypedUpdateEvent` — on delete, use the topic index to enqueue all apps sharing the deleted app's `spec.topic`; on update where `spec.topic` changed, enqueue all apps sharing `ObjectOld.Spec.Topic`; skip on create.
+- [x] Clear `TopicConflict` condition on successful reconcile — ensure `setReadyCondition(True, ...)` removes or supersedes any stale `TopicConflict` condition.
+- [x] Update `components/wp-operator/README.md` — document the wildcard ban, the cluster-wide uniqueness rule, the `TopicConflict` condition, and the self-healing behaviour.
+- [x] Tests — table-driven unit tests for `findTopicOwner` covering: sole owner, two apps same topic (older wins), two apps same topic same timestamp (name tiebreak), three-way race; integration test for the blocked→unblocked healing flow.
 
 ---
 

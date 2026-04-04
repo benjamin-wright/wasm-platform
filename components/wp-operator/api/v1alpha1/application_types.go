@@ -14,7 +14,9 @@ type ApplicationSpec struct {
 
 	// Topic is the message subject the execution host subscribes to.
 	// Messages on this subject invoke the module's on-message export.
+	// Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[^*>]+$`
 	Topic string `json:"topic"`
 
 	// Env is an optional map of environment variables injected into the module's runtime configuration.

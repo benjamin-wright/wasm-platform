@@ -33,7 +33,9 @@ spec:
 
 | Type | Required | Description |
 |------|----------|-------------|
-| string | yes | Message subject the execution host subscribes to. Messages arriving on this subject invoke the module's `on-message` export. |
+| string | yes | Message subject the execution host subscribes to. Messages arriving on this subject invoke the module's `on-message` export. Must be **unique cluster-wide** across all namespaces. Wildcard characters (`*` and `>`) are forbidden and rejected at admission time. |
+
+**Uniqueness rule:** NATS subscriptions are global, so two Applications in different namespaces claiming the same subject would silently compete for messages. The operator enforces cluster-wide uniqueness: the Application with the oldest `metadata.creationTimestamp` is the rightful owner of a given topic. If two Applications share the same timestamp, the one with the lexicographically lower `namespace/name` wins. A blocked Application receives `Ready: False` with reason `TopicConflict` and no side-effectful work is performed for it (no NATS consumer, no SQL provisioning, no config pushed to execution hosts). When the owning Application is deleted or changes its topic, blocked Applications are automatically re-evaluated without manual intervention.
 
 #### `spec.env` (optional)
 
@@ -92,15 +94,18 @@ make generate
 
 This requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, and `controller-gen` to be installed.
 
-## Status
+## Status Conditions
 
-| Field | Description |
-|-------|-------------|
+| Condition | Values | Description |
+|-----------|--------|-------------|
+| `Ready` | `True` / `False` | Set to `True` once the application config has been successfully pushed to all connected execution hosts. Set to `False` while provisioning is in progress, or when blocked by a `TopicConflict`. |
+| `TopicConflict` | `True` (when present) | Set when another Application is the rightful owner of `spec.topic`. The operator performs no side-effectful work for this Application until the owning Application is deleted or changes its topic. Automatically cleared on successful reconciliation — no manual intervention required. |
+
+| Status field | Description |
+|-------------|-------------|
 | `status.resolvedImage` | Fully qualified OCI reference with resolved digest. |
-| `status.conditions` | Standard Kubernetes condition list (`Ready`, `DatabaseBound`, `StoreBound`). |
 
 ## TODO
 
 1. Add HTTP route bindings (`spec.routes`) in a future pass.
 2. Add scheduling bindings (`spec.schedules`) in a future pass.
-3. Deal with topic duplication: Avoid updating execution-hosts and put the app CR into a failed state if another application already exists with the same topic. Only one should be active at any one time.

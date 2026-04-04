@@ -80,6 +80,8 @@ spec:
                 description: |-
                   Topic is the message subject the execution host subscribes to.
                   Messages on this subject invoke the module's on-message export.
+                  Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
+                pattern: ^[^*>]+$
                 type: string
             required:
             - module
