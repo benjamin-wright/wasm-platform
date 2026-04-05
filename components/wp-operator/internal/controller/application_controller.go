@@ -122,7 +122,7 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	}
 
 	r.Store.Delete(key)
-	r.Store.BroadcastUpdate(buildDeleteUpdate(app))
+	r.Store.BroadcastUpdate(buildDeleteUpdate(app, internalTopic(app)))
 
 	controllerutil.RemoveFinalizer(app, applicationFinalizer)
 	if err := r.Update(ctx, app); err != nil {
@@ -140,26 +140,29 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
 	// Phase 2: topic uniqueness — short-circuit if another app owns this topic.
-	owner, err := findTopicOwner(ctx, r.Client, app.Spec.Topic, app)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("checking topic ownership: %w", err)
-	}
-	if owner != nil {
-		msg := fmt.Sprintf("topic %q is already claimed by %s/%s", app.Spec.Topic, owner.Namespace, owner.Name)
-		logger.Info("topic conflict detected", "topic", app.Spec.Topic, "owner", owner.Namespace+"/"+owner.Name)
-		apimeta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-			Type:               "TopicConflict",
-			Status:             metav1.ConditionTrue,
-			Reason:             "TopicConflict",
-			Message:            msg,
-			ObservedGeneration: app.Generation,
-		})
-		r.setReadyCondition(app, metav1.ConditionFalse, "TopicConflict", msg)
-		if err := r.Status().Update(ctx, app); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+	// HTTP apps derive their topic from (namespace, name) so are inherently unique; skip the check.
+	if app.Spec.Topic != "" {
+		owner, err := findTopicOwner(ctx, r.Client, app.Spec.Topic, app)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking topic ownership: %w", err)
 		}
-		// No requeue — healed via the topic-peer watch when the owner is deleted or changes topic.
-		return ctrl.Result{}, nil
+		if owner != nil {
+			msg := fmt.Sprintf("topic %q is already claimed by %s/%s", app.Spec.Topic, owner.Namespace, owner.Name)
+			logger.Info("topic conflict detected", "topic", app.Spec.Topic, "owner", owner.Namespace+"/"+owner.Name)
+			apimeta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+				Type:               "TopicConflict",
+				Status:             metav1.ConditionTrue,
+				Reason:             "TopicConflict",
+				Message:            msg,
+				ObservedGeneration: app.Generation,
+			})
+			r.setReadyCondition(app, metav1.ConditionFalse, "TopicConflict", msg)
+			if err := r.Status().Update(ctx, app); err != nil {
+				return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+			}
+			// No requeue — healed via the topic-peer watch when the owner is deleted or changes topic.
+			return ctrl.Result{}, nil
+		}
 	}
 
 	cfg := &configsync.ApplicationConfig{
@@ -167,8 +170,17 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		Namespace: app.Namespace,
 		// TODO: resolve mutable OCI tags via registry; copy spec.module directly for now.
 		ModuleRef: app.Spec.Module,
-		Topic:     app.Spec.Topic,
+		Topic:     internalTopic(app),
 		Env:       app.Spec.Env,
+		WorldType: configsync.WorldType_WORLD_TYPE_MESSAGE,
+	}
+
+	if app.Spec.HTTP != nil {
+		cfg.WorldType = configsync.WorldType_WORLD_TYPE_HTTP
+		cfg.Http = &configsync.HttpConfig{
+			Path:    app.Spec.HTTP.Path,
+			Methods: app.Spec.HTTP.Methods,
+		}
 	}
 
 	if app.Spec.SQL != "" {
@@ -285,6 +297,9 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		topicIndexField,
 		func(obj client.Object) []string {
 			app := obj.(*wasmplatformv1alpha1.Application)
+			if app.Spec.Topic == "" {
+				return nil // HTTP apps have no spec.topic to index
+			}
 			return []string{app.Spec.Topic}
 		},
 	); err != nil {
@@ -454,7 +469,7 @@ func buildUpsertUpdate(cfg *configsync.ApplicationConfig) *configsync.Incrementa
 	}
 }
 
-func buildDeleteUpdate(app *wasmplatformv1alpha1.Application) *configsync.IncrementalConfig {
+func buildDeleteUpdate(app *wasmplatformv1alpha1.Application, topic string) *configsync.IncrementalConfig {
 	now := time.Now().UnixMilli()
 	return &configsync.IncrementalConfig{
 		Version: fmt.Sprintf("%d", now),
@@ -463,10 +478,20 @@ func buildDeleteUpdate(app *wasmplatformv1alpha1.Application) *configsync.Increm
 				AppConfig: &configsync.ApplicationConfig{
 					Name:      app.Name,
 					Namespace: app.Namespace,
+					Topic:     topic,
 				},
 				Delete: true,
 			},
 		},
 		Timestamp: now,
 	}
+}
+
+// internalTopic returns the fully-prefixed NATS subject for the given Application.
+// Topic-only apps use the "fn." prefix; HTTP apps use "http.<namespace>.<name>".
+func internalTopic(app *wasmplatformv1alpha1.Application) string {
+	if app.Spec.Topic != "" {
+		return "fn." + app.Spec.Topic
+	}
+	return fmt.Sprintf("http.%s.%s", app.Namespace, app.Name)
 }

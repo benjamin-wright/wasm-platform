@@ -58,6 +58,11 @@ message AppUpdate {
 
 // ── Shared application model ──────────────────────────────────────────────────
 
+enum WorldType {
+  WORLD_TYPE_MESSAGE = 0;
+  WORLD_TYPE_HTTP = 1;
+}
+
 message ApplicationConfig {
   string name = 1;
   string namespace = 2;
@@ -66,6 +71,8 @@ message ApplicationConfig {
   map<string, string> env = 5;
   optional SqlConfig sql = 6;
   optional KeyValueConfig key_value = 7;
+  WorldType world_type = 8;
+  optional HttpConfig http = 9;
 }
 
 message SqlConfig {
@@ -76,4 +83,9 @@ message SqlConfig {
 message KeyValueConfig {
   string prefix = 1;
   string connection_url = 2;
+}
+
+message HttpConfig {
+  string path = 1;
+  repeated string methods = 2;
 }

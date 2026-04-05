@@ -21,6 +21,52 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type WorldType int32
+
+const (
+	WorldType_WORLD_TYPE_MESSAGE WorldType = 0
+	WorldType_WORLD_TYPE_HTTP    WorldType = 1
+)
+
+// Enum value maps for WorldType.
+var (
+	WorldType_name = map[int32]string{
+		0: "WORLD_TYPE_MESSAGE",
+		1: "WORLD_TYPE_HTTP",
+	}
+	WorldType_value = map[string]int32{
+		"WORLD_TYPE_MESSAGE": 0,
+		"WORLD_TYPE_HTTP":    1,
+	}
+)
+
+func (x WorldType) Enum() *WorldType {
+	p := new(WorldType)
+	*p = x
+	return p
+}
+
+func (x WorldType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorldType) Descriptor() protoreflect.EnumDescriptor {
+	return file_configsync_v1_configsync_proto_enumTypes[0].Descriptor()
+}
+
+func (WorldType) Type() protoreflect.EnumType {
+	return &file_configsync_v1_configsync_proto_enumTypes[0]
+}
+
+func (x WorldType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorldType.Descriptor instead.
+func (WorldType) EnumDescriptor() ([]byte, []int) {
+	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{0}
+}
+
 type FullConfigRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	HostId           string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
@@ -434,6 +480,8 @@ type ApplicationConfig struct {
 	Env           map[string]string      `protobuf:"bytes,5,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Sql           *SqlConfig             `protobuf:"bytes,6,opt,name=sql,proto3,oneof" json:"sql,omitempty"`
 	KeyValue      *KeyValueConfig        `protobuf:"bytes,7,opt,name=key_value,json=keyValue,proto3,oneof" json:"key_value,omitempty"`
+	WorldType     WorldType              `protobuf:"varint,8,opt,name=world_type,json=worldType,proto3,enum=configsync.v1.WorldType" json:"world_type,omitempty"`
+	Http          *HttpConfig            `protobuf:"bytes,9,opt,name=http,proto3,oneof" json:"http,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -513,6 +561,20 @@ func (x *ApplicationConfig) GetSql() *SqlConfig {
 func (x *ApplicationConfig) GetKeyValue() *KeyValueConfig {
 	if x != nil {
 		return x.KeyValue
+	}
+	return nil
+}
+
+func (x *ApplicationConfig) GetWorldType() WorldType {
+	if x != nil {
+		return x.WorldType
+	}
+	return WorldType_WORLD_TYPE_MESSAGE
+}
+
+func (x *ApplicationConfig) GetHttp() *HttpConfig {
+	if x != nil {
+		return x.Http
 	}
 	return nil
 }
@@ -621,6 +683,58 @@ func (x *KeyValueConfig) GetConnectionUrl() string {
 	return ""
 }
 
+type HttpConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Methods       []string               `protobuf:"bytes,2,rep,name=methods,proto3" json:"methods,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HttpConfig) Reset() {
+	*x = HttpConfig{}
+	mi := &file_configsync_v1_configsync_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HttpConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HttpConfig) ProtoMessage() {}
+
+func (x *HttpConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_configsync_v1_configsync_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HttpConfig.ProtoReflect.Descriptor instead.
+func (*HttpConfig) Descriptor() ([]byte, []int) {
+	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *HttpConfig) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *HttpConfig) GetMethods() []string {
+	if x != nil {
+		return x.Methods
+	}
+	return nil
+}
+
 var File_configsync_v1_configsync_proto protoreflect.FileDescriptor
 
 const file_configsync_v1_configsync_proto_rawDesc = "" +
@@ -654,7 +768,7 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\tAppUpdate\x12?\n" +
 	"\n" +
 	"app_config\x18\x01 \x01(\v2 .configsync.v1.ApplicationConfigR\tappConfig\x12\x16\n" +
-	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xf7\x02\n" +
+	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xed\x03\n" +
 	"\x11ApplicationConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x1d\n" +
@@ -663,19 +777,30 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\x05topic\x18\x04 \x01(\tR\x05topic\x12;\n" +
 	"\x03env\x18\x05 \x03(\v2).configsync.v1.ApplicationConfig.EnvEntryR\x03env\x12/\n" +
 	"\x03sql\x18\x06 \x01(\v2\x18.configsync.v1.SqlConfigH\x00R\x03sql\x88\x01\x01\x12?\n" +
-	"\tkey_value\x18\a \x01(\v2\x1d.configsync.v1.KeyValueConfigH\x01R\bkeyValue\x88\x01\x01\x1a6\n" +
+	"\tkey_value\x18\a \x01(\v2\x1d.configsync.v1.KeyValueConfigH\x01R\bkeyValue\x88\x01\x01\x127\n" +
+	"\n" +
+	"world_type\x18\b \x01(\x0e2\x18.configsync.v1.WorldTypeR\tworldType\x122\n" +
+	"\x04http\x18\t \x01(\v2\x19.configsync.v1.HttpConfigH\x02R\x04http\x88\x01\x01\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
 	"\x04_sqlB\f\n" +
 	"\n" +
-	"_key_value\"W\n" +
+	"_key_valueB\a\n" +
+	"\x05_http\"W\n" +
 	"\tSqlConfig\x12#\n" +
 	"\rdatabase_name\x18\x01 \x01(\tR\fdatabaseName\x12%\n" +
 	"\x0econnection_url\x18\x02 \x01(\tR\rconnectionUrl\"O\n" +
 	"\x0eKeyValueConfig\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12%\n" +
-	"\x0econnection_url\x18\x02 \x01(\tR\rconnectionUrl2\xd1\x01\n" +
+	"\x0econnection_url\x18\x02 \x01(\tR\rconnectionUrl\":\n" +
+	"\n" +
+	"HttpConfig\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\amethods\x18\x02 \x03(\tR\amethods*8\n" +
+	"\tWorldType\x12\x16\n" +
+	"\x12WORLD_TYPE_MESSAGE\x10\x00\x12\x13\n" +
+	"\x0fWORLD_TYPE_HTTP\x10\x012\xd1\x01\n" +
 	"\n" +
 	"ConfigSync\x12X\n" +
 	"\x11RequestFullConfig\x12 .configsync.v1.FullConfigRequest\x1a!.configsync.v1.FullConfigResponse\x12i\n" +
@@ -693,38 +818,43 @@ func file_configsync_v1_configsync_proto_rawDescGZIP() []byte {
 	return file_configsync_v1_configsync_proto_rawDescData
 }
 
-var file_configsync_v1_configsync_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_configsync_v1_configsync_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_configsync_v1_configsync_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_configsync_v1_configsync_proto_goTypes = []any{
-	(*FullConfigRequest)(nil),        // 0: configsync.v1.FullConfigRequest
-	(*FullConfigResponse)(nil),       // 1: configsync.v1.FullConfigResponse
-	(*FullConfig)(nil),               // 2: configsync.v1.FullConfig
-	(*IncrementalUpdateRequest)(nil), // 3: configsync.v1.IncrementalUpdateRequest
-	(*IncrementalUpdateAck)(nil),     // 4: configsync.v1.IncrementalUpdateAck
-	(*IncrementalConfig)(nil),        // 5: configsync.v1.IncrementalConfig
-	(*AppUpdate)(nil),                // 6: configsync.v1.AppUpdate
-	(*ApplicationConfig)(nil),        // 7: configsync.v1.ApplicationConfig
-	(*SqlConfig)(nil),                // 8: configsync.v1.SqlConfig
-	(*KeyValueConfig)(nil),           // 9: configsync.v1.KeyValueConfig
-	nil,                              // 10: configsync.v1.ApplicationConfig.EnvEntry
+	(WorldType)(0),                   // 0: configsync.v1.WorldType
+	(*FullConfigRequest)(nil),        // 1: configsync.v1.FullConfigRequest
+	(*FullConfigResponse)(nil),       // 2: configsync.v1.FullConfigResponse
+	(*FullConfig)(nil),               // 3: configsync.v1.FullConfig
+	(*IncrementalUpdateRequest)(nil), // 4: configsync.v1.IncrementalUpdateRequest
+	(*IncrementalUpdateAck)(nil),     // 5: configsync.v1.IncrementalUpdateAck
+	(*IncrementalConfig)(nil),        // 6: configsync.v1.IncrementalConfig
+	(*AppUpdate)(nil),                // 7: configsync.v1.AppUpdate
+	(*ApplicationConfig)(nil),        // 8: configsync.v1.ApplicationConfig
+	(*SqlConfig)(nil),                // 9: configsync.v1.SqlConfig
+	(*KeyValueConfig)(nil),           // 10: configsync.v1.KeyValueConfig
+	(*HttpConfig)(nil),               // 11: configsync.v1.HttpConfig
+	nil,                              // 12: configsync.v1.ApplicationConfig.EnvEntry
 }
 var file_configsync_v1_configsync_proto_depIdxs = []int32{
-	2,  // 0: configsync.v1.FullConfigResponse.config:type_name -> configsync.v1.FullConfig
-	7,  // 1: configsync.v1.FullConfig.applications:type_name -> configsync.v1.ApplicationConfig
-	5,  // 2: configsync.v1.IncrementalUpdateRequest.incremental_config:type_name -> configsync.v1.IncrementalConfig
-	6,  // 3: configsync.v1.IncrementalConfig.updates:type_name -> configsync.v1.AppUpdate
-	7,  // 4: configsync.v1.AppUpdate.app_config:type_name -> configsync.v1.ApplicationConfig
-	10, // 5: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
-	8,  // 6: configsync.v1.ApplicationConfig.sql:type_name -> configsync.v1.SqlConfig
-	9,  // 7: configsync.v1.ApplicationConfig.key_value:type_name -> configsync.v1.KeyValueConfig
-	0,  // 8: configsync.v1.ConfigSync.RequestFullConfig:input_type -> configsync.v1.FullConfigRequest
-	4,  // 9: configsync.v1.ConfigSync.PushIncrementalUpdate:input_type -> configsync.v1.IncrementalUpdateAck
-	1,  // 10: configsync.v1.ConfigSync.RequestFullConfig:output_type -> configsync.v1.FullConfigResponse
-	3,  // 11: configsync.v1.ConfigSync.PushIncrementalUpdate:output_type -> configsync.v1.IncrementalUpdateRequest
-	10, // [10:12] is the sub-list for method output_type
-	8,  // [8:10] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	3,  // 0: configsync.v1.FullConfigResponse.config:type_name -> configsync.v1.FullConfig
+	8,  // 1: configsync.v1.FullConfig.applications:type_name -> configsync.v1.ApplicationConfig
+	6,  // 2: configsync.v1.IncrementalUpdateRequest.incremental_config:type_name -> configsync.v1.IncrementalConfig
+	7,  // 3: configsync.v1.IncrementalConfig.updates:type_name -> configsync.v1.AppUpdate
+	8,  // 4: configsync.v1.AppUpdate.app_config:type_name -> configsync.v1.ApplicationConfig
+	12, // 5: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
+	9,  // 6: configsync.v1.ApplicationConfig.sql:type_name -> configsync.v1.SqlConfig
+	10, // 7: configsync.v1.ApplicationConfig.key_value:type_name -> configsync.v1.KeyValueConfig
+	0,  // 8: configsync.v1.ApplicationConfig.world_type:type_name -> configsync.v1.WorldType
+	11, // 9: configsync.v1.ApplicationConfig.http:type_name -> configsync.v1.HttpConfig
+	1,  // 10: configsync.v1.ConfigSync.RequestFullConfig:input_type -> configsync.v1.FullConfigRequest
+	5,  // 11: configsync.v1.ConfigSync.PushIncrementalUpdate:input_type -> configsync.v1.IncrementalUpdateAck
+	2,  // 12: configsync.v1.ConfigSync.RequestFullConfig:output_type -> configsync.v1.FullConfigResponse
+	4,  // 13: configsync.v1.ConfigSync.PushIncrementalUpdate:output_type -> configsync.v1.IncrementalUpdateRequest
+	12, // [12:14] is the sub-list for method output_type
+	10, // [10:12] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_configsync_v1_configsync_proto_init() }
@@ -739,13 +869,14 @@ func file_configsync_v1_configsync_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configsync_v1_configsync_proto_rawDesc), len(file_configsync_v1_configsync_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   11,
+			NumEnums:      1,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_configsync_v1_configsync_proto_goTypes,
 		DependencyIndexes: file_configsync_v1_configsync_proto_depIdxs,
+		EnumInfos:         file_configsync_v1_configsync_proto_enumTypes,
 		MessageInfos:      file_configsync_v1_configsync_proto_msgTypes,
 	}.Build()
 	File_configsync_v1_configsync_proto = out.File

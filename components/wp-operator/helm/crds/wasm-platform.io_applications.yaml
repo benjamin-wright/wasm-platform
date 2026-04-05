@@ -49,13 +49,47 @@ spec:
           metadata:
             type: object
           spec:
-            description: ApplicationSpec defines the desired state of an Application.
+            description: |-
+              ApplicationSpec defines the desired state of an Application.
+
+              Exactly one of Topic or HTTP must be set.
             properties:
               env:
                 additionalProperties:
                   type: string
                 description: Env is an optional map of environment variables injected
                   into the module's runtime configuration.
+                type: object
+              http:
+                description: |-
+                  HTTP declares this application as an HTTP-triggered app exposed via the gateway.
+                  The gateway auto-generates the internal NATS subject as http.<namespace>.<name>.
+                  Mutually exclusive with Topic.
+                properties:
+                  methods:
+                    description: |-
+                      Methods is the list of HTTP methods the gateway accepts on this path.
+                      If omitted, all methods are allowed.
+                      Valid values: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS.
+                    enum:
+                    - GET
+                    - HEAD
+                    - POST
+                    - PUT
+                    - DELETE
+                    - PATCH
+                    - OPTIONS
+                    items:
+                      type: string
+                    type: array
+                  path:
+                    description: |-
+                      Path is the URL path the gateway exposes for this application.
+                      Must start with '/'. Must be unique cluster-wide.
+                    pattern: ^/
+                    type: string
+                required:
+                - path
                 type: object
               keyValue:
                 description: |-
@@ -81,12 +115,15 @@ spec:
                   Topic is the message subject the execution host subscribes to.
                   Messages on this subject invoke the module's on-message export.
                   Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
+                  Mutually exclusive with HTTP.
                 pattern: ^[^*>]+$
                 type: string
             required:
             - module
-            - topic
             type: object
+            x-kubernetes-validations:
+            - message: exactly one of spec.topic or spec.http must be set
+              rule: has(self.topic) != has(self.http)
           status:
             description: ApplicationStatus defines the observed state of an Application.
             properties:

@@ -24,9 +24,33 @@ interface messaging {
     send: func(topic: string, payload: list<u8>) -> result<_, string>;
 }
 
-world application {
+interface http-types {
+    record http-request {
+        method: string,
+        path: string,
+        query: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+}
+
+world message-application {
     import sql;
     import kv;
     import messaging;
     export on-message: func(payload: list<u8>) -> result<option<list<u8>>, string>;
+}
+
+world http-application {
+    import sql;
+    import kv;
+    import messaging;
+    use http-types.{http-request, http-response};
+    export on-request: func(request: http-request) -> result<http-response, string>;
 }

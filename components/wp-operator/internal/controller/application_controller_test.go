@@ -35,6 +35,9 @@ func fakeClientWithIndex(apps ...*wasmplatformv1alpha1.Application) client.Clien
 			topicIndexField,
 			func(obj client.Object) []string {
 				a := obj.(*wasmplatformv1alpha1.Application)
+				if a.Spec.Topic == "" {
+					return nil // HTTP apps have no spec.topic to index
+				}
 				return []string{a.Spec.Topic}
 			},
 		).
@@ -51,6 +54,22 @@ func makeApp(ns, name, topic string, ts time.Time) *wasmplatformv1alpha1.Applica
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
 			Module: "oci://example.com/app@sha256:aaaa",
 			Topic:  topic,
+		},
+	}
+}
+
+func makeHttpApp(ns, name, path string, ts time.Time) *wasmplatformv1alpha1.Application {
+	return &wasmplatformv1alpha1.Application{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         ns,
+			CreationTimestamp: metav1.NewTime(ts),
+		},
+		Spec: wasmplatformv1alpha1.ApplicationSpec{
+			Module: "oci://example.com/app@sha256:aaaa",
+			HTTP: &wasmplatformv1alpha1.HttpConfig{
+				Path: path,
+			},
 		},
 	}
 }
@@ -147,6 +166,39 @@ func TestFindTopicOwner(t *testing.T) {
 			got := owner.Namespace + "/" + owner.Name
 			if got != tt.wantOwner {
 				t.Errorf("expected owner %s, got %s", tt.wantOwner, got)
+			}
+		})
+	}
+}
+
+func TestInternalTopic(t *testing.T) {
+	tests := []struct {
+		name string
+		app  *wasmplatformv1alpha1.Application
+		want string
+	}{
+		{
+			name: "topic app receives fn. prefix",
+			app:  makeApp("default", "my-app", "my-app.events", t0),
+			want: "fn.my-app.events",
+		},
+		{
+			name: "http app generates http.<namespace>.<name>",
+			app:  makeHttpApp("default", "my-app", "/api/orders", t0),
+			want: "http.default.my-app",
+		},
+		{
+			name: "http app in different namespace",
+			app:  makeHttpApp("production", "order-service", "/orders", t0),
+			want: "http.production.order-service",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := internalTopic(tt.app)
+			if got != tt.want {
+				t.Errorf("internalTopic() = %q, want %q", got, tt.want)
 			}
 		})
 	}

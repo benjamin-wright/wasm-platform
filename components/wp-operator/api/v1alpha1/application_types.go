@@ -4,7 +4,26 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// HttpConfig defines the HTTP trigger configuration for an Application.
+type HttpConfig struct {
+	// Path is the URL path the gateway exposes for this application.
+	// Must start with '/'. Must be unique cluster-wide.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^/`
+	Path string `json:"path"`
+
+	// Methods is the list of HTTP methods the gateway accepts on this path.
+	// If omitted, all methods are allowed.
+	// Valid values: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS.
+	// +optional
+	// +kubebuilder:validation:Enum=GET;HEAD;POST;PUT;DELETE;PATCH;OPTIONS
+	Methods []string `json:"methods,omitempty"`
+}
+
 // ApplicationSpec defines the desired state of an Application.
+//
+// Exactly one of Topic or HTTP must be set.
+// +kubebuilder:validation:XValidation:rule="has(self.topic) != has(self.http)",message="exactly one of spec.topic or spec.http must be set"
 type ApplicationSpec struct {
 	// Module is the OCI URI for the .wasm module.
 	// Use a digest-pinned reference (@sha256:…) for deterministic deployments.
@@ -15,9 +34,16 @@ type ApplicationSpec struct {
 	// Topic is the message subject the execution host subscribes to.
 	// Messages on this subject invoke the module's on-message export.
 	// Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
-	// +kubebuilder:validation:Required
+	// Mutually exclusive with HTTP.
+	// +optional
 	// +kubebuilder:validation:Pattern=`^[^*>]+$`
-	Topic string `json:"topic"`
+	Topic string `json:"topic,omitempty"`
+
+	// HTTP declares this application as an HTTP-triggered app exposed via the gateway.
+	// The gateway auto-generates the internal NATS subject as http.<namespace>.<name>.
+	// Mutually exclusive with Topic.
+	// +optional
+	HTTP *HttpConfig `json:"http,omitempty"`
 
 	// Env is an optional map of environment variables injected into the module's runtime configuration.
 	// +optional

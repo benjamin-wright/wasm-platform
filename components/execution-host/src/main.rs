@@ -10,7 +10,7 @@ use anyhow::Result;
 use axum::{Router, routing::get};
 use config::AppRegistry;
 use modules::ModuleRegistry;
-use runtime::{RuntimeState, invoke_on_message};
+use runtime::{RuntimeState, HttpRequestPayload, invoke_on_message, invoke_on_request};
 use std::sync::Arc;
 use wasmtime::Engine;
 
@@ -142,11 +142,37 @@ async fn process_nats_messages(
             let reply = message.reply.clone();
             let payload = message.payload.to_vec();
 
+            // Dispatch based on the world type declared in the app's config.
+            // In prost 0.13, enum fields are stored as i32; use TryFrom to
+            // convert to the typed enum, defaulting to MESSAGE on unknown values.
+            let world_type =
+                config::configsync::WorldType::try_from(app_config.world_type)
+                    .unwrap_or(config::configsync::WorldType::Message);
+
             // WASM execution is CPU-bound; run it on the blocking thread
             // pool so the async runtime stays responsive.
-            let result =
-                tokio::task::spawn_blocking(move || invoke_on_message(&state, &component, &payload))
-                    .await;
+            let result = match world_type {
+                config::configsync::WorldType::Message => {
+                    tokio::task::spawn_blocking(move || {
+                        invoke_on_message(&state, &component, &payload)
+                    })
+                    .await
+                }
+                config::configsync::WorldType::Http => {
+                    tokio::task::spawn_blocking(move || {
+                        let request: HttpRequestPayload =
+                            serde_json::from_slice(&payload).map_err(|e| {
+                                anyhow::anyhow!("failed to decode HTTP request payload: {e}")
+                            })?;
+                        let response = invoke_on_request(&state, &component, request)?;
+                        let bytes = serde_json::to_vec(&response).map_err(|e| {
+                            anyhow::anyhow!("failed to encode HTTP response payload: {e}")
+                        })?;
+                        Ok(Some(bytes))
+                    })
+                    .await
+                }
+            };
 
             match result {
                 Ok(Ok(Some(response_body))) => {

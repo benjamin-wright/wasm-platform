@@ -72,7 +72,7 @@ Independent of Phases 1, 3, and 4. Must be completed before any Application reac
 
 ---
 
-### Phase 3: WIT Interface Split ⚠️ Breaking Change
+### Phase 3: WIT Interface Split ✅
 
 Splits `framework/runtime.wit` into two worlds. **This is a breaking change for all existing guest modules and the execution host.** The `examples/hello-world` module must be updated alongside this phase.
 
@@ -110,12 +110,12 @@ world http-application {
 
 #### Tasks
 
-- [ ] Update `framework/runtime.wit` — rename `world application` to `world message-application`. Add `http-request` and `http-response` records. Add `world http-application` with `on-request` export. (Developer must run `cargo build` in each component to verify bindgen output after this change.)
-- [ ] Add `world_type` enum to `configsync.proto` — values: `WORLD_TYPE_MESSAGE` (0), `WORLD_TYPE_HTTP` (1). Add `world_type` field to `ApplicationConfig`. Regenerate Go and Rust gRPC stubs (`make generate` in `components/wp-operator/`; `cargo build` triggers `build.rs` in `components/execution-host/`).
-- [ ] Update execution host `runtime.rs` — add second `bindgen!({ world: "http-application", ... })` block. Add `invoke_on_request(state, component, request: HttpRequest) -> Result<HttpResponse>` function alongside the existing `invoke_on_message`.
-- [ ] Update execution host `process_nats_messages` — dispatch on `ApplicationConfig.world_type`: `WORLD_TYPE_MESSAGE` topics use the existing `invoke_on_message` path; `WORLD_TYPE_HTTP` topics decode the platform JSON payload into an `HttpRequest` struct, call `invoke_on_request`, and serialise the returned `HttpResponse` struct back to JSON bytes for the NATS reply.
-- [ ] Update `examples/hello-world` — change `world: "application"` to `world: "message-application"` in the `wit_bindgen::generate!` call. Trait name changes from `Guest` to whatever `wit-bindgen` generates for the renamed world.
-- [ ] Update wp-operator `reconcileUpsert` — set `cfg.WorldType` based on trigger class: `WORLD_TYPE_HTTP` when `spec.http` is set, `WORLD_TYPE_MESSAGE` otherwise.
+- [x] Update `framework/runtime.wit` — rename `world application` to `world message-application`. Add `http-request` and `http-response` records. Add `world http-application` with `on-request` export. (Developer must run `cargo build` in each component to verify bindgen output after this change.)
+- [x] Add `world_type` enum to `configsync.proto` — values: `WORLD_TYPE_MESSAGE` (0), `WORLD_TYPE_HTTP` (1). Add `world_type` field to `ApplicationConfig`. Regenerate Go and Rust gRPC stubs (`make generate` in `components/wp-operator/`; `cargo build` triggers `build.rs` in `components/execution-host/`).
+- [x] Update execution host `runtime.rs` — add second `bindgen!({ world: "http-application", ... })` block. Add `invoke_on_request(state, component, request: HttpRequest) -> Result<HttpResponse>` function alongside the existing `invoke_on_message`.
+- [x] Update execution host `process_nats_messages` — dispatch on `ApplicationConfig.world_type`: `WORLD_TYPE_MESSAGE` topics use the existing `invoke_on_message` path; `WORLD_TYPE_HTTP` topics decode the platform JSON payload into an `HttpRequest` struct, call `invoke_on_request`, and serialise the returned `HttpResponse` struct back to JSON bytes for the NATS reply.
+- [x] Update `examples/hello-world` — change `world: "application"` to `world: "message-application"` in the `wit_bindgen::generate!` call. Trait name changes from `Guest` to whatever `wit-bindgen` generates for the renamed world.
+- [x] Update wp-operator `reconcileUpsert` — set `cfg.WorldType` based on trigger class: `WORLD_TYPE_HTTP` when `spec.http` is set, `WORLD_TYPE_MESSAGE` otherwise.
 
 ---
 
@@ -147,14 +147,14 @@ spec:
 
 #### Tasks
 
-- [ ] Add `HttpConfig` struct to `application_types.go` with `Path` (required, validated `^/`) and `Methods` (optional, validated enum). Make `spec.topic` optional. Add CEL rule enforcing exactly one of `spec.topic` / `spec.http` is set. Existing `^[^*>]+$` pattern on `spec.topic` is unchanged. Regenerate CRD manifest (`make generate`).
-- [ ] Add `HttpConfig` message to `configsync.proto` — fields: `path` (string), `methods` (repeated string). Add optional `http` field to `ApplicationConfig`. The `topic` field remains and always carries the fully-prefixed internal subject. (The `world_type` field is added in Phase 3.)
-- [ ] Update `reconcileUpsert` in the operator — compute the internal topic: if `spec.topic` is set, prefix with `fn.`; if `spec.http` is set, generate `http.<namespace>.<name>`. Set `cfg.Topic` to the prefixed value. Populate `cfg.Http` when `spec.http` is present.
-- [ ] Update topic uniqueness check — `findTopicOwner` must compare the *prefixed* topic, or (more simply) only compare within the same trigger class. Since HTTP topics are derived from `(namespace, name)` they are inherently unique; the check only needs to run for `spec.topic` apps. No functional change to the existing index, since the index stores unprefixed values and the comparison scope is already correct.
-- [ ] Update `AppRegistry` in the execution host — no structural change needed. The `topic` field in `ApplicationConfig` already carries the full subject string; the registry is keyed by it. The execution host subscribes to whatever the operator sends.
-- [ ] Update `buildDeleteUpdate` in the operator — ensure the prefixed topic is used in the delete config so the execution host correctly identifies the app to remove.
-- [ ] Update tests — add cases for `fn.`-prefixed topics, `http.`-derived topics, and mutual exclusivity validation.
-- [ ] Update `components/wp-operator/README.md` — document `spec.http`, the internal prefix scheme (noting it is invisible to users), and the mutual exclusivity rule.
+- [x] Add `HttpConfig` struct to `application_types.go` with `Path` (required, validated `^/`) and `Methods` (optional, validated enum). Make `spec.topic` optional. Add CEL rule enforcing exactly one of `spec.topic` / `spec.http` is set. Existing `^[^*>]+$` pattern on `spec.topic` is unchanged. Regenerate CRD manifest (`make generate`).
+- [x] Add `HttpConfig` message to `configsync.proto` — fields: `path` (string), `methods` (repeated string). Add optional `http` field to `ApplicationConfig`. The `topic` field remains and always carries the fully-prefixed internal subject. (The `world_type` field is added in Phase 3.)
+- [x] Update `reconcileUpsert` in the operator — compute the internal topic: if `spec.topic` is set, prefix with `fn.`; if `spec.http` is set, generate `http.<namespace>.<name>`. Set `cfg.Topic` to the prefixed value. Populate `cfg.Http` when `spec.http` is present.
+- [x] Update topic uniqueness check — `findTopicOwner` must compare the *prefixed* topic, or (more simply) only compare within the same trigger class. Since HTTP topics are derived from `(namespace, name)` they are inherently unique; the check only needs to run for `spec.topic` apps. No functional change to the existing index, since the index stores unprefixed values and the comparison scope is already correct.
+- [x] Update `AppRegistry` in the execution host — no structural change needed. The `topic` field in `ApplicationConfig` already carries the full subject string; the registry is keyed by it. The execution host subscribes to whatever the operator sends.
+- [x] Update `buildDeleteUpdate` in the operator — ensure the prefixed topic is used in the delete config so the execution host correctly identifies the app to remove.
+- [x] Update tests — add cases for `fn.`-prefixed topics, `http.`-derived topics, and mutual exclusivity validation.
+- [x] Update `components/wp-operator/README.md` — document `spec.http`, the internal prefix scheme (noting it is invisible to users), and the mutual exclusivity rule.
 
 ---
 

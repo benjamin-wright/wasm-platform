@@ -4,7 +4,9 @@ A Kubernetes operator that watches `Application` CRDs and reconciles platform re
 
 ## Application CRD
 
-`Application` is the primary resource. Each instance declares a single deployable WASM module and its runtime requirements.
+`Application` is the primary resource. Each instance declares a single deployable WASM module and its runtime requirements. Exactly one of `spec.topic` or `spec.http` must be set — they are mutually exclusive.
+
+### Topic-only application (message-passing)
 
 ```yaml
 apiVersion: wasm-platform.io/v1alpha1
@@ -21,6 +23,24 @@ spec:
   keyValue: sessions
 ```
 
+### HTTP application
+
+```yaml
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: order-api
+  namespace: default
+spec:
+  module: oci://registry.example.com/order-api@sha256:<digest>
+  http:
+    path: /api/orders
+    methods:
+      - GET
+      - POST
+  sql: orders
+```
+
 ### Fields
 
 #### `spec.module`
@@ -33,7 +53,9 @@ spec:
 
 | Type | Required | Description |
 |------|----------|-------------|
-| string | yes | Message subject the execution host subscribes to. Messages arriving on this subject invoke the module's `on-message` export. Must be **unique cluster-wide** across all namespaces. Wildcard characters (`*` and `>`) are forbidden and rejected at admission time. |
+| string | one of `topic`/`http` | Message subject the execution host subscribes to. Messages arriving on this subject invoke the module's `on-message` export. Must be **unique cluster-wide** across all namespaces. Wildcard characters (`*` and `>`) are forbidden and rejected at admission time. Mutually exclusive with `spec.http`. |
+
+**Internal prefix:** the operator adds a `fn.` prefix to the user-supplied topic before pushing it to execution hosts. A user who writes `spec.topic: my-app.messages` results in the NATS subject `fn.my-app.messages`. This is invisible to the module author and enforced transparently by the platform to prevent collisions with HTTP-triggered topics.
 
 **Uniqueness rule:** NATS subscriptions are global, so two Applications in different namespaces claiming the same subject would silently compete for messages. The operator enforces cluster-wide uniqueness: the Application with the oldest `metadata.creationTimestamp` is the rightful owner of a given topic. If two Applications share the same timestamp, the one with the lexicographically lower `namespace/name` wins. A blocked Application receives `Ready: False` with reason `TopicConflict` and no side-effectful work is performed for it (no NATS consumer, no SQL provisioning, no config pushed to execution hosts). When the owning Application is deleted or changes its topic, blocked Applications are automatically re-evaluated without manual intervention.
 
@@ -58,6 +80,17 @@ env:
 | Type | Required | Description |
 |------|----------|-------------|
 | string | no | Key prefix for the module's key-value namespace inside the shared Redis instance. The execution host prepends `<namespace>/<spec.keyValue>/` to every key it reads or writes on behalf of the module, preventing conflicts between applications. Applications in the same namespace that declare the same `spec.keyValue` intentionally share keys, supporting the FaaS pattern of composing independent functions. Omit to disable KV access entirely. |
+
+#### `spec.http` (optional, mutually exclusive with `spec.topic`)
+
+Marks this Application as an HTTP-triggered app served by the platform gateway. Exactly one of `spec.topic` or `spec.http` must be set — providing both or neither is rejected at admission time.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `spec.http.path` | string | yes | URL path the gateway exposes (e.g. `/api/orders`). Must start with `/`. Must be unique cluster-wide; two Applications may not expose the same path. |
+| `spec.http.methods` | []string | no | Allowed HTTP methods. If omitted, the gateway accepts all methods. Valid values: `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`. The gateway returns `405 Method Not Allowed` (with an `Allow` header) when a request uses an unlisted method. |
+
+**Internal topic:** when `spec.http` is set, the operator auto-generates the NATS subject as `http.<namespace>.<name>`. This is invisible to the module author; the execution host dispatches the request to the module's `on-request` export using typed WIT records rather than raw NATS payloads. No user-visible `spec.topic` is needed or permitted.
 
 ## Operator Behaviour
 

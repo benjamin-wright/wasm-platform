@@ -837,6 +837,8 @@ dependencies = [
  "oci-distribution",
  "prost",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tonic",
  "tonic-build",

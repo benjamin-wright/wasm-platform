@@ -232,7 +232,7 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 	})
 
 	update := cc.WaitForUpsert(t, ns, "my-app")
-	g.Expect(update.GetTopic()).To(Equal("itest.create"))
+	g.Expect(update.GetTopic()).To(Equal("fn.itest.create"))
 	g.Expect(update.GetModuleRef()).To(Equal("oci://example.com/my-app@sha256:aaaa"))
 }
 
@@ -266,7 +266,7 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 	g.Expect(c.Update(context.Background(), &fresh)).To(Succeed())
 
 	update := cc.WaitForUpsert(t, ns, "my-app")
-	g.Expect(update.GetTopic()).To(Equal("itest.v2"))
+	g.Expect(update.GetTopic()).To(Equal("fn.itest.v2"))
 }
 
 // TestApplicationDelete_BroadcastsDelete verifies that deleting an Application
@@ -382,5 +382,5 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 
 	// An upsert for the formerly-blocked app must be broadcast.
 	update := cc.WaitForUpsert(t, ns, "blocked-app")
-	g.Expect(update.GetTopic()).To(Equal(sharedTopic))
+	g.Expect(update.GetTopic()).To(Equal("fn." + sharedTopic))
 }

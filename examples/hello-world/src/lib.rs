@@ -1,5 +1,5 @@
 wit_bindgen::generate!({
-    world: "application",
+    world: "message-application",
     path: "../../framework/runtime.wit",
 });
 
