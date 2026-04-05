@@ -20,4 +20,7 @@ def wp_databases(namespace):
         chart='components/wp-databases',
         namespace=namespace,
         labels=['wp-databases'],
+        deps=[
+            'db-operator',
+        ],
     )

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,15 +80,17 @@ func createTestNamespace(t *testing.T, c client.Client) string {
 	return name
 }
 
-// hostStream connects to the operator's gRPC ConfigSync endpoint and acts as
-// an execution host. It automatically acks every received update so the
-// operator can continue broadcasting subsequent updates. Consumed updates are
-// forwarded to the Updates channel.
-type hostStream struct {
-	Updates chan *configsync.IncrementalUpdateRequest
+// configClient connects to the operator gRPC endpoint, identifies itself as
+// an execution host, and collects every incoming AppUpdate in memory. Updates
+// are routed into per-resource buffered channels so that WaitForUpsert and
+// WaitForDelete calls for different resources are fully independent.
+type configClient struct {
+	mu      sync.Mutex
+	upserts map[string]chan *configsync.ApplicationConfig // keyed by "namespace/name"
+	deletes map[string]chan struct{}                      // keyed by "namespace/name"
 }
 
-func newHostStream(t *testing.T, hostID string) *hostStream {
+func newConfigClient(t *testing.T, hostID string) *configClient {
 	t.Helper()
 	conn, err := grpc.NewClient(grpcAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -104,22 +107,34 @@ func newHostStream(t *testing.T, hostID string) *hostStream {
 	if err != nil {
 		t.Fatalf("opening PushIncrementalUpdate stream: %v", err)
 	}
-	// Identify this host to the operator.
 	if err := stream.Send(&configsync.IncrementalUpdateAck{HostId: hostID}); err != nil {
 		t.Fatalf("sending host identification: %v", err)
 	}
 
-	hs := &hostStream{Updates: make(chan *configsync.IncrementalUpdateRequest, 64)}
+	cc := &configClient{
+		upserts: make(map[string]chan *configsync.ApplicationConfig),
+		deletes: make(map[string]chan struct{}),
+	}
 	go func() {
 		for {
 			req, err := stream.Recv()
 			if err != nil {
 				return
 			}
-			select {
-			case hs.Updates <- req:
-			default:
-				// Buffer full; drop to avoid blocking the receive loop.
+			for _, u := range req.IncrementalConfig.GetUpdates() {
+				cfg := u.GetAppConfig()
+				key := cfg.GetNamespace() + "/" + cfg.GetName()
+				if u.GetDelete() {
+					select {
+					case cc.deleteChan(key) <- struct{}{}:
+					default:
+					}
+				} else {
+					select {
+					case cc.upsertChan(key) <- cfg:
+					default:
+					}
+				}
 			}
 			// Acknowledge so the operator can deliver the next update.
 			_ = stream.Send(&configsync.IncrementalUpdateAck{
@@ -129,44 +144,53 @@ func newHostStream(t *testing.T, hostID string) *hostStream {
 			})
 		}
 	}()
-	return hs
+	return cc
 }
 
-// receiveUpdate blocks until an IncrementalUpdateRequest arrives on the stream
-// whose updates contain an AppUpdate for (ns, name) with the given delete flag.
-// Fails the test if a second update for the same resource arrives before the
-// call returns, or if no matching update arrives within updateTimeout.
-func (hs *hostStream) receiveUpdate(t *testing.T, ns, name string, wantDelete bool) *configsync.AppUpdate {
+func (cc *configClient) upsertChan(key string) chan *configsync.ApplicationConfig {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if ch, ok := cc.upserts[key]; ok {
+		return ch
+	}
+	ch := make(chan *configsync.ApplicationConfig, 32)
+	cc.upserts[key] = ch
+	return ch
+}
+
+func (cc *configClient) deleteChan(key string) chan struct{} {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if ch, ok := cc.deletes[key]; ok {
+		return ch
+	}
+	ch := make(chan struct{}, 8)
+	cc.deletes[key] = ch
+	return ch
+}
+
+// WaitForUpsert blocks until an upsert for (ns, name) has been received and
+// returns its ApplicationConfig. Fails the test if none arrives within updateTimeout.
+func (cc *configClient) WaitForUpsert(t *testing.T, ns, name string) *configsync.ApplicationConfig {
 	t.Helper()
-	deadline := time.Now().Add(updateTimeout)
-	var found *configsync.AppUpdate
-	for time.Now().Before(deadline) {
-		select {
-		case req := <-hs.Updates:
-			for _, u := range req.IncrementalConfig.GetUpdates() {
-				cfg := u.GetAppConfig()
-				if cfg.GetNamespace() != ns || cfg.GetName() != name {
-					continue
-				}
-				if u.GetDelete() != wantDelete {
-					t.Fatalf("received unexpected update for %s/%s: delete=%v, want delete=%v", ns, name, u.GetDelete(), wantDelete)
-				}
-				if found != nil {
-					t.Fatalf("received duplicate update for %s/%s", ns, name)
-				}
-				found = u
-			}
-		case <-time.After(250 * time.Millisecond):
-			if found != nil {
-				return found
-			}
-		}
+	select {
+	case cfg := <-cc.upsertChan(ns + "/" + name):
+		return cfg
+	case <-time.After(updateTimeout):
+		t.Fatalf("timed out waiting for upsert of %s/%s", ns, name)
+		return nil
 	}
-	if found != nil {
-		return found
+}
+
+// WaitForDelete blocks until a delete for (ns, name) has been received.
+// Fails the test if none arrives within updateTimeout.
+func (cc *configClient) WaitForDelete(t *testing.T, ns, name string) {
+	t.Helper()
+	select {
+	case <-cc.deleteChan(ns + "/" + name):
+	case <-time.After(updateTimeout):
+		t.Fatalf("timed out waiting for delete of %s/%s", ns, name)
 	}
-	t.Fatalf("timed out waiting for %s/%s update (delete=%v)", ns, name, wantDelete)
-	return nil
 }
 
 // waitForReady polls the Application until its Ready condition is True.
@@ -193,7 +217,7 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 	g := NewWithT(t)
 	c := newK8sClient(t)
 	ns := createTestNamespace(t, c)
-	hs := newHostStream(t, "itest-host-create")
+	cc := newConfigClient(t, "itest-host-create")
 
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
@@ -207,9 +231,9 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 		_ = c.Delete(context.Background(), app)
 	})
 
-	update := hs.receiveUpdate(t, ns, "my-app", false)
-	g.Expect(update.GetAppConfig().GetTopic()).To(Equal("itest.create"))
-	g.Expect(update.GetAppConfig().GetModuleRef()).To(Equal("oci://example.com/my-app@sha256:aaaa"))
+	update := cc.WaitForUpsert(t, ns, "my-app")
+	g.Expect(update.GetTopic()).To(Equal("itest.create"))
+	g.Expect(update.GetModuleRef()).To(Equal("oci://example.com/my-app@sha256:aaaa"))
 }
 
 // TestApplicationUpdate_BroadcastsUpsert verifies that updating an Application
@@ -218,7 +242,7 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 	g := NewWithT(t)
 	c := newK8sClient(t)
 	ns := createTestNamespace(t, c)
-	hs := newHostStream(t, "itest-host-update")
+	cc := newConfigClient(t, "itest-host-update")
 
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
@@ -232,8 +256,8 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 		_ = c.Delete(context.Background(), app)
 	})
 
-	// Drain the single create broadcast, then assert exactly one update broadcast.
-	hs.receiveUpdate(t, ns, "my-app", false)
+	// Drain the create broadcast before asserting the update broadcast.
+	cc.WaitForUpsert(t, ns, "my-app")
 
 	// Fetch the latest resource version before applying the update.
 	var fresh wasmplatformv1alpha1.Application
@@ -241,8 +265,8 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 	fresh.Spec.Topic = "itest.v2"
 	g.Expect(c.Update(context.Background(), &fresh)).To(Succeed())
 
-	update := hs.receiveUpdate(t, ns, "my-app", false)
-	g.Expect(update.GetAppConfig().GetTopic()).To(Equal("itest.v2"))
+	update := cc.WaitForUpsert(t, ns, "my-app")
+	g.Expect(update.GetTopic()).To(Equal("itest.v2"))
 }
 
 // TestApplicationDelete_BroadcastsDelete verifies that deleting an Application
@@ -251,7 +275,7 @@ func TestApplicationDelete_BroadcastsDelete(t *testing.T) {
 	g := NewWithT(t)
 	c := newK8sClient(t)
 	ns := createTestNamespace(t, c)
-	hs := newHostStream(t, "itest-host-delete")
+	cc := newConfigClient(t, "itest-host-delete")
 
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
@@ -267,14 +291,14 @@ func TestApplicationDelete_BroadcastsDelete(t *testing.T) {
 	})
 
 	// Drain the create upsert before proceeding to the delete assertion.
-	hs.receiveUpdate(t, ns, "my-app", false)
+	cc.WaitForUpsert(t, ns, "my-app")
 
 	// Wait for Ready so the finalizer is in place before deleting.
 	waitForReady(t, c, ns, "my-app")
 
 	g.Expect(c.Delete(context.Background(), app)).To(Succeed())
 
-	hs.receiveUpdate(t, ns, "my-app", true)
+	cc.WaitForDelete(t, ns, "my-app")
 }
 
 // waitForCondition polls the Application until the named condition reaches the
@@ -306,7 +330,7 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 	g := NewWithT(t)
 	c := newK8sClient(t)
 	ns := createTestNamespace(t, c)
-	hs := newHostStream(t, "itest-host-conflict")
+	cc := newConfigClient(t, "itest-host-conflict")
 
 	const sharedTopic = "itest.conflict.heal"
 
@@ -324,7 +348,14 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 	// Owner must be Ready before we create the blocker; this also ensures the
 	// creationTimestamp ordering is deterministic.
 	waitForReady(t, c, ns, "owner-app")
-	hs.receiveUpdate(t, ns, "owner-app", false)
+	cc.WaitForUpsert(t, ns, "owner-app")
+
+	// Sleep for a full second so that blocked-app receives a strictly later
+	// creationTimestamp. Kubernetes stores creationTimestamp at second
+	// granularity, so without this sleep both apps may land on the same
+	// second and the lexicographic tie-break ("blocked" < "owner") would
+	// incorrectly make blocked-app the topic owner.
+	time.Sleep(time.Second)
 
 	// Create the blocked app — it should pick up TopicConflict immediately.
 	blocked := &wasmplatformv1alpha1.Application{
@@ -334,6 +365,7 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 			Topic:  sharedTopic,
 		},
 	}
+
 	g.Expect(c.Create(context.Background(), blocked)).To(Succeed())
 	t.Cleanup(func() { _ = c.Delete(context.Background(), blocked) })
 
@@ -341,17 +373,14 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 	waitForCondition(t, c, ns, "blocked-app", "TopicConflict", true)
 	waitForCondition(t, c, ns, "blocked-app", "Ready", false)
 
-	// No config update should have been broadcast for the blocked app.
-	// (The host stream buffer is checked — no update for "blocked-app" must arrive.)
-
 	// Delete the owning app. The watch handler should enqueue the blocked app.
 	g.Expect(c.Delete(context.Background(), owner)).To(Succeed())
-	hs.receiveUpdate(t, ns, "owner-app", true)
+	cc.WaitForDelete(t, ns, "owner-app")
 
 	// The blocked app should now heal: TopicConflict removed, Ready=True.
 	waitForReady(t, c, ns, "blocked-app")
 
-	// And an upsert update for the formerly-blocked app must be broadcast.
-	update := hs.receiveUpdate(t, ns, "blocked-app", false)
-	g.Expect(update.GetAppConfig().GetTopic()).To(Equal(sharedTopic))
+	// An upsert for the formerly-blocked app must be broadcast.
+	update := cc.WaitForUpsert(t, ns, "blocked-app")
+	g.Expect(update.GetTopic()).To(Equal(sharedTopic))
 }
