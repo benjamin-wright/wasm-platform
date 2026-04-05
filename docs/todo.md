@@ -6,7 +6,7 @@ Active implementation plan for the wasm-platform project.
 
 ## Execution Host: Align Implementation with README Spec
 
-The execution host currently loads a single hardcoded WASM module for all messages and implements none of the WIT host functions (`sql`, `kv`, `messaging`). The README specifies per-application module management via the module cache, host function implementations backed by PostgreSQL/Redis/NATS, and sandboxing. This plan closes those gaps in four phases, updating the README last to match the per-topic NATS model.
+The execution host currently loads a single hardcoded WASM module for all messages and implements none of the WIT host functions (`sql`, `kv`, `messaging`). The README specifies per-application module management via the module cache, host function implementations backed by PostgreSQL/Redis/NATS, and sandboxing. This plan closes those gaps, adding an HTTP gateway and internal NATS topic prefixing along the way.
 
 ### Gap Summary
 
@@ -18,6 +18,8 @@ The execution host currently loads a single hardcoded WASM module for all messag
 | Data isolation | Redis key prefix, per-app SQL credentials | Not implemented |
 | NATS model | Wildcard `fn.>` from `NATS_TOPIC_PREFIX` | Per-topic dynamic subs (correct) |
 | Sandboxing | Fuel, memory limits, timeouts | None |
+| HTTP ingress | Gateway translates HTTP → NATS → module → HTTP response | Not implemented |
+| Topic prefixing | `fn.` / `http.` prefix by trigger type | Raw user-supplied topic |
 
 ### Decisions
 
@@ -25,11 +27,16 @@ The execution host currently loads a single hardcoded WASM module for all messag
 - **Concurrency:** semaphore approach is kept (functionally equivalent to `for_each_concurrent`).
 - **Instance pooling:** deferred as stretch goal.
 - **PG/Redis connections:** pool-per-app, lazily initialized, shared across invocations — not per-invocation.
-- **Out of scope:** Gateway, Trigger Layer, Token Service.
+- **Internal topic prefixing:** all topics are prefixed by the platform to prevent cross-concern collisions. Topic-only apps use prefix `fn.` (e.g. user writes `my-app.events` → NATS subject `fn.my-app.events`). HTTP apps get an auto-generated topic `http.<namespace>.<name>`. This is invisible to the platform user and enforced by the wp-operator before pushing config to execution hosts.
+- **Topic uniqueness:** still cluster-wide, still based on the user-supplied `spec.topic` value (before prefixing). The `fn.` vs `http.` prefix guarantees no collision between trigger types, so the uniqueness check only needs to compare within the same prefix class. No additional validation is needed to ban user-supplied topics starting with `fn.` or `http.` — the operator always prepends `fn.` to topic-only apps, so a user entering `http.whatever` results in the NATS subject `fn.http.whatever`, which cannot collide with a genuine HTTP app's `http.<ns>.<name>` subject.
+- **WIT worlds:** `framework/runtime.wit` is split into two worlds. `world message-application` retains the existing `on-message` binary payload export (renamed from `world application`). `world http-application` exports `on-request` with typed `http-request` / `http-response` records — module authors get a clean interface with no manual parsing. The WASI HTTP resource model is explicitly not used; custom records are simpler to implement on the host and sufficient for a buffered FaaS model.
+- **Gateway language:** Rust (consistent with execution host, avoids a Go dependency for a non-operator component).
+- **Gateway route discovery:** wp-operator pushes route config to the gateway via gRPC (reuses the config-sync pattern, keeps CRD watching centralised in the operator).
+- **HTTP transport (gateway ↔ execution host):** the gateway serialises the incoming HTTP request as a platform-private JSON object for the NATS payload. The execution host decodes this and calls `on-request` with properly typed WIT records — the module never sees JSON. The execution host serialises the returned `HttpResponse` record back to JSON for the NATS reply. This is an internal platform format; a future auth middleware layer can inject a user ID by adding an `x-user-id` entry to the headers map before the NATS publish.
 
 ---
 
-### Phase 1: Per-Application Module Management
+### Phase 1: Per-Application Module Management ✅
 
 - [x] Create `ModuleRegistry` in new `src/modules.rs` — maps `(namespace, name)` → loaded `Component`, behind `Arc<RwLock<...>>`.
 - [x] Add module-cache HTTP client (`reqwest`) — on config change, check cache via `GET /modules/{digest}/{arch}/{version}`.
@@ -38,7 +45,7 @@ The execution host currently loads a single hardcoded WASM module for all messag
 - [x] Route messages by subject — in `process_nats_messages`, use `AppRegistry::get_by_topic()` to find the app, then `ModuleRegistry` to get the `Component`.
 - [x] Parameterize `invoke_on_message` — accept the per-app `Component` rather than using a single shared one.
 
-### Phase 2: Topic Uniqueness Enforcement (wp-operator)
+### Phase 2: Topic Uniqueness Enforcement (wp-operator) ✅
 
 Independent of Phases 1, 3, and 4. Must be completed before any Application reaches production use.
 
@@ -65,7 +72,139 @@ Independent of Phases 1, 3, and 4. Must be completed before any Application reac
 
 ---
 
-### Phase 3: Host Function Implementations
+### Phase 3: WIT Interface Split ⚠️ Breaking Change
+
+Splits `framework/runtime.wit` into two worlds. **This is a breaking change for all existing guest modules and the execution host.** The `examples/hello-world` module must be updated alongside this phase.
+
+#### New WIT shape
+
+```wit
+world message-application {
+    import sql;
+    import kv;
+    import messaging;
+    export on-message: func(payload: list<u8>) -> result<option<list<u8>>, string>;
+}
+
+record http-request {
+    method: string,
+    path: string,
+    query: string,
+    headers: list<tuple<string, string>>,
+    body: option<list<u8>>,
+}
+
+record http-response {
+    status: u16,
+    headers: list<tuple<string, string>>,
+    body: option<list<u8>>,
+}
+
+world http-application {
+    import sql;
+    import kv;
+    import messaging;
+    export on-request: func(request: http-request) -> result<http-response, string>;
+}
+```
+
+#### Tasks
+
+- [ ] Update `framework/runtime.wit` — rename `world application` to `world message-application`. Add `http-request` and `http-response` records. Add `world http-application` with `on-request` export. (Developer must run `cargo build` in each component to verify bindgen output after this change.)
+- [ ] Add `world_type` enum to `configsync.proto` — values: `WORLD_TYPE_MESSAGE` (0), `WORLD_TYPE_HTTP` (1). Add `world_type` field to `ApplicationConfig`. Regenerate Go and Rust gRPC stubs (`make generate` in `components/wp-operator/`; `cargo build` triggers `build.rs` in `components/execution-host/`).
+- [ ] Update execution host `runtime.rs` — add second `bindgen!({ world: "http-application", ... })` block. Add `invoke_on_request(state, component, request: HttpRequest) -> Result<HttpResponse>` function alongside the existing `invoke_on_message`.
+- [ ] Update execution host `process_nats_messages` — dispatch on `ApplicationConfig.world_type`: `WORLD_TYPE_MESSAGE` topics use the existing `invoke_on_message` path; `WORLD_TYPE_HTTP` topics decode the platform JSON payload into an `HttpRequest` struct, call `invoke_on_request`, and serialise the returned `HttpResponse` struct back to JSON bytes for the NATS reply.
+- [ ] Update `examples/hello-world` — change `world: "application"` to `world: "message-application"` in the `wit_bindgen::generate!` call. Trait name changes from `Guest` to whatever `wit-bindgen` generates for the renamed world.
+- [ ] Update wp-operator `reconcileUpsert` — set `cfg.WorldType` based on trigger class: `WORLD_TYPE_HTTP` when `spec.http` is set, `WORLD_TYPE_MESSAGE` otherwise.
+
+---
+
+### Phase 4: Internal Topic Prefixing & HTTP CRD Field
+
+Introduces the `fn.`/`http.` internal topic prefix scheme and adds the `spec.http` field. This phase is prerequisite for the gateway (Phase 4) and changes the NATS subjects the execution host subscribes to. No WIT changes required — the execution host still receives a flat payload via `on-message`.
+
+#### Design
+
+- **Topic-only apps** (`spec.topic` set, `spec.http` absent): the operator prefixes the user-supplied topic with `fn.` before pushing it to execution hosts in `ApplicationConfig.topic`. The user writes `my-app.events`; the NATS subject is `fn.my-app.events`. The `spec.topic` field index and uniqueness check continue to operate on the unprefixed value.
+- **HTTP apps** (`spec.http` set, `spec.topic` absent): the operator auto-generates the topic as `http.<namespace>.<name>` and pushes it in `ApplicationConfig.topic`. The user never sees or sets a topic. The uniqueness check is unnecessary — the topic is derived from the unique `(namespace, name)` pair.
+- **Mutual exclusivity:** exactly one of `spec.topic` or `spec.http` must be set. Enforced via a CEL validation rule on the CRD (or a webhook, if CEL is unavailable on the target cluster version). The operator also validates in `reconcileUpsert` as a defence-in-depth check.
+
+#### `spec.http` field shape
+
+```yaml
+spec:
+  http:
+    path: /api/orders
+    methods:
+      - GET
+      - POST
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `spec.http.path` | string | yes | URL path the gateway exposes. Must start with `/`. Must be unique cluster-wide (same ownership rules as `spec.topic`). |
+| `spec.http.methods` | []string | no | Allowed HTTP methods. Defaults to all methods if omitted. Used by the gateway for `405 Method Not Allowed` responses and `Allow` header on `HEAD`/`OPTIONS`. Valid values: `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`. |
+
+#### Tasks
+
+- [ ] Add `HttpConfig` struct to `application_types.go` with `Path` (required, validated `^/`) and `Methods` (optional, validated enum). Make `spec.topic` optional. Add CEL rule enforcing exactly one of `spec.topic` / `spec.http` is set. Existing `^[^*>]+$` pattern on `spec.topic` is unchanged. Regenerate CRD manifest (`make generate`).
+- [ ] Add `HttpConfig` message to `configsync.proto` — fields: `path` (string), `methods` (repeated string). Add optional `http` field to `ApplicationConfig`. The `topic` field remains and always carries the fully-prefixed internal subject. (The `world_type` field is added in Phase 3.)
+- [ ] Update `reconcileUpsert` in the operator — compute the internal topic: if `spec.topic` is set, prefix with `fn.`; if `spec.http` is set, generate `http.<namespace>.<name>`. Set `cfg.Topic` to the prefixed value. Populate `cfg.Http` when `spec.http` is present.
+- [ ] Update topic uniqueness check — `findTopicOwner` must compare the *prefixed* topic, or (more simply) only compare within the same trigger class. Since HTTP topics are derived from `(namespace, name)` they are inherently unique; the check only needs to run for `spec.topic` apps. No functional change to the existing index, since the index stores unprefixed values and the comparison scope is already correct.
+- [ ] Update `AppRegistry` in the execution host — no structural change needed. The `topic` field in `ApplicationConfig` already carries the full subject string; the registry is keyed by it. The execution host subscribes to whatever the operator sends.
+- [ ] Update `buildDeleteUpdate` in the operator — ensure the prefixed topic is used in the delete config so the execution host correctly identifies the app to remove.
+- [ ] Update tests — add cases for `fn.`-prefixed topics, `http.`-derived topics, and mutual exclusivity validation.
+- [ ] Update `components/wp-operator/README.md` — document `spec.http`, the internal prefix scheme (noting it is invisible to users), and the mutual exclusivity rule.
+
+---
+
+### Phase 5: HTTP Gateway
+
+New Rust service (`components/gateway/`). Accepts HTTP traffic, serialises the request into a platform-private NATS payload, publishes to the application's auto-generated `http.<namespace>.<name>` subject, waits for the NATS reply, and constructs an HTTP response from the reply. Depends on Phase 3 (WIT split adds `invoke_on_request` to the execution host) and Phase 4 (CRD adds `spec.http` and the operator generates `http.` topics).
+
+#### Design
+
+- **Route table:** the gateway maintains an in-memory route table populated by the wp-operator via a gRPC `GatewayRoutes` service (analogous to `ConfigSync`). Each entry maps `(path, methods)` → NATS subject. On startup the gateway requests the full route set; ongoing changes arrive as incremental deltas.
+- **NATS payload format:** the gateway serialises the HTTP request as a platform-private JSON object matching the fields of the `http-request` WIT record (method, path, query, headers, body). The execution host decodes this, calls `invoke_on_request` with typed WIT records (Phase 3), and serialises the returned `http-response` record back to JSON for the NATS reply. The module never sees JSON — this encoding is entirely internal to the platform.
+- **NATS request-reply:** the gateway uses `async_nats::Client::request()` which publishes with an auto-generated reply subject and waits for one response. The execution host already publishes to `message.reply` when present — no additional execution host changes needed beyond Phase 3.
+- **Timeouts:** gateway-side timeout on the NATS request (e.g. 30s default, `GATEWAY_TIMEOUT_SECS`). Returns `504 Gateway Timeout` on expiry.
+- **Method enforcement:** if the request method is not in the route's `methods` list (and the list is non-empty), return `405 Method Not Allowed` with an `Allow` header.
+- **No TLS for MVP.** TLS termination will be added later (likely via a sidecar or Kubernetes Ingress).
+- **No auth middleware for MVP.** The JSON payload includes a `headers` map so a future auth middleware layer can inject `x-user-id` (or similar) before the NATS publish.
+
+#### gRPC route service
+
+New proto `proto/gateway/v1/gateway.proto`:
+
+```protobuf
+service GatewayRoutes {
+  rpc RequestFullRoutes(FullRoutesRequest) returns (FullRoutesResponse);
+  rpc PushRouteUpdate(stream RouteUpdateAck) returns (stream RouteUpdateRequest);
+}
+
+message RouteConfig {
+  string path = 1;
+  repeated string methods = 2;
+  string nats_subject = 3;
+}
+```
+
+The wp-operator implements this service (same binary, new gRPC endpoint) and pushes route updates whenever an HTTP-type Application is created, updated, or deleted.
+
+#### Tasks
+
+- [ ] Define `proto/gateway/v1/gateway.proto` with the `GatewayRoutes` service, request/response types, and `RouteConfig` message.
+- [ ] Implement `GatewayRoutes` server in the wp-operator — maintain a route store (similar to `configstore.Store`), push incremental updates when HTTP-type Applications change.
+- [ ] Scaffold `components/gateway/` — new Rust binary with `Cargo.toml`, `Dockerfile`, Helm chart, `Tiltfile`, and `README.md`.
+- [ ] Implement route sync client in the gateway — gRPC client that connects to the wp-operator, requests full routes on startup, then maintains the incremental stream. Populates an in-memory `RouteTable` (path → `RouteEntry { methods, nats_subject }`).
+- [ ] Implement HTTP server in the gateway (`axum`) — on each request, look up the path in the `RouteTable`. If not found → `404`. If method not allowed → `405`. Otherwise serialise the request as a platform JSON payload (fields matching `http-request`), publish via `async_nats::Client::request()`, deserialise the `http-response` JSON from the reply, and return the HTTP response.
+- [ ] Add gateway to the platform Helm chart (`helm/wasm-platform/`) and `Tiltfile`.
+- [ ] End-to-end test — apply an Application with `spec.http`, verify the execution host pre-compiles the module, send an HTTP request to the gateway, confirm the request is routed through NATS to the module and the response is returned.
+- [ ] Update `components/gateway/README.md` — document the route sync protocol, platform JSON payload format, timeout behaviour, and method enforcement.
+
+---
+
+### Phase 6: Host Function Implementations
 
 Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocation time).
 
@@ -75,28 +214,30 @@ Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocati
 - [ ] Wire into `Linker` — call `add_to_linker` for each WIT interface in `RuntimeState::new()`, implement generated `Host` traits on `HostState`.
 - [ ] Update `HostState` — add per-invocation fields (`sql_config`, `kv_config`, `nats_client`) populated from the `ApplicationConfig` at invocation time.
 
-### Phase 4: Sandboxing & Resource Limits
+### Phase 7: Sandboxing & Resource Limits
 
-Parallel with Phases 1–3 (no dependency on per-app routing).
+Parallel with Phases 3–6 (no dependency on per-app routing).
 
 - [ ] Fuel metering — enable on `Engine`, set budget per `Store` before `on-message` (configurable via `WASM_FUEL_LIMIT`).
 - [ ] Memory limits — configure `InstanceLimits` on `Engine` (e.g. 64 MB default, `WASM_MEMORY_LIMIT_MB`).
 - [ ] Wall-clock timeout — wrap `spawn_blocking` in `tokio::time::timeout` (e.g. 30s default, `WASM_TIMEOUT_SECS`).
 - [ ] Instance pooling (stretch goal) — `PoolingAllocationConfig` for pre-allocated slots; defer if per-invocation model performs adequately.
 
-### Phase 5: README Alignment
+### Phase 8: README Alignment
 
-Depends on Phases 1–4.
+Depends on Phases 3–7.
 
-- [ ] Replace wildcard `fn.>` / `NATS_TOPIC_PREFIX` description with per-topic subscription model.
+- [ ] Replace wildcard `fn.>` / `NATS_TOPIC_PREFIX` description with per-topic subscription model and internal prefix scheme.
 - [ ] Replace `for_each_concurrent` reference with actual concurrency description.
 - [ ] Verify module loading section matches Phase 1 implementation.
+- [ ] Document gateway in execution-host README (NATS reply flow, platform JSON payload format, two-world dispatch).
+- [ ] Document the two WIT worlds in the project README and `framework/` — note `message-application` for pure message-passing and `http-application` for HTTP endpoints.
 - [ ] Full pass for any remaining stale claims.
 
 ### Verification
 
 - [ ] Unit tests for `ModuleRegistry` — mock HTTP server for cache round-trip.
 - [ ] Unit tests for host functions — fake external connections behind traits.
-- [ ] Integration test — full stack in test namespace: create `Application` CR, send NATS message, verify guest executes with host functions.
+- [ ] Integration test — full stack in test namespace: create `Application` CR with `spec.http`, send HTTP request through gateway, verify guest executes with host functions and response returns.
 - [ ] `cargo clippy` + `cargo fmt` pass.
 - [ ] Helm chart deploys correctly with updated config.
