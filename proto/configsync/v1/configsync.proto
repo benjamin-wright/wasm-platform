@@ -77,12 +77,12 @@ message ApplicationConfig {
 
 message SqlConfig {
   string database_name = 1;
-  string connection_url = 2;
+  string username = 2;
+  string password = 3;
 }
 
 message KeyValueConfig {
   string prefix = 1;
-  string connection_url = 2;
 }
 
 message HttpConfig {

@@ -135,7 +135,6 @@ Each component owns every aspect of its build that is not shared across componen
 - The build context must be the **component directory** (`components/<name>/`). Any dependency outside the component directory must be passed as a named build context (`--build-context name=<path>`).
 - Rust components that span the Cargo workspace must pass the repo root as a named build context and use `cargo-chef` for dependency caching: a dedicated `planner` stage runs `cargo chef prepare`, a `builder` stage runs `cargo chef cook` before copying source. The builder base image version must match the `rust-version` declared in the component's `Cargo.toml`.
 - WASM guest modules are passed into the image build as a named build context (`--build-context wasm=<path>`) — they are not compiled inside the Dockerfile. The component `Tiltfile` builds the `.wasm` via a `local_resource` that `docker_build` depends on (`resource_deps`).
-- WASM modules must be AOT-compiled to a `.cwasm` artifact in a dedicated build stage using the `precompile` binary before being copied to the runtime image. This eliminates JIT compilation at startup.
 - The runtime base image must be `gcr.io/distroless/cc-debian12:nonroot` for binaries with a libc dependency. Use `gcr.io/distroless/static-debian12:nonroot` for fully static binaries (e.g. `CGO_ENABLED=0` Go builds). Document the choice in the Dockerfile.
 - The final image must contain no shell, package manager, or build tooling.
 - `readOnlyRootFilesystem: true` must be achievable — binaries must not write to the filesystem at runtime.

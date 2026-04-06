@@ -13,33 +13,25 @@ Technology decisions, system design, and design constraints for wasm-platform. F
 | **Wasmtime** | Bytecode Alliance-backed, excellent WASI support, mature Cranelift JIT, strong security sandbox | Production-grade, spec-compliant environments |
 | **WasmEdge** | Very fast cold-start (~0.5ms), built-in networking/async, WASI-NN for AI workloads | Ultra-low-latency FaaS with edge ambitions |
 
-**Decision:** Wasmtime. It has the strongest ecosystem, the most predictable WASI compatibility story, and Cranelift produces excellent machine code. WasmEdge is worth benchmarking later if sub-millisecond cold-start becomes a hard requirement.
+**Decision:** Wasmtime. Strongest ecosystem, most predictable WASI compatibility, excellent Cranelift code generation. WasmEdge is worth benchmarking later if sub-millisecond cold-start becomes a hard requirement.
 
 ### Control Plane Language: Rust + Go
 
-- **Go** is the natural choice for Kubernetes operators — `controller-runtime` and `kubebuilder` SDKs make CRD management straightforward, and OCI distribution libraries (`oras-go`) are mature.
-- **Rust** gives tighter integration with Wasmtime (native API), zero-cost host function abstractions, and shared types between the control plane and the WASM host via `wit-bindgen`.
-
-**Decision:** Go for the control plane / operator, Rust for the WASM execution host. The operator manages Kubernetes lifecycle in Go where the ecosystem is strongest; the execution host gets maximum performance and type safety in Rust where the WASM ecosystem is richest.
+**Decision:** Go for the Kubernetes operator (where `controller-runtime` and `kubebuilder` are strongest), Rust for the execution host and gateway (where Wasmtime's native API, `wit-bindgen` type sharing, and zero-cost abstractions matter most).
 
 ### Guest ↔ Host Interface: WASI + the Component Model
 
-The **WebAssembly Component Model** with **WIT (WebAssembly Interface Types)** defines the contract between guest modules and the host. This gives:
+The **WebAssembly Component Model** with **WIT (WebAssembly Interface Types)** defines the contract between guest modules and the host:
 
 - Strongly-typed, language-agnostic interfaces for SQL and KV abstractions
 - Capability-based security (guests can only call what the host explicitly provides)
 - Composability (modules can be linked together)
 
-The platform defines its own WIT world in [`framework/runtime.wit`](../framework/runtime.wit) — this is the single most important design choice, as it defines the platform's API surface. The WIT file is the source of truth; refer to it directly.
+The platform defines its own WIT world in [`framework/runtime.wit`](../framework/runtime.wit) — the source of truth for the platform's API surface. Two worlds are defined: `message-application` (binary payload in/out) and `http-application` (typed HTTP request/response).
 
 ### OCI Distribution
 
-OCI artifacts for module storage. Libraries:
-
-- Go: `oras.land/oras-go/v2`
-- Rust: `oci-distribution` crate
-
-Content-addressable centralized cache for AOT-compiled modules. On a cache miss, the execution host pulls the raw OCI artifact, AOT-compiles it, and pushes the result back to the cache so all execution hosts can benefit.
+OCI artifacts for module storage. Libraries: `oras.land/oras-go/v2` (Go), `oci-distribution` crate (Rust). A centralized module cache stores AOT-compiled artifacts keyed by `(digest, arch, wasmtime_version)`.
 
 ---
 
@@ -47,51 +39,46 @@ Content-addressable centralized cache for AOT-compiled modules. On a cache miss,
 
 ### Cold-Start Budget
 
-Target **< 5ms cold-start** (container-based FaaS is 100ms–10s). To achieve this:
+Target **< 5ms cold-start** (container-based FaaS is 100ms–10s):
 
-1. **AOT compilation** — pre-compile `.wasm` → native code at deploy time, not at invocation time. Wasmtime supports serialised compiled modules.
-2. **Instance pooling** — pre-allocate linear memory and table slots. Wasmtime's `PoolingAllocationConfig` pre-reserves resources for N concurrent instances with copy-on-write memory initialization.
+1. **AOT compilation** — `.wasm` → native code at deploy time via `engine.precompile_component()`.
+2. **Instance pooling** — `PoolingAllocationConfig` pre-reserves memory/table slots with copy-on-write initialization.
 3. **Module caching** — compiled modules are memory-mapped from disk. One compilation, many instantiations.
 
 ### Sandboxing & Multi-Tenancy
 
-WASM is sandboxed by default, but host functions break that sandbox deliberately (SQL, KV, network). Critical guardrails:
+WASM is sandboxed by default; host functions break that sandbox deliberately. Guardrails:
 
-- **Fuel-based execution limits** — Wasmtime fuel metering prevents infinite loops or runaway computation.
+- **Fuel metering** — prevents infinite loops / runaway computation.
 - **Memory limits** — cap linear memory per instance (e.g. 64 MB) via `InstanceLimits`.
-- **Capability scoping** — a module should only access the databases and queues declared in its CRD `spec`. The host enforces this by binding only the declared resources into the instance's imports.
-- **Wall-clock timeouts** — fuel doesn't cover host calls. Wrap each invocation in an async timeout (e.g. 30s hard ceiling).
+- **Capability scoping** — modules access only the databases and queues declared in their CRD `spec`.
+- **Wall-clock timeouts** — fuel doesn't cover host calls; each invocation is wrapped in an async timeout.
 
-### Database Abstraction Layer
+### Data Layer
 
-Proxy to existing database engines — don't build new ones:
+Three shared backing stores, all provisioned by the **[db-operator](https://github.com/benjamin-wright/db-operator)** via CRDs in the platform Helm chart:
 
-| CRD `kind` | Backing Implementation |
+| Store | Isolation Model |
 |---|---|
-| `SQL` | Per-application logical database and dedicated user inside the **single shared PostgreSQL** instance. The wp-operator creates the database, user, and grants. Credentials are delivered to execution hosts via the gRPC `ConfigSync` service alongside the rest of the app config. |
-| `KeyValue` | Key-prefixed isolation in the **single shared Redis** instance. The execution host prepends the application's declared prefix to every key it reads or writes. |
+| **PostgreSQL** | Per-app logical database + dedicated user, created by the wp-operator. |
+| **Redis** | Single shared instance. Per-app key-prefix isolation (`<namespace>/<spec.keyValue>/`). |
+| **NATS** | Single shared instance. Per-app subject isolation (operator-assigned prefixed topics). |
 
-The host functions translate the WIT `sql.query` / `kv.get` calls into actual client calls. This keeps the WASM module ignorant of the backing store.
+**Connection model:** execution hosts are configured once with shared infrastructure coordinates (`PG_HOST`/`PG_PORT`, `REDIS_URL` env vars). The `ConfigSync` service carries only the per-app delta: database name, username, and password for PostgreSQL; key prefix for Redis. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **single multiplexed connection** — isolation is purely by key prefix.
 
-The shared PostgreSQL, Redis, and NATS instances are deployed as part of the platform via CRD instances for the **[db-operator](https://github.com/benjamin-wright/db-operator)** included in the platform Helm chart. The db-operator provisions these shared instances and creates the credentials the wp-operator uses to connect to them. The wp-operator then manages per-application databases, users, and permissions within the shared PostgreSQL instance, and passes per-application credentials to execution hosts in plain text via the gRPC `ConfigSync` service.
+The host functions translate WIT `sql.query` / `kv.get` calls into actual client calls, keeping WASM modules ignorant of the backing store.
 
 ### Event Trigger Architecture
 
-Each trigger type needs a different ingestion path:
+- **HTTP** — the gateway serialises requests into a platform-private NATS payload and publishes to the app's `http.<namespace>.<name>` subject. The execution host calls the module's `on-request` export with typed WIT records and returns the response via NATS reply.
+- **MessageQueue** — the execution host subscribes to per-app `fn.`-prefixed NATS subjects and calls the module's `on-message` export.
+- **Schedule** — (planned) a cron controller watches CRDs and emits invocation events to NATS.
 
-- **HTTP** — A lightweight HTTP server translates requests to NATS messages. The gateway serialises the HTTP context (method, path, headers, body) into a payload and publishes it to the application's NATS subject. The execution host delivers the payload to the module's `on-message` export and forwards any returned response bytes back to the caller.
-- **Schedule** — A cron controller watches CRDs and emits invocations at the specified schedule. Use Kubernetes `CronJob`-style leader election, or `tokio-cron-scheduler` in Rust.
-- **MessageQueue** — A consumer pool per queue on the **single shared NATS** instance. Applications are isolated by NATS subject prefix; the execution host subscribes only to the subjects declared for each application. NATS JetStream is the strong choice for built-in persistence.
+### Config Sync & Scaling
 
-### Graceful Scaling
+Execution hosts are deployed as a **Deployment**. The wp-operator pushes configuration via gRPC: full snapshot on startup/desync, incremental deltas ongoing. On each new config, the execution host checks the module cache for a precompiled `.cwasm`; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back.
 
-Execution hosts are deployed as a **Deployment**. The wp-operator communicates with execution hosts over **gRPC** using a hybrid sync model: on startup or when desynced, a host requests the full current configuration; afterwards the operator streams incremental configuration deltas to connected hosts. See the [wp-operator Config API](../components/wp-operator/README.md#config-api) for the service definition.
-
-When a new config is received, each execution host checks the centralized module cache for a precompiled artifact; on a miss it pulls the OCI artifact, AOT-compiles it, and writes the result back to the cache. Scaling pattern:
-
-- Scale on **concurrent invocations** (not CPU/memory), since WASM instances are tiny.
-- A single execution host process can run thousands of concurrent WASM instances (they share the compiled module and use pooled memory).
-- Use a Kubernetes HPA with a custom metric (active invocations / capacity) or KEDA for event-driven scaling.
+Scaling targets concurrent invocations (not CPU/memory). A single execution host can run thousands of concurrent WASM instances. HPA with a custom metric or KEDA for event-driven scaling.
 
 ---
 
@@ -128,17 +115,16 @@ When a new config is received, each execution host checks the centralized module
 │  └──────────────────────────────┘                                    │
 │                                                                      │
 │  ┌─────────────────────┐      ┌────────────────────────────────────┐ │
-│  │  Gateway (Envoy      │      │  Shared Data Layer                 │ │
-│  │  or custom)          │      │  ┌──────────────────────────────┐ │ │
-│  │  • HTTP translation  │      │  │  PostgreSQL (single shared)  │ │ │
-│  └─────────────────────┘      │  │  Per-app DB + user managed    │ │ │
-│                                │  │  by wp-operator               │ │ │
-│  ┌─────────────────────┐      │  ├──────────────────────────────┤ │ │
-│  │  Trigger Layer       │      │  │  Redis (single shared)       │ │ │
-│  │  • Cron scheduler    │      │  │  Isolated by key prefix      │ │ │
-│  └─────────────────────┘      │  ├──────────────────────────────┤ │ │
-│                                │  │  NATS (single shared)        │ │ │
-│                                │  │  Isolated by subject prefix  │ │ │
+│  │  Gateway (Rust)      │      │  Shared Data Layer                 │ │
+│  │  • HTTP → NATS       │      │  ┌──────────────────────────────┐ │ │
+│  │    translation       │      │  │  PostgreSQL (single shared)  │ │ │
+│  └─────────────────────┘      │  │  Per-app DB + user            │ │ │
+│                                │  ├──────────────────────────────┤ │ │
+│  ┌─────────────────────┐      │  │  Redis (single shared)       │ │ │
+│  │  Trigger Layer       │      │  │  Key-prefix isolation        │ │ │
+│  │  • Cron scheduler    │      │  ├──────────────────────────────┤ │ │
+│  └─────────────────────┘      │  │  NATS (single shared)        │ │ │
+│                                │  │  Subject-prefix isolation    │ │ │
 │                                │  └──────────────────────────────┘ │ │
 │                                └────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
@@ -148,19 +134,19 @@ When a new config is received, each execution host checks the centralized module
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **WP Operator** | Go | Reconciles `Application` CRDs. Creates and manages per-application databases, users, and permissions inside the shared PostgreSQL instance (credentials from db-operator). Passes per-application database credentials in plain text to execution hosts via the gRPC `ConfigSync` service alongside app configs. Registers routes in the gateway. On `Application` deletion, decrements a Redis reference count for the database; when the count reaches zero a TTL is set, and the database is dropped only when the TTL elapses. |
-| **Execution Host** | Rust | Deployed as a Deployment. Uses the Pod name as its `host_id`. Syncs configuration (including per-app database credentials) from the wp-operator via gRPC on startup and as changes occur. On each new config, checks the module cache for a precompiled artifact; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back to the cache. Listens for NATS messages (isolated by `spec.topic`), manages instance pools, exposes host functions (SQL with per-app credentials, KV with `<namespace>/<spec.keyValue>/` prefix), executes invocations. |
-| **Gateway** | Go or Rust | Translates HTTP requests to NATS events based on CRD route mappings. Health checks, rate limiting, TLS termination, auth checks. |
-| **Token Service** | Go or Rust | Separately scalable service for minting JWT tokens for auth purposes. |
-| **Trigger Layer** | Go or Rust | Cron scheduler that dispatches invocation events to NATS. |
-| **Module Cache** | Rust | Centralized cache service. Stores and retrieves AOT-compiled module artifacts keyed by digest, architecture, and Wasmtime version. Execution hosts check the cache on config load, and push newly compiled artifacts back after a cache miss. |
-| **Data Layer** | Managed services | Single shared PostgreSQL instance (per-app databases managed by wp-operator), single shared Redis (per-app key-prefix isolation, also used by wp-operator for reference-count tracking), single shared NATS (per-app subject isolation). All three instances are provisioned by the **[db-operator](https://github.com/benjamin-wright/db-operator)** via CRDs in the platform Helm chart. |
+| **WP Operator** | Go | Reconciles `Application` CRDs. Manages per-app PG databases/users. Pushes per-app credentials and config to execution hosts and routes to the gateway via gRPC. Deferred-delete of databases via Redis reference counting with TTL. |
+| **Execution Host** | Rust | Syncs config from operator. Loads modules via the module cache. Subscribes to per-app NATS subjects. Executes WASM modules with scoped host functions (SQL, KV, messaging). |
+| **Gateway** | Rust | Translates HTTP requests to NATS request-reply based on operator-pushed route table. Method enforcement, timeout handling. |
+| **Module Cache** | Rust | Stores and serves AOT-compiled module artifacts keyed by `(digest, arch, wasmtime_version)`. |
+| **Token Service** | TBD | Separately scalable service for minting JWT tokens. |
+| **Trigger Layer** | TBD | Cron scheduler dispatching invocation events to NATS. |
+| **Data Layer** | Managed | PostgreSQL, Redis, NATS — all provisioned by [db-operator](https://github.com/benjamin-wright/db-operator) via CRDs. |
 
 ### Invocation Flow (HTTP)
 
-1. Request arrives at Gateway → serialised into a NATS message payload (method, path, headers, body) → published to the application's NATS subject.
-2. Host looks up the module by application name → retrieves the AOT-compiled artifact from the module cache (already loaded at config time).
-3. Host acquires a pre-allocated instance from the pool → binds host functions scoped to the application's declared databases.
-4. Host calls the guest's `on-message` export with the payload → guest runs, makes SQL/KV/messaging calls via imports → optionally returns response bytes.
-5. Host forwards response bytes (if any) back to Gateway → instance is returned to the pool (memory is reset, not deallocated).
+1. Request arrives at gateway → serialised as platform JSON → published to `http.<namespace>.<name>` NATS subject with a reply subject.
+2. Execution host looks up the app config by subject → retrieves the precompiled `Component`.
+3. Execution host instantiates the module → binds scoped host functions → calls `on-request` with typed WIT records.
+4. Guest runs, may call `sql`/`kv`/`messaging` imports → returns an `HttpResponse`.
+5. Execution host serialises the response as JSON → publishes to NATS reply subject → gateway constructs HTTP response.
 
