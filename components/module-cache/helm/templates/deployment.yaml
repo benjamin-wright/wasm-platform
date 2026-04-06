@@ -39,6 +39,9 @@ spec:
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:

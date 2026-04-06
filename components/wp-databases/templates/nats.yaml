@@ -49,6 +49,11 @@ spec:
         subscribe:
           allow:
             - ">"
+  exports:
+    - subject: "http.>"
+      type: service
+    - subject: "fn.>"
+      type: service
 ---
 apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
 kind: NatsAccount
@@ -69,3 +74,7 @@ spec:
         subscribe:
           allow:
             - ">"
+  imports:
+    - account: {{ .Release.Name }}-nats-execution-host
+      subject: "http.>"
+      type: service

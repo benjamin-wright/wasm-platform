@@ -10,6 +10,7 @@ import (
 	gateway "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/gateway"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/routestore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // GatewayServer implements the gRPC GatewayRoutes service.
@@ -30,7 +31,8 @@ func RegisterGateway(grpcSrv *grpc.Server, store *routestore.Store) {
 
 // RequestFullRoutes returns a snapshot of all RouteConfig values currently held in the store.
 func (s *GatewayServer) RequestFullRoutes(_ context.Context, req *gateway.FullRoutesRequest) (*gateway.FullRoutesResponse, error) {
-	_ = req // gateway_id reserved for future use
+	log := ctrl.Log.WithName("grpc.RequestFullRoutes")
+	log.Info("RequestFullRoutes called", "gateway_id", req.GatewayId)
 	routes := s.store.Snapshot()
 	protoRoutes := make([]*gateway.RouteConfig, len(routes))
 	for i, r := range routes {
@@ -52,12 +54,24 @@ func (s *GatewayServer) RequestFullRoutes(_ context.Context, req *gateway.FullRo
 // On stream close or error the gateway is deregistered so it can reconnect via RequestFullRoutes.
 func (s *GatewayServer) PushRouteUpdate(stream grpc.BidiStreamingServer[gateway.RouteUpdateAck, gateway.RouteUpdateRequest]) error {
 	log := ctrl.Log.WithName("grpc.PushRouteUpdate")
+	log.Info("PushRouteUpdate stream handler entered")
 
-	// The first message from the gateway tells us its identity.
-	firstAck, err := stream.Recv()
-	if err != nil {
+	// Send HTTP/2 response headers immediately so tonic's .await on the RPC
+	// call can complete. Without this, tonic waits for headers while Go waits
+	// for Recv() — a deadlock.
+	if err := stream.SendHeader(metadata.MD{}); err != nil {
+		log.Error(err, "failed to send initial response headers")
 		return err
 	}
+
+	// The first message from the gateway tells us its identity.
+	log.Info("waiting for initial gateway ack")
+	firstAck, err := stream.Recv()
+	if err != nil {
+		log.Error(err, "failed to receive initial gateway ack")
+		return err
+	}
+	log.Info("received initial gateway ack", "ack", firstAck)
 	gatewayID := firstAck.GatewayId
 	if gatewayID == "" {
 		gatewayID = "unknown"

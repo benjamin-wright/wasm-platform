@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1
 # Build context: repo root.
-# Named build context: --build-context wasm=<dir-containing-hello_world.wasm>
 #
 # Requires BuildKit (default in Docker >= 23.0).
 
@@ -30,30 +29,14 @@ COPY . .
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=execution-host-target,target=/build/target \
-    cargo build --release --bin execution-host --bin precompile && \
-    cp target/release/execution-host /build/execution-host && \
-    cp target/release/precompile /build/precompile
+    cargo build --release --bin execution-host && \
+    cp target/release/execution-host /build/execution-host
 
-# ── Stage 4: AOT compiler ─────────────────────────────────────────────────────
-# Compiles the WASM component to a native .cwasm artifact using the same Engine
-# configuration as the runtime binary, ensuring load-time compatibility.
-#
-# The `wasm` named build context (--build-context wasm=...) must contain
-# hello_world.wasm. The output is architecture-specific; multi-platform builds
-# must run this stage once per target architecture.
-FROM builder AS aot
-COPY --from=wasm . /build/wasm/
-RUN /build/precompile \
-        /build/wasm/hello_world.wasm \
-        /build/hello_world.cwasm
-
-# ── Stage 5: runtime ──────────────────────────────────────────────────────────
+# ── Stage 4: runtime ──────────────────────────────────────────────────────────
 # distroless/cc-debian12 provides glibc and libgcc_s, both required at runtime:
 # glibc for the standard Rust target, libgcc_s for stack unwinding. Switch to
 # distroless/base-debian12 only if `ldd execution-host` confirms no libgcc dep.
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /build/execution-host /usr/local/bin/execution-host
-COPY --from=aot /build/hello_world.cwasm /opt/wasm/hello_world.cwasm
-ENV WASM_MODULE_PATH=/opt/wasm/hello_world.cwasm
 EXPOSE 3000
 CMD ["/usr/local/bin/execution-host"]

@@ -10,6 +10,7 @@ import (
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // Server implements the gRPC ConfigSync service.
@@ -30,7 +31,8 @@ func Register(grpcSrv *grpc.Server, store *configstore.Store) {
 
 // RequestFullConfig returns a snapshot of all ApplicationConfig values currently held in the store.
 func (s *Server) RequestFullConfig(_ context.Context, req *configsync.FullConfigRequest) (*configsync.FullConfigResponse, error) {
-	_ = req // host_id / last_ack_timestamp reserved for future use
+	log := ctrl.Log.WithName("grpc.RequestFullConfig")
+	log.Info("RequestFullConfig called", "host_id", req.HostId)
 	apps := s.store.Snapshot()
 	version := fmt.Sprintf("%d", s.store.Version())
 
@@ -50,12 +52,24 @@ func (s *Server) RequestFullConfig(_ context.Context, req *configsync.FullConfig
 // On stream close or error the host is deregistered so it can reconnect via RequestFullConfig.
 func (s *Server) PushIncrementalUpdate(stream grpc.BidiStreamingServer[configsync.IncrementalUpdateAck, configsync.IncrementalUpdateRequest]) error {
 	log := ctrl.Log.WithName("grpc.PushIncrementalUpdate")
+	log.Info("PushIncrementalUpdate stream handler entered")
 
-	// The first message from the host tells us its identity.
-	firstAck, err := stream.Recv()
-	if err != nil {
+	// Send HTTP/2 response headers immediately so tonic's .await on the RPC
+	// call can complete. Without this, tonic waits for headers while Go waits
+	// for Recv() — a deadlock.
+	if err := stream.SendHeader(metadata.MD{}); err != nil {
+		log.Error(err, "failed to send initial response headers")
 		return err
 	}
+
+	// The first message from the host tells us its identity.
+	log.Info("waiting for initial host ack")
+	firstAck, err := stream.Recv()
+	if err != nil {
+		log.Error(err, "failed to receive initial host ack")
+		return err
+	}
+	log.Info("received initial host ack", "ack", firstAck)
 	hostID := firstAck.HostId
 	if hostID == "" {
 		hostID = "unknown"

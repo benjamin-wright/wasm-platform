@@ -1,17 +1,21 @@
 wit_bindgen::generate!({
-    world: "message-application",
+    world: "http-application",
     path: "../../framework/runtime.wit",
 });
 
 struct HelloWorld;
 
 impl Guest for HelloWorld {
-    fn on_message(payload: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
-        let msg = format!(
-            "on-message called: payload='{}'",
-            String::from_utf8_lossy(&payload)
+    fn on_request(request: HttpRequest) -> Result<HttpResponse, String> {
+        let body = format!(
+            "hello from wasm 3: method={} path={}",
+            request.method, request.path
         );
-        Ok(Some(msg.into_bytes()))
+        Ok(HttpResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+            body: Some(body.into_bytes()),
+        })
     }
 }
 

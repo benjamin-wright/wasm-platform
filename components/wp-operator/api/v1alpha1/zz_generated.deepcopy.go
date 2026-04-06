@@ -122,7 +122,7 @@ func (in *HttpConfig) DeepCopyInto(out *HttpConfig) {
 	*out = *in
 	if in.Methods != nil {
 		in, out := &in.Methods, &out.Methods
-		*out = make([]string, len(*in))
+		*out = make([]HttpMethod, len(*in))
 		copy(*out, *in)
 	}
 }

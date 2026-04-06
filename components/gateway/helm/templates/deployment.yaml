@@ -36,6 +36,8 @@ spec:
                   fieldPath: metadata.name
             - name: NATS_CREDENTIALS_PATH
               value: /var/run/secrets/nats
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
           volumeMounts:
             - name: nats-credentials
               mountPath: /var/run/secrets/nats

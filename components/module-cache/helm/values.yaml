@@ -12,3 +12,5 @@ resources:
     memory: 256Mi
 
 replicaCount: 1
+
+logLevel: info

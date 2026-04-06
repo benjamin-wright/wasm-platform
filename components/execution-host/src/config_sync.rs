@@ -55,18 +55,42 @@ async fn run_config_sync(
 
     tracing::info!("opening incremental update stream");
     let mut client = ConfigSyncClient::connect(addr.to_string()).await?;
+    tracing::info!("gRPC client connected for config updates");
 
     // Bridge tokio mpsc → futures Stream so tonic can consume acks.
     let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<IncrementalUpdateAck>(16);
     let ack_stream = futures_util::stream::unfold(ack_rx, |mut rx| async move {
-        rx.recv().await.map(|ack| (ack, rx))
+        tracing::debug!("ack_stream: waiting for next ack from mpsc");
+        let item = rx.recv().await;
+        tracing::debug!(has_item = item.is_some(), "ack_stream: polled");
+        item.map(|ack| (ack, rx))
     });
 
+    tracing::info!("calling push_incremental_update RPC");
     let mut update_stream = client
         .push_incremental_update(ack_stream)
         .await?
         .into_inner();
+    tracing::info!("push_incremental_update stream opened");
 
+    // Send an initial ack immediately so the server can identify and register
+    // this host before any updates are broadcast. Without this the server
+    // blocks on Recv() waiting for an id while we block on message() waiting
+    // for an update — a deadlock that prevents incremental config delivery.
+    let initial_ack = IncrementalUpdateAck {
+        host_id: host_id.to_string(),
+        version_applied: String::new(),
+        success: true,
+        message: String::new(),
+    };
+    tracing::info!("sending initial host ack");
+    if ack_tx.send(initial_ack).await.is_err() {
+        tracing::warn!("failed to send initial host ack — channel closed");
+        return Ok(());
+    }
+    tracing::info!("initial host ack sent to mpsc channel");
+
+    tracing::info!("waiting for first incremental update message");
     while let Some(request) = update_stream.message().await? {
         if let Some(incremental) = request.incremental_config {
             let version = incremental.version.clone();

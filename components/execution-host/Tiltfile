@@ -3,21 +3,10 @@ load('ext://helm_resource', 'helm_resource')
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/execution-host'
 
 def execution_host(namespace, resource_deps=[]):
-    local_resource(
-        'hello-wasm',
-        cmd = 'cargo build --manifest-path examples/hello-world/Cargo.toml --target wasm32-wasip2 --release',
-        deps = [
-            'examples/hello-world/src',
-            'framework/runtime.wit',
-        ],
-        labels = ['execution-host'],
-    )
-
     custom_build(
         IMAGE_REF,
         command = (
             'docker build' +
-            ' --build-context wasm=target/wasm32-wasip2/release' +
             ' -f components/execution-host/Dockerfile' +
             ' -t $EXPECTED_REF' +
             ' .'
@@ -25,7 +14,6 @@ def execution_host(namespace, resource_deps=[]):
         deps = [
             'components/execution-host/src',
             'components/execution-host/Cargo.toml',
-            'target/wasm32-wasip2/release/hello_world.wasm',
         ]
     )
 

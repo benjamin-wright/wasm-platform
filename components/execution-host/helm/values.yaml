@@ -20,4 +20,6 @@ configSync:
   serverAddr: "http://wp-operator-grpc:50051"
 
 moduleCache:
-  addr: "http://module-cache:8080"
+  addr: "http://module-cache:80"
+
+logLevel: info

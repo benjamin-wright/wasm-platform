@@ -4,6 +4,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// HttpMethod is a valid HTTP method string.
+// +kubebuilder:validation:Enum=GET;HEAD;POST;PUT;DELETE;PATCH;OPTIONS
+type HttpMethod string
+
 // HttpConfig defines the HTTP trigger configuration for an Application.
 type HttpConfig struct {
 	// Path is the URL path the gateway exposes for this application.
@@ -16,8 +20,16 @@ type HttpConfig struct {
 	// If omitted, all methods are allowed.
 	// Valid values: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS.
 	// +optional
-	// +kubebuilder:validation:Enum=GET;HEAD;POST;PUT;DELETE;PATCH;OPTIONS
-	Methods []string `json:"methods,omitempty"`
+	Methods []HttpMethod `json:"methods,omitempty"`
+}
+
+// MethodStrings returns Methods as a plain []string for use with proto and store types.
+func (h *HttpConfig) MethodStrings() []string {
+	out := make([]string, len(h.Methods))
+	for i, m := range h.Methods {
+		out[i] = string(m)
+	}
+	return out
 }
 
 // ApplicationSpec defines the desired state of an Application.

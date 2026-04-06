@@ -52,18 +52,42 @@ async fn run_route_sync(
 
     tracing::info!("opening incremental route update stream");
     let mut client = GatewayRoutesClient::connect(addr.to_string()).await?;
+    tracing::info!("gRPC client connected for route updates");
 
     // Bridge tokio mpsc → futures Stream so tonic can consume acks.
     let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<RouteUpdateAck>(16);
     let ack_stream = futures_util::stream::unfold(ack_rx, |mut rx| async move {
-        rx.recv().await.map(|ack| (ack, rx))
+        tracing::debug!("ack_stream: waiting for next ack from mpsc");
+        let item = rx.recv().await;
+        tracing::debug!(has_item = item.is_some(), "ack_stream: polled");
+        item.map(|ack| (ack, rx))
     });
 
+    tracing::info!("calling push_route_update RPC");
     let mut update_stream = client
         .push_route_update(ack_stream)
         .await?
         .into_inner();
+    tracing::info!("push_route_update stream opened");
 
+    // Send an initial ack immediately so the server can identify and register
+    // this gateway before any updates are broadcast. Without this the server
+    // blocks on Recv() waiting for an id while we block on message() waiting
+    // for an update — a deadlock that prevents incremental route delivery.
+    let initial_ack = RouteUpdateAck {
+        gateway_id: gateway_id.to_string(),
+        version_applied: String::new(),
+        success: true,
+        message: String::new(),
+    };
+    tracing::info!("sending initial gateway ack");
+    if ack_tx.send(initial_ack).await.is_err() {
+        tracing::warn!("failed to send initial gateway ack — channel closed");
+        return Ok(());
+    }
+    tracing::info!("initial gateway ack sent to mpsc channel");
+
+    tracing::info!("waiting for first route update message");
     while let Some(request) = update_stream.message().await? {
         if let Some(update_config) = request.update {
             let version = update_config.version.clone();
@@ -73,7 +97,7 @@ async fn run_route_sync(
                 if let Some(route) = update.route {
                     if update.delete {
                         table.remove(&route.path)?;
-                        tracing::debug!(path = %route.path, "route removed");
+                        tracing::info!(path = %route.path, "route removed");
                     } else {
                         table.upsert(
                             route.path.clone(),
@@ -82,12 +106,12 @@ async fn run_route_sync(
                                 nats_subject: route.nats_subject,
                             },
                         )?;
-                        tracing::debug!(path = %route.path, "route upserted");
+                        tracing::info!(path = %route.path, "route upserted");
                     }
                 }
             }
 
-            tracing::debug!(version, update_count, "route update applied");
+            tracing::info!(version, update_count, "route update applied");
 
             let ack = RouteUpdateAck {
                 gateway_id: gateway_id.to_string(),

@@ -219,6 +219,32 @@ The wp-operator implements this service (same binary, new gRPC endpoint) and pus
 
 ---
 
+### Phase 5b: Update hello-world Example for HTTP Gateway ✅
+
+Converts the `examples/hello-world` module from the `message-application` world to the `http-application` world, packages it as an OCI artifact, and wires it into the Tilt dev loop as a deployed `Application` CR with an HTTP trigger. This is the concrete deliverable backing the Phase 5 end-to-end test item.
+
+#### Design decisions
+
+- **OCI packaging:** WASM modules must be pushed as raw OCI artifact layers (not gzip-tar Docker image layers). The execution host's `oci::pull_wasm_bytes` calls `client.pull_blob` which returns the raw blob bytes; a `FROM scratch; COPY` Docker image would produce a gzip-compressed tarball layer and break compilation. `oras push` stores the file bytes directly as the layer blob. `oras` is invoked via its Docker image (`ghcr.io/oras-project/oras:v1.3.0`) with the workspace volume-mounted, so no separate CLI install is needed.
+- **Tag strategy:** a mutable `:dev` tag is used for the local registry (`wasm-platform-registry.localhost:5001/hello-world:dev`). The `spec.module` field carries the tag reference; the execution host resolves it to a digest at load time, so cache keys remain correct across content changes.
+- **Hot-reload signal:** changing wasm content without changing `spec.module` does not cause the operator to push an updated `ApplicationConfig` (no diff detected). The Tiltfile forces a reload by patching a `dev.wasm-platform/pushed-at` annotation on the ApplicationCR after each push; the operator sees a metadata change and re-sends config, causing the execution host to re-resolve the digest and load the new module.
+- **Execution host Docker clean-up:** the `aot` Docker build stage and the `--build-context wasm=...` argument are leftovers from the pre-Phase-1 static module bake-in. They are removed here. The `precompile` binary is retained in `src/bin/precompile.rs` as a standalone dev tool but is no longer built as part of the execution-host Docker image.
+- **Module reference format:** the CRD documents the format as `oci://<registry>/...` but `oci-distribution::Reference::from_str` follows Docker reference format and does not accept a URI scheme prefix. The Application CR must use a plain reference: `wasm-platform-registry.localhost:5001/hello-world:dev`. The `oci://` wording in the CRD description is aspirational; a scheme-stripping pass in `oci.rs` is a separate clean-up and is out of scope here.
+
+#### Tasks
+
+- [x] Update `examples/hello-world/src/lib.rs` — change `world: "message-application"` to `world: "http-application"` in the `wit_bindgen::generate!` call. Replace `impl Guest { fn on_message(...) }` with `fn on_request(request: HttpRequest) -> Result<HttpResponse, String>`. Return an `HttpResponse` with `status: 200` and a body summarising the request (e.g. `"hello from wasm: method=GET path=/hello"`).
+- [x] Update `examples/hello-world/README.md` — change the world name, export description, and example table to match the new `on-request` handler. Note the `oras push` packaging requirement and the plain (scheme-free) registry reference format.
+- [x] Create `examples/hello-world/k8s/application.yaml` — `Application` CR in namespace `wasm-platform`. Set `spec.module: wasm-platform-registry.localhost:5001/hello-world:dev`, `spec.http.path: /hello`, `spec.http.methods: [GET]`. Annotate with `dev.wasm-platform/pushed-at: "0"` as the initial value (Tilt will overwrite this).
+- [x] Create `examples/hello-world/Tiltfile` — define a `hello_world(namespace, resource_deps=[])` function. Register three local resources: `hello-wasm-build` (`cargo build --manifest-path examples/hello-world/Cargo.toml --target wasm32-wasip2 --release`, watching `examples/hello-world/src` and `framework/runtime.wit`); `hello-wasm-push` (`docker run --rm -v $(pwd):/workspace -w /workspace ghcr.io/oras-project/oras:v1.3.0 push wasm-platform-registry.localhost:5001/hello-world:dev target/wasm32-wasip2/release/hello_world.wasm --artifact-type application/vnd.wasm.content.layer.v1+wasm`, depending on `hello-wasm-build` and `module-cache`); `hello-world-apply` (`kubectl apply -f examples/hello-world/k8s/application.yaml -n wasm-platform && kubectl annotate application hello-world -n wasm-platform dev.wasm-platform/pushed-at=$(date +%s) --overwrite`, depending on `hello-wasm-push` and wp-operator). Label all three `example`.
+- [x] Update `components/execution-host/Tiltfile` — remove the `hello-wasm` local_resource entirely. Remove `target/wasm32-wasip2/release/hello_world.wasm` from the `custom_build` deps list. Remove `--build-context wasm=target/wasm32-wasip2/release` from the docker build command string.
+- [x] Update `components/execution-host/Dockerfile` — remove the `aot` stage (the `FROM builder AS aot` block and its `COPY`/`RUN` lines). Remove `--bin precompile` from the `cargo build` command in the builder stage (and the `cp ... /build/precompile` line). Remove `COPY --from=aot ... /opt/wasm/hello_world.cwasm` from the runtime stage. Remove `ENV WASM_MODULE_PATH=...`.
+- [x] Update root `Tiltfile` (`wasm-platform/Tiltfile`) — add `load('./examples/hello-world/Tiltfile', 'hello_world')` and call `hello_world(namespace, resource_deps=['wp-operator', 'execution-host', 'gateway'])` so the example app is deployed as part of `tilt up`.
+
+> **Developer action required:** install the `oras` CLI (`brew install oras`) before running the dev loop. See `docs/contributions.md`.
+
+---
+
 ### Phase 6: Host Function Implementations
 
 Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocation time).

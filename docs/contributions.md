@@ -6,6 +6,7 @@
 - [k3d](https://k3d.io)
 - [Tilt](https://tilt.dev)
 - Helm
+- [oras](https://oras.land) (`brew install oras`) — used to push WASM modules to the local OCI registry
 - curl (for manual smoke tests)
 
 Install the WASM target if you haven't already:

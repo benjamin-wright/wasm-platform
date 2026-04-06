@@ -187,7 +187,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		cfg.WorldType = configsync.WorldType_WORLD_TYPE_HTTP
 		cfg.Http = &configsync.HttpConfig{
 			Path:    app.Spec.HTTP.Path,
-			Methods: app.Spec.HTTP.Methods,
+			Methods: app.Spec.HTTP.MethodStrings(),
 		}
 	}
 
@@ -219,7 +219,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	if app.Spec.HTTP != nil {
 		routeCfg := &routestore.RouteConfig{
 			Path:        app.Spec.HTTP.Path,
-			Methods:     app.Spec.HTTP.Methods,
+			Methods:     app.Spec.HTTP.MethodStrings(),
 			NatsSubject: internalTopic(app),
 		}
 		if r.RouteStore.Set(key, routeCfg) {

@@ -22,3 +22,5 @@ operator:
 gateway:
   timeoutSecs: 30
   httpPort: 3000
+
+logLevel: info

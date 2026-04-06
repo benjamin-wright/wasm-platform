@@ -1,0 +1,11 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: hello-world
+  namespace: wasm-platform
+spec:
+  module: hello-world
+  http:
+    path: /hello
+    methods:
+      - GET

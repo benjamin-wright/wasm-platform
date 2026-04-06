@@ -71,15 +71,16 @@ spec:
                       Methods is the list of HTTP methods the gateway accepts on this path.
                       If omitted, all methods are allowed.
                       Valid values: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS.
-                    enum:
-                    - GET
-                    - HEAD
-                    - POST
-                    - PUT
-                    - DELETE
-                    - PATCH
-                    - OPTIONS
                     items:
+                      description: HttpMethod is a valid HTTP method string.
+                      enum:
+                      - GET
+                      - HEAD
+                      - POST
+                      - PUT
+                      - DELETE
+                      - PATCH
+                      - OPTIONS
                       type: string
                     type: array
                   path:
