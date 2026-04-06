@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "components/execution-host",
+    "components/gateway",
     "components/module-cache",
     "examples/hello-world"
 ]

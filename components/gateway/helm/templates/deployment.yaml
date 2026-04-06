@@ -4,7 +4,7 @@ metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "execution-host.labels" . | nindent 4 }}
+    {{- include "gateway.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -13,21 +13,23 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "execution-host.labels" . | nindent 8 }}
+        {{- include "gateway.labels" . | nindent 8 }}
     spec:
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: execution-host
+        - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
-            - name: MODULE_CACHE_ADDR
-              value: {{ .Values.moduleCache.addr | quote }}
-            - name: CONFIG_SYNC_ADDR
-              value: {{ .Values.configSync.serverAddr | quote }}
+            - name: OPERATOR_ADDR
+              value: {{ .Values.operator.addr | quote }}
+            - name: GATEWAY_TIMEOUT_SECS
+              value: {{ .Values.gateway.timeoutSecs | quote }}
+            - name: HTTP_PORT
+              value: {{ .Values.gateway.httpPort | quote }}
             - name: HOSTNAME
               valueFrom:
                 fieldRef:
@@ -40,18 +42,18 @@ spec:
               readOnly: true
           ports:
             - name: http
-              containerPort: 3000
+              containerPort: {{ .Values.gateway.httpPort }}
               protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 3000
+              port: {{ .Values.gateway.httpPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 3000
+              port: {{ .Values.gateway.httpPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:

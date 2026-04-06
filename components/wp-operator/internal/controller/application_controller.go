@@ -24,6 +24,7 @@ import (
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/routestore"
 )
 
 const applicationFinalizer = "wasm-platform.io/application-protection"
@@ -59,9 +60,10 @@ type Config struct {
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgrescredentials,verbs=get;list;watch;create;update;patch;delete
 type ApplicationReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Store  *configstore.Store
-	Config Config
+	Scheme     *runtime.Scheme
+	Store      *configstore.Store
+	RouteStore *routestore.Store
+	Config     Config
 }
 
 // Reconcile is the main reconciliation loop for Application resources.
@@ -123,6 +125,12 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 
 	r.Store.Delete(key)
 	r.Store.BroadcastUpdate(buildDeleteUpdate(app, internalTopic(app)))
+
+	// For HTTP apps, also remove the route from the gateway route store.
+	if app.Spec.HTTP != nil {
+		r.RouteStore.Delete(key)
+		r.RouteStore.BroadcastUpdate(buildRouteDeleteUpdate(app.Spec.HTTP.Path))
+	}
 
 	controllerutil.RemoveFinalizer(app, applicationFinalizer)
 	if err := r.Update(ctx, app); err != nil {
@@ -205,6 +213,18 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 
 	if r.Store.Set(key, cfg) {
 		r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
+	}
+
+	// For HTTP apps, keep the gateway route store in sync.
+	if app.Spec.HTTP != nil {
+		routeCfg := &routestore.RouteConfig{
+			Path:        app.Spec.HTTP.Path,
+			Methods:     app.Spec.HTTP.Methods,
+			NatsSubject: internalTopic(app),
+		}
+		if r.RouteStore.Set(key, routeCfg) {
+			r.RouteStore.BroadcastUpdate(buildRouteUpsertUpdate(routeCfg))
+		}
 	}
 
 	// Clear any stale TopicConflict condition from a previous blocked state.
@@ -494,4 +514,22 @@ func internalTopic(app *wasmplatformv1alpha1.Application) string {
 		return "fn." + app.Spec.Topic
 	}
 	return fmt.Sprintf("http.%s.%s", app.Namespace, app.Name)
+}
+
+func buildRouteUpsertUpdate(cfg *routestore.RouteConfig) *routestore.RouteUpdateBatch {
+	now := time.Now().UnixMilli()
+	return &routestore.RouteUpdateBatch{
+		Version:   fmt.Sprintf("%d", now),
+		Updates:   []*routestore.RouteUpdate{{Config: cfg, Delete: false}},
+		Timestamp: now,
+	}
+}
+
+func buildRouteDeleteUpdate(path string) *routestore.RouteUpdateBatch {
+	now := time.Now().UnixMilli()
+	return &routestore.RouteUpdateBatch{
+		Version:   fmt.Sprintf("%d", now),
+		Updates:   []*routestore.RouteUpdate{{Config: &routestore.RouteConfig{Path: path}, Delete: true}},
+		Timestamp: now,
+	}
 }

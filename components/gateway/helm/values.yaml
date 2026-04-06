@@ -1,0 +1,24 @@
+image:
+  repository: wasm-platform-registry.localhost:5001/gateway
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+replicaCount: 1
+
+nats:
+  secretName: gateway-nats-credentials
+
+operator:
+  addr: "http://wp-operator-grpc:50051"
+
+gateway:
+  timeoutSecs: 30
+  httpPort: 3000

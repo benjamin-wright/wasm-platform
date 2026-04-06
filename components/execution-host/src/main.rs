@@ -7,11 +7,11 @@ mod oci;
 mod runtime;
 
 use anyhow::Result;
-use axum::{Router, routing::get};
+use axum::{Router, extract::State, http::StatusCode, routing::get};
 use config::AppRegistry;
 use modules::ModuleRegistry;
 use runtime::{RuntimeState, HttpRequestPayload, invoke_on_message, invoke_on_request};
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use wasmtime::Engine;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -43,15 +43,36 @@ async fn main() -> Result<()> {
     let addr = std::env::var("CONFIG_SYNC_ADDR")
         .map_err(|_| anyhow::anyhow!("CONFIG_SYNC_ADDR environment variable is required"))?;
     let host_id = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+
+    // NATS_CREDENTIALS_PATH must point to a directory containing NATS_USERNAME,
+    // NATS_PASSWORD, NATS_HOST, and NATS_PORT files (Kubernetes secret volume
+    // mount layout).  The manager re-reads this directory on every connection
+    // attempt so that rotated credentials are picked up without pod restarts.
+    let credentials_path = std::env::var("NATS_CREDENTIALS_PATH")
+        .map(PathBuf::from)
+        .map_err(|_| anyhow::anyhow!("NATS_CREDENTIALS_PATH environment variable is required"))?;
+
     let app_registry = AppRegistry::new();
     // Watch channel for topic-set changes published by the config sync loop.
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
     // Channel through which all per-topic NATS subscribers forward messages.
     let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<async_nats::Message>(256);
 
-    // NATS connection — credentials are injected from the db-operator-managed secret.
-    let nats_client = nats::connect().await?;
-    tracing::info!("connected to NATS");
+    // Readiness state — the pod is ready only when both NATS and the config
+    // sync stream have been successfully established.
+    let (nats_ready_tx, nats_ready_rx) = tokio::sync::watch::channel(false);
+    let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
+
+    // Live NATS client watch — None while the manager is (re)connecting.
+    let (client_tx, client_rx) = tokio::sync::watch::channel::<Option<async_nats::Client>>(None);
+
+    // NATS manager — connects, broadcasts the live client, and automatically
+    // reconnects (re-reading credentials from disk) on auth failures.
+    tokio::spawn(nats::run_nats_manager(
+        credentials_path,
+        client_tx,
+        nats_ready_tx,
+    ));
 
     // Config sync loop — fetches a full snapshot on startup then maintains the
     // incremental update stream, reconnecting automatically on failure.
@@ -61,19 +82,26 @@ async fn main() -> Result<()> {
         app_registry.clone(),
         module_registry.clone(),
         topics_tx,
+        synced_tx,
     ));
-    // Subscription manager — watches the topic set and subscribes/unsubscribes
-    // NATS subjects, forwarding all messages into msg_tx.
-    tokio::spawn(nats::manage_nats_subscriptions(nats_client.clone(), topics_rx, msg_tx));
+    // Subscription manager — watches the client and topic set, maintaining one
+    // NATS subscription per live topic; re-subscribes on client replacement.
+    tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx));
 
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(64);
 
-    // Health-check HTTP server — Kubernetes liveness/readiness probes hit
-    // /healthz on port 3000.  This runs concurrently with the NATS loop.
-    let health_app = Router::new().route("/healthz", get(healthz_handler));
+    // Health-check HTTP server on port 3000.
+    // /healthz — liveness probe: always 200 while the process is alive.
+    // /readyz  — readiness probe: 200 only when NATS is connected AND the
+    //            config sync loop has received at least one full snapshot.
+    let ready_state = ReadyState { nats_ready_rx, synced_rx };
+    let health_app = Router::new()
+        .route("/healthz", get(healthz_handler))
+        .route("/readyz", get(readyz_handler))
+        .with_state(ready_state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     let health_server = axum::serve(listener, health_app);
 
@@ -81,7 +109,7 @@ async fn main() -> Result<()> {
         result = health_server => {
             result?;
         }
-        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, nats_client, max_concurrent) => {}
+        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, client_rx, max_concurrent) => {}
     }
 
     Ok(())
@@ -96,7 +124,7 @@ async fn process_nats_messages(
     state: Arc<RuntimeState>,
     app_registry: AppRegistry,
     module_registry: ModuleRegistry,
-    client: async_nats::Client,
+    client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
     max_concurrent: usize,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
@@ -136,7 +164,9 @@ async fn process_nats_messages(
         };
 
         let state = Arc::clone(&state);
-        let client = client.clone();
+        // Snapshot the current client.  If NATS is mid-reconnect the snapshot
+        // is None; replies will be silently dropped and the caller will time out.
+        let client_snapshot = client_rx.borrow().clone();
         tokio::spawn(async move {
             let _permit = permit;
             let reply = message.reply.clone();
@@ -176,12 +206,17 @@ async fn process_nats_messages(
 
             match result {
                 Ok(Ok(Some(response_body))) => {
-                    if let Some(reply_subject) = reply
-                        && let Err(err) = client
-                            .publish(reply_subject.clone(), response_body.into())
-                            .await
-                    {
-                        tracing::error!(%reply_subject, "failed to publish reply: {err:#}");
+                    if let Some(reply_subject) = reply {
+                        if let Some(client) = client_snapshot {
+                            if let Err(err) = client
+                                .publish(reply_subject.clone(), response_body.into())
+                                .await
+                            {
+                                tracing::error!(%reply_subject, "failed to publish reply: {err:#}");
+                            }
+                        } else {
+                            tracing::warn!(%reply_subject, "NATS unavailable; dropping reply (caller will time out)");
+                        }
                     }
                 }
                 Ok(Ok(None)) => {}
@@ -198,8 +233,26 @@ async fn process_nats_messages(
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
+struct ReadyState {
+    nats_ready_rx: tokio::sync::watch::Receiver<bool>,
+    synced_rx: tokio::sync::watch::Receiver<bool>,
+}
+
 async fn healthz_handler() -> &'static str {
     tracing::trace!("healthz_handler called");
     "OK"
+}
+
+async fn readyz_handler(
+    State(state): State<ReadyState>,
+) -> (StatusCode, &'static str) {
+    let nats_ready = *state.nats_ready_rx.borrow();
+    let synced = *state.synced_rx.borrow();
+    if nats_ready && synced {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    }
 }
 

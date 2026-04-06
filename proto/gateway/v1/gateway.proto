@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+option go_package = "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/gateway";
+
+service GatewayRoutes {
+  // Gateway requests full route snapshot (on startup or desync)
+  rpc RequestFullRoutes(FullRoutesRequest) returns (FullRoutesResponse);
+
+  // Bidirectional stream: operator pushes incremental route updates; gateway streams acks
+  rpc PushRouteUpdate(stream RouteUpdateAck) returns (stream RouteUpdateRequest);
+}
+
+// ── Full routes flow ──────────────────────────────────────────────────────────
+
+message FullRoutesRequest {
+  string gateway_id = 1;
+}
+
+message FullRoutesResponse {
+  repeated RouteConfig routes = 1;
+  bool success = 2;
+  string message = 3;
+  string version = 4;
+  int64 timestamp = 5;
+}
+
+// ── Incremental update flow ───────────────────────────────────────────────────
+
+message RouteUpdateRequest {
+  RouteUpdateConfig update = 1;
+  string target_gateway_id = 2;
+}
+
+message RouteUpdateAck {
+  string gateway_id = 1;
+  string version_applied = 2;
+  bool success = 3;
+  string message = 4;
+}
+
+message RouteUpdateConfig {
+  string version = 1;
+  repeated RouteUpdate updates = 2;
+  int64 timestamp = 3;
+}
+
+message RouteUpdate {
+  RouteConfig route = 1;
+  bool delete = 2;
+}
+
+// ── Shared route model ────────────────────────────────────────────────────────
+
+message RouteConfig {
+  string path = 1;
+  repeated string methods = 2;
+  string nats_subject = 3;
+}

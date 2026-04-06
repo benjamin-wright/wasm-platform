@@ -4,6 +4,19 @@ Active implementation plan for the wasm-platform project.
 
 ---
 
+## NATS Credential Resilience ✅
+
+Resolved a crash-loop / permanent misconfiguration caused by the execution host treating NATS as a hard startup requirement. Previously `nats::connect()` in `main()` fatally crashed the process on any error; Kubernetes back-off then made recovery take minutes. Credentials were injected as env vars (`envFrom: secretRef`) and were frozen at pod start — credential rotation would never be picked up without a pod restart.
+
+**Changes made:**
+- `src/nats.rs` — replaced `connect()` with `run_nats_manager(credentials_path, client_tx, ready_tx)`. Reads credentials from files at `NATS_CREDENTIALS_PATH` (Kubernetes secret volume mount); re-reads on every connection attempt. Registers an `async_nats` event callback to detect `AuthorizationViolation` and trigger immediate re-read + reconnect.
+- `src/nats.rs` — `manage_nats_subscriptions` now accepts `watch::Receiver<Option<Client>>`; drops and re-subscribes all topics on client replacement; drops subscriptions when client is `None`.
+- `src/config_sync.rs` — `run_config_sync_loop` accepts a `synced_tx: watch::Sender<bool>`; sets `true` after the first successful full snapshot, `false` on error.
+- `src/main.rs` — process no longer crashes on NATS unavailability. Added `/readyz` endpoint (503 until both NATS and config sync are ready). `/healthz` remains the liveness probe (always 200). `NATS_CREDENTIALS_PATH` is now required instead of the four `NATS_*` env vars.
+- `helm/templates/deployment.yaml` — replaced `envFrom: secretRef` with a projected secret volume at `/var/run/secrets/nats`; added `NATS_CREDENTIALS_PATH` env var; liveness → `/healthz`, readiness → `/readyz`.
+
+---
+
 ## Execution Host: Align Implementation with README Spec
 
 The execution host currently loads a single hardcoded WASM module for all messages and implements none of the WIT host functions (`sql`, `kv`, `messaging`). The README specifies per-application module management via the module cache, host function implementations backed by PostgreSQL/Redis/NATS, and sandboxing. This plan closes those gaps, adding an HTTP gateway and internal NATS topic prefixing along the way.
@@ -193,14 +206,16 @@ The wp-operator implements this service (same binary, new gRPC endpoint) and pus
 
 #### Tasks
 
-- [ ] Define `proto/gateway/v1/gateway.proto` with the `GatewayRoutes` service, request/response types, and `RouteConfig` message.
-- [ ] Implement `GatewayRoutes` server in the wp-operator — maintain a route store (similar to `configstore.Store`), push incremental updates when HTTP-type Applications change.
-- [ ] Scaffold `components/gateway/` — new Rust binary with `Cargo.toml`, `Dockerfile`, Helm chart, `Tiltfile`, and `README.md`.
-- [ ] Implement route sync client in the gateway — gRPC client that connects to the wp-operator, requests full routes on startup, then maintains the incremental stream. Populates an in-memory `RouteTable` (path → `RouteEntry { methods, nats_subject }`).
-- [ ] Implement HTTP server in the gateway (`axum`) — on each request, look up the path in the `RouteTable`. If not found → `404`. If method not allowed → `405`. Otherwise serialise the request as a platform JSON payload (fields matching `http-request`), publish via `async_nats::Client::request()`, deserialise the `http-response` JSON from the reply, and return the HTTP response.
-- [ ] Add gateway to the platform Helm chart (`helm/wasm-platform/`) and `Tiltfile`.
+- [x] Define `proto/gateway/v1/gateway.proto` with the `GatewayRoutes` service, request/response types, and `RouteConfig` message.
+- [x] Implement `GatewayRoutes` server in the wp-operator — maintain a route store (`internal/routestore/store.go`, similar to `configstore.Store`), push incremental updates when HTTP-type Applications change. Registered on the same gRPC server instance as `ConfigSync`.
+- [x] Scaffold `components/gateway/` — new Rust binary with `Cargo.toml`, `build.rs`, `Dockerfile`, Helm chart, `Tiltfile`, and `README.md`.
+- [x] Implement route sync client in the gateway — gRPC client that connects to the wp-operator, requests full routes on startup, then maintains the incremental stream. Populates an in-memory `RouteTable` (path → `RouteEntry { methods, nats_subject }`).
+- [x] Implement HTTP server in the gateway (`axum`) — on each request, look up the path in the `RouteTable`. If not found → `404`. If method not allowed → `405`. Otherwise serialise the request as a platform JSON payload (fields matching `http-request`), publish via `async_nats::Client::request()`, deserialise the `http-response` JSON from the reply, and return the HTTP response.
+- [x] Add gateway to the platform `Tiltfile` and gateway Helm chart to `components/gateway/helm/`.
 - [ ] End-to-end test — apply an Application with `spec.http`, verify the execution host pre-compiles the module, send an HTTP request to the gateway, confirm the request is routed through NATS to the module and the response is returned.
-- [ ] Update `components/gateway/README.md` — document the route sync protocol, platform JSON payload format, timeout behaviour, and method enforcement.
+- [x] Update `components/gateway/README.md` — document the route sync protocol, platform JSON payload format, timeout behaviour, and method enforcement.
+
+> **Developer action required:** run `make generate-proto` in `components/wp-operator/` to generate the Go gRPC stubs for `proto/gateway/v1/gateway.proto` before building the operator.
 
 ---
 

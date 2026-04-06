@@ -13,6 +13,12 @@ def db_operator(namespace):
             '--set=image.tag=v1.0.6',
         ],
     )
+    local_resource(
+        'db-operator-crds-ready',
+        cmd='kubectl rollout status deployment/db-operator -n {} --timeout=120s'.format(namespace),
+        resource_deps=['db-operator'],
+        labels=['internal'],
+    )
 
 def wp_databases(namespace):
     helm_resource(
@@ -20,7 +26,7 @@ def wp_databases(namespace):
         chart='components/wp-databases',
         namespace=namespace,
         labels=['wp-databases'],
-        deps=[
-            'db-operator',
+        resource_deps=[
+            'db-operator-crds-ready',
         ],
     )

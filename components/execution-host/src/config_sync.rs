@@ -12,22 +12,26 @@ use crate::{
 
 // Loops forever: fetches a full config snapshot then maintains the incremental
 // update stream.  On any error or clean stream close, backs off and retries.
+// `synced_tx` is set to `true` after the first successful full snapshot and
+// back to `false` while reconnecting, so readiness reflects operator reachability.
 pub async fn run_config_sync_loop(
     addr: String,
     host_id: String,
     registry: AppRegistry,
     modules: ModuleRegistry,
     topics_tx: tokio::sync::watch::Sender<Vec<String>>,
+    synced_tx: tokio::sync::watch::Sender<bool>,
 ) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_config_sync(&addr, &host_id, &registry, &modules, &topics_tx).await {
+        match run_config_sync(&addr, &host_id, &registry, &modules, &topics_tx, &synced_tx).await {
             Ok(()) => {
                 tracing::warn!("config sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
             }
             Err(err) => {
                 tracing::warn!("config sync error: {err:#}; reconnecting in {backoff:?}");
+                let _ = synced_tx.send(false);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
@@ -43,9 +47,11 @@ async fn run_config_sync(
     registry: &AppRegistry,
     modules: &ModuleRegistry,
     topics_tx: &tokio::sync::watch::Sender<Vec<String>>,
+    synced_tx: &tokio::sync::watch::Sender<bool>,
 ) -> Result<()> {
     fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules).await?;
     topics_tx.send(registry.topics()?).ok();
+    let _ = synced_tx.send(true);
 
     tracing::info!("opening incremental update stream");
     let mut client = ConfigSyncClient::connect(addr.to_string()).await?;

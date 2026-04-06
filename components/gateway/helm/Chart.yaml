@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gateway
+description: HTTP gateway for wasm-platform — routes HTTP requests to WASM modules via NATS.
+type: application
+version: 0.1.0
+appVersion: latest

@@ -6,7 +6,7 @@ $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
 .PHONY: generate
-generate: generate-crds generate-proto ## Run all code generators.
+generate: generate-proto generate-crds ## Run all code generators.
 
 .PHONY: install-tools
 install-tools: ## Install protoc plugins pinned to versions in go.mod.
@@ -15,8 +15,8 @@ install-tools: ## Install protoc plugins pinned to versions in go.mod.
 
 .PHONY: generate-crds
 generate-crds: ## Regenerate CRD manifests and deepcopy functions via controller-gen.
-	controller-gen crd paths="./..." output:crd:artifacts:config=helm/crds
-	controller-gen object paths="./..."
+	controller-gen crd paths="./api/..." output:crd:artifacts:config=helm/crds
+	controller-gen object paths="./api/..."
 
 .PHONY: setup-envtest
 setup-envtest: $(LOCALBIN) ## Download setup-envtest into ./bin.
@@ -27,12 +27,13 @@ test: ## Run integration tests.
 	KUBEBUILDER_ASSETS="$(shell $(LOCALBIN)/setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./... -v
 
 .PHONY: generate-proto
-generate-proto: ## Regenerate Go gRPC stubs from proto/configsync/v1/configsync.proto.
+generate-proto: ## Regenerate Go gRPC stubs from proto files.
 	protoc \
 		--proto_path=$(REPO_ROOT)/proto \
 		--go_out=. \
 		--go_opt=module=github.com/benjamin-wright/wasm-platform/wp-operator \
 		--go-grpc_out=. \
 		--go-grpc_opt=module=github.com/benjamin-wright/wasm-platform/wp-operator \
-		configsync/v1/configsync.proto
+		configsync/v1/configsync.proto \
+		gateway/v1/gateway.proto
 	go mod tidy

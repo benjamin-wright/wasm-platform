@@ -20,6 +20,7 @@ import (
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/controller"
 	grpcserver "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/routestore"
 )
 
 var scheme = runtime.NewScheme()
@@ -59,6 +60,7 @@ func main() {
 	}
 
 	store := configstore.New()
+	routeStore := routestore.New()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -75,10 +77,11 @@ func main() {
 	}
 
 	if err = (&controller.ApplicationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Store:  store,
-		Config: configFromEnv(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Store:      store,
+		RouteStore: routeStore,
+		Config:     configFromEnv(),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "Application")
 		os.Exit(1)
@@ -102,6 +105,7 @@ func main() {
 	}
 	grpcSrv := grpc.NewServer()
 	grpcserver.Register(grpcSrv, store)
+	grpcserver.RegisterGateway(grpcSrv, routeStore)
 	ctrl.Log.Info("starting gRPC server", "addr", grpcAddr)
 	go func() {
 		if serveErr := grpcSrv.Serve(lis); serveErr != nil {

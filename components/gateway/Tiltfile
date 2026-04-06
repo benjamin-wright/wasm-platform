@@ -1,0 +1,40 @@
+load('ext://helm_resource', 'helm_resource')
+
+IMAGE_REF = 'wasm-platform-registry.localhost:5001/gateway'
+
+def gateway(namespace, resource_deps=[]):
+    custom_build(
+        IMAGE_REF,
+        command = (
+            'docker build' +
+            ' --build-context workspace=.' +
+            ' -f components/gateway/Dockerfile' +
+            ' -t $EXPECTED_REF' +
+            ' components/gateway'
+        ),
+        deps = [
+            'components/gateway/src',
+            'components/gateway/Cargo.toml',
+            'proto/gateway/v1/gateway.proto',
+        ],
+    )
+
+    helm_resource(
+        'gateway',
+        chart = 'components/gateway/helm',
+        namespace = namespace,
+        image_deps = [IMAGE_REF],
+        image_keys = [('image.repository', 'image.tag')],
+        labels = ['gateway'],
+        port_forwards = [3000],
+        resource_deps = resource_deps,
+    )
+
+    local_resource(
+        'gw: unit-tests',
+        cmd = 'cargo test -p gateway',
+        deps = ['components/gateway/src'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+        labels = ['gateway'],
+    )

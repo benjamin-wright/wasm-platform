@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Build context: repo root.
 # Named build context: --build-context wasm=<dir-containing-hello_world.wasm>
 #
@@ -5,8 +6,7 @@
 
 # ── Stage 1: cargo-chef installer ─────────────────────────────────────────────
 # Pinned to the minimum Rust version required by wasmtime (rust-version in Cargo.toml).
-FROM rust:1.91-slim-bookworm AS chef
-RUN cargo install cargo-chef --locked
+FROM lukemathwalker/cargo-chef:latest-rust-1.91-slim-bookworm AS chef
 WORKDIR /build
 
 # ── Stage 2: dependency planner ───────────────────────────────────────────────
@@ -22,9 +22,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=execution-host-target,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --bin execution-host --bin precompile
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=execution-host-target,target=/build/target \
+    cargo build --release --bin execution-host --bin precompile && \
+    cp target/release/execution-host /build/execution-host && \
+    cp target/release/precompile /build/precompile
 
 # ── Stage 4: AOT compiler ─────────────────────────────────────────────────────
 # Compiles the WASM component to a native .cwasm artifact using the same Engine
@@ -35,7 +43,7 @@ RUN cargo build --release --bin execution-host --bin precompile
 # must run this stage once per target architecture.
 FROM builder AS aot
 COPY --from=wasm . /build/wasm/
-RUN /build/target/release/precompile \
+RUN /build/precompile \
         /build/wasm/hello_world.wasm \
         /build/hello_world.cwasm
 
@@ -44,7 +52,7 @@ RUN /build/target/release/precompile \
 # glibc for the standard Rust target, libgcc_s for stack unwinding. Switch to
 # distroless/base-debian12 only if `ldd execution-host` confirms no libgcc dep.
 FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=builder /build/target/release/execution-host /usr/local/bin/execution-host
+COPY --from=builder /build/execution-host /usr/local/bin/execution-host
 COPY --from=aot /build/hello_world.cwasm /opt/wasm/hello_world.cwasm
 ENV WASM_MODULE_PATH=/opt/wasm/hello_world.cwasm
 EXPOSE 3000

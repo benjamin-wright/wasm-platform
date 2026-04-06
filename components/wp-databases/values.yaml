@@ -18,3 +18,6 @@ nats:
   executionHost:
     username: execution-host
     secretName: execution-host-nats-credentials
+  gateway:
+    username: gateway
+    secretName: gateway-nats-credentials

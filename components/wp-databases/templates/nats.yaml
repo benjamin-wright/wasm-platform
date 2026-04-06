@@ -49,3 +49,23 @@ spec:
         subscribe:
           allow:
             - ">"
+---
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsAccount
+metadata:
+  name: {{ .Release.Name }}-nats-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wp-databases.labels" . | nindent 4 }}
+spec:
+  clusterRef: {{ .Release.Name }}-nats
+  users:
+    - username: {{ .Values.nats.gateway.username }}
+      secretName: {{ .Values.nats.gateway.secretName }}
+      permissions:
+        publish:
+          allow:
+            - ">"
+        subscribe:
+          allow:
+            - ">"
