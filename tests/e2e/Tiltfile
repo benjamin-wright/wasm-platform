@@ -1,0 +1,7 @@
+def e2e_tests(resource_deps=[]):
+    local_resource(
+        'e2e-tests',
+        cmd = 'cd tests/e2e && GOWORK=off go test -tags integration -count=1 -v ./...',
+        resource_deps = ['hello-world'] + resource_deps,
+        labels = ['tests'],
+    )
