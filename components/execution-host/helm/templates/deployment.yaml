@@ -34,6 +34,28 @@ spec:
                   fieldPath: metadata.name
             - name: NATS_CREDENTIALS_PATH
               value: /var/run/secrets/nats
+            - name: REDIS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.secretName }}
+                  key: REDIS_USERNAME
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.secretName }}
+                  key: REDIS_PASSWORD
+            - name: REDIS_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.secretName }}
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.secretName }}
+                  key: REDIS_PORT
+            - name: REDIS_URL
+              value: "redis://$(REDIS_USERNAME):$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)"
             - name: RUST_LOG
               value: {{ .Values.logLevel | quote }}
           volumeMounts:

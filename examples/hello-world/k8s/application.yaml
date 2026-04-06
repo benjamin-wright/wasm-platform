@@ -5,6 +5,7 @@ metadata:
   namespace: wasm-platform
 spec:
   module: hello-world
+  keyValue: hello-world
   http:
     path: /hello
     methods:

@@ -54,10 +54,10 @@ Depends on Phase 1. Independent of 6a and 6c.
 
 **Connection model:** single Redis multiplexed connection shared across all apps (`REDIS_URL` env var). `KeyValueConfig` carries only the `prefix` for per-app isolation.
 
-- [ ] Implement `kv` interface in `src/host_kv.rs` — `get`/`set`/`delete` via `redis` crate, transparently prepending `KeyValueConfig.prefix` to all keys.
-- [ ] Add `redis_client: redis::Client` to `RuntimeState` — created from `REDIS_URL` at startup.
-- [ ] Update `HostState` — add `kv_prefix: String` and `redis_client: redis::Client`.
-- [ ] Wire `kv` into `Linker`.
+- [x] Implement `kv` interface in `src/host_kv.rs` — `get`/`set`/`delete` via `redis` crate, transparently prepending `KeyValueConfig.prefix` to all keys.
+- [x] Add `redis_client: redis::Client` to `RuntimeState` — created from `REDIS_URL` at startup.
+- [x] Update `HostState` — add `kv_prefix: String` and `redis_client: redis::Client`.
+- [x] Wire `kv` into `Linker`.
 
 ### Phase 6c: Messaging Host Function
 

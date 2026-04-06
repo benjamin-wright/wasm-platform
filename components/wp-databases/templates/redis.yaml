@@ -21,3 +21,19 @@ spec:
   secretName: {{ .Values.redis.wpOperator.secretName }}
   aclCategories:
     - all
+---
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: RedisCredential
+metadata:
+  name: {{ .Release.Name }}-redis-execution-host
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wp-databases.labels" . | nindent 4 }}
+spec:
+  databaseRef: {{ .Release.Name }}-redis
+  username: {{ .Values.redis.executionHost.username }}
+  secretName: {{ .Values.redis.executionHost.secretName }}
+  keyPatterns:
+    - "*"
+  aclCategories:
+    - all

@@ -1,5 +1,6 @@
 mod config;
 mod config_sync;
+mod host_kv;
 mod module_cache;
 mod modules;
 mod nats;
@@ -10,7 +11,7 @@ use anyhow::Result;
 use axum::{Router, extract::State, http::StatusCode, routing::get};
 use config::AppRegistry;
 use modules::ModuleRegistry;
-use runtime::{RuntimeState, HttpRequestPayload, invoke_on_message, invoke_on_request};
+use runtime::{RuntimeState, HttpRequestPayload, HttpResponsePayload, invoke_on_message, invoke_on_request};
 use std::{path::PathBuf, sync::Arc};
 use wasmtime::Engine;
 
@@ -26,7 +27,23 @@ async fn main() -> Result<()> {
     wasm_config.wasm_component_model(true);
     let engine = Engine::new(&wasm_config)?;
 
-    let state = Arc::new(RuntimeState::new(engine.clone())?);
+    // REDIS_URL is optional — if absent, kv host functions return an error at
+    // runtime rather than preventing startup.
+    let redis_client = match std::env::var("REDIS_URL") {
+        Ok(url) => {
+            tracing::info!(%url, "connecting to Redis");
+            Some(
+                redis::Client::open(url.as_str())
+                    .map_err(|e| anyhow::anyhow!("invalid REDIS_URL: {e}"))?,
+            )
+        }
+        Err(_) => {
+            tracing::warn!("REDIS_URL not set; kv host functions will be unavailable");
+            None
+        }
+    };
+
+    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client)?);
 
     // MODULE_CACHE_ADDR is required — without a module cache the host cannot
     // load compiled WASM artifacts for any application.
@@ -172,6 +189,12 @@ async fn process_nats_messages(
         // Snapshot the current client.  If NATS is mid-reconnect the snapshot
         // is None; replies will be silently dropped and the caller will time out.
         let client_snapshot = client_rx.borrow().clone();
+        // Extract kv_prefix before the move closure captures app_config.
+        let kv_prefix = app_config
+            .key_value
+            .as_ref()
+            .map(|kv| kv.prefix.clone())
+            .unwrap_or_default();
         tokio::spawn(async move {
             let _permit = permit;
             let reply = message.reply.clone();
@@ -189,7 +212,7 @@ async fn process_nats_messages(
             let result = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload)
+                        invoke_on_message(&state, &component, &payload, kv_prefix)
                     })
                     .await
                 }
@@ -199,7 +222,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request)?;
+                        let response = invoke_on_request(&state, &component, request, kv_prefix)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
@@ -226,10 +249,32 @@ async fn process_nats_messages(
                 }
                 Ok(Ok(None)) => {}
                 Ok(Err(err)) => {
-                    tracing::error!("invoke_on_message failed: {err:#}");
+                    tracing::error!("invocation failed: {err:#}");
+                    // For HTTP apps, send a 500 back so the gateway can return
+                    // a proper error response instead of timing out.
+                    if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
+                        let error_response = HttpResponsePayload {
+                            status: 500,
+                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                            body: Some(format!("internal error: {err:#}").into_bytes()),
+                        };
+                        if let Ok(bytes) = serde_json::to_vec(&error_response) {
+                            let _ = client.publish(reply_subject, bytes.into()).await;
+                        }
+                    }
                 }
                 Err(join_err) => {
                     tracing::error!("spawn_blocking panicked: {join_err}");
+                    if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
+                        let error_response = HttpResponsePayload {
+                            status: 500,
+                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                            body: Some(b"internal error: execution panicked".to_vec()),
+                        };
+                        if let Ok(bytes) = serde_json::to_vec(&error_response) {
+                            let _ = client.publish(reply_subject, bytes.into()).await;
+                        }
+                    }
                 }
             }
         });

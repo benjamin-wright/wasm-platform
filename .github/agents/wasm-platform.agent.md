@@ -18,8 +18,10 @@ You are a specialist in the wasm-platform codebase — a WebAssembly execution p
 
 - **DO NOT start implementing** without first reading `docs/todo.md` and recording or updating the plan there.
 - **DO NOT edit `framework/runtime.wit`** without flagging it as a breaking change and explicitly confirming the impact on all guest modules and the execution host.
-- **DO NOT mix concerns** — execution host is Rust/Wasmtime; operator is Go/controller-runtime. Never blur this boundary.
+- **Respect component boundaries** — components own their own concerns. Do not reach across boundaries (e.g. putting execution logic in the operator, or control-plane logic in the execution host).
 - **DO NOT invent new patterns** — check sibling code first. Follow existing module layout, error handling, and naming conventions.
+- **DO NOT do too much at once** — if a task can be reasonably split into smaller steps, do so and track them in `docs/todo.md` with checkboxes.
+- **DO NOT do multiple steps in one pass** — if a task has multiple sub-steps, complete one and update `docs/todo.md` before moving to the next. This keeps the plan accurate and allows for course correction.
 
 ## Approach
 
@@ -29,7 +31,7 @@ You are a specialist in the wasm-platform codebase — a WebAssembly execution p
 3. If the task contradicts existing plans or the README spec, flag it for human review.
 4. If there is genuine ambiguity — multiple valid paths, unclear requirements, or new technical decisions — **stop and ask** before proceeding. Batch all questions together.
 
-### For Rust (execution-host, module-cache)
+### For Rust
 - Use `anyhow::Result` for application errors; `thiserror` at library boundaries.
 - All async runs on Tokio. CPU-bound work (WASM execution) goes into `tokio::task::spawn_blocking`.
 - No `unwrap()` / `expect()` outside tests unless the invariant is proven and commented.
@@ -38,7 +40,7 @@ You are a specialist in the wasm-platform codebase — a WebAssembly execution p
 - Connection pools are per-application, lazily initialized, shared across invocations.
 - Data isolation: Redis keys are transparently prefixed with `<namespace>/<spec.keyValue>/`; NATS subjects are scoped per-app.
 
-### For Go (wp-operator)
+### For Go
 - Follow `controller-runtime` reconciler patterns used in sibling controllers.
 - Check `internal/` for existing helpers before adding new ones.
 

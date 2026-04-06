@@ -7,6 +7,9 @@ redis:
   wpOperator:
     username: wp-operator
     secretName: wp-operator-redis-credentials
+  executionHost:
+    username: execution-host
+    secretName: execution-host-redis-credentials
 
 nats:
   version: "2.10"

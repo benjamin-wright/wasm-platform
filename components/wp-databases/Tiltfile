@@ -6,11 +6,11 @@ def db_operator(namespace):
     helm_resource(
         'db-operator',
         namespace=namespace,
-        chart='oci://docker.io/benwright/db-operator-chart:v1.0.6',
+        chart='oci://docker.io/benwright/db-operator-chart:v1.0.8',
         labels=['db-operator'],
         flags=[
             '--set=image.repository=docker.io/benwright/db-operator',
-            '--set=image.tag=v1.0.6',
+            '--set=image.tag=v1.0.8',
         ],
     )
     local_resource(
@@ -26,6 +26,7 @@ def wp_databases(namespace):
         chart='components/wp-databases',
         namespace=namespace,
         labels=['wp-databases'],
+        deps=['components/wp-databases'],
         resource_deps=[
             'db-operator-crds-ready',
         ],
