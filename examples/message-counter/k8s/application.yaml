@@ -2,7 +2,7 @@ apiVersion: wasm-platform.io/v1alpha1
 kind: Application
 metadata:
   name: message-counter
-  namespace: wasm-platform
+  namespace: examples
 spec:
   module: message-counter
   topic: hello-world.events

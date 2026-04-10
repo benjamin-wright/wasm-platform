@@ -25,16 +25,7 @@ def gateway(namespace, resource_deps=[]):
         namespace = namespace,
         image_deps = [IMAGE_REF],
         image_keys = [('image.repository', 'image.tag')],
-        labels = ['gateway'],
+        labels = ['platform'],
         port_forwards = [3000],
         resource_deps = resource_deps,
-    )
-
-    local_resource(
-        'gw: unit-tests',
-        cmd = 'cargo test -p gateway',
-        deps = ['components/gateway/src'],
-        auto_init = False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
-        labels = ['gateway'],
     )

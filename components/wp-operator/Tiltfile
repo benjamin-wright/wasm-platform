@@ -24,7 +24,7 @@ def wp_operator(namespace):
         chart = 'components/wp-operator/helm',
         image_deps = [IMAGE_REF],
         image_keys = [('image.repository', 'image.tag')],
-        labels = ['wp-operator'],
+        labels = ['platform'],
         namespace=namespace,
         port_forwards = ['50051:50051'],
     )
@@ -37,7 +37,7 @@ def wp_operator(namespace):
             'components/wp-operator/api',
             'components/wp-operator/internal',
         ],
-        labels = ['wp-operator'],
+        labels = ['tests'],
         auto_init=False,
         trigger_mode = TRIGGER_MODE_MANUAL,
     )
@@ -49,7 +49,7 @@ def wp_operator(namespace):
             'components/wp-operator/internal/integration',
         ],
         resource_deps = ['wp-operator'],
-        labels = ['wp-operator'],
+        labels = ['tests'],
         auto_init=False,
         trigger_mode = TRIGGER_MODE_MANUAL,
     )

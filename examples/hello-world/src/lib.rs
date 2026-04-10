@@ -3,12 +3,14 @@ wit_bindgen::generate!({
     path: "../../framework/runtime.wit",
 });
 
-use framework::runtime::{kv, messaging};
+use framework::runtime::{kv, log, messaging};
 
 struct HelloWorld;
 
 impl Guest for HelloWorld {
     fn on_request(request: HttpRequest) -> Result<HttpResponse, String> {
+        log::emit(log::Level::Info, "handling request");
+
         // Publish an event so the message-counter module can track activity.
         messaging::send("hello-world.events", &b"tick".to_vec())?;
 

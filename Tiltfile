@@ -24,6 +24,14 @@ wp_operator(namespace)
 execution_host(namespace, resource_deps=['wp-operator'])
 gateway(namespace, resource_deps=['wp-operator'])
 module_cache(namespace)
-hello_world(namespace, resource_deps=['wp-operator', 'execution-host', 'gateway'])
-message_counter(namespace, resource_deps=['wp-operator', 'execution-host'])
+
+
+## Example applications ##
+
+k8s_namespace('examples')
+hello_world('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
+message_counter('examples', resource_deps=['wp-operator', 'execution-host'])
+
+## Tests ##
+
 e2e_tests(resource_deps=['message-counter'])

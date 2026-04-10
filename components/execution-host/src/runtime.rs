@@ -53,6 +53,8 @@ pub(crate) struct HostState {
     pub(crate) kv_prefix: String,
     pub(crate) redis_client: Option<redis::Client>,
     pub(crate) nats_client: Option<async_nats::Client>,
+    pub(crate) app_name: String,
+    pub(crate) app_namespace: String,
 }
 
 impl WasiView for HostState {
@@ -87,6 +89,10 @@ impl RuntimeState {
             &mut linker,
             |h: &mut HostState| h,
         )?;
+        message_bindings::framework::runtime::log::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
+            &mut linker,
+            |h: &mut HostState| h,
+        )?;
         Ok(Self { engine, linker, redis_client })
     }
 }
@@ -99,6 +105,8 @@ pub fn invoke_on_message(
     payload: &[u8],
     kv_prefix: String,
     nats_client: Option<async_nats::Client>,
+    app_name: String,
+    app_namespace: String,
 ) -> Result<Option<Vec<u8>>> {
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
@@ -106,6 +114,8 @@ pub fn invoke_on_message(
         kv_prefix,
         redis_client: state.redis_client.clone(),
         nats_client,
+        app_name,
+        app_namespace,
     };
     let mut store = Store::new(&state.engine, host_state);
 
@@ -126,6 +136,8 @@ pub fn invoke_on_request(
     request: HttpRequestPayload,
     kv_prefix: String,
     nats_client: Option<async_nats::Client>,
+    app_name: String,
+    app_namespace: String,
 ) -> Result<HttpResponsePayload> {
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
@@ -133,6 +145,8 @@ pub fn invoke_on_request(
         kv_prefix,
         redis_client: state.redis_client.clone(),
         nats_client,
+        app_name,
+        app_namespace,
     };
     let mut store = Store::new(&state.engine, host_state);
 

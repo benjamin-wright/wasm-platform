@@ -7,14 +7,17 @@ def execution_host(namespace, resource_deps=[]):
         IMAGE_REF,
         command = (
             'docker build' +
+            ' --build-context workspace=.' +
             ' -f components/execution-host/Dockerfile' +
             ' -t $EXPECTED_REF' +
-            ' .'
+            ' components/execution-host'
         ),
         deps = [
             'components/execution-host/src',
             'components/execution-host/Cargo.toml',
-        ]
+            'proto/configsync/v1/configsync.proto',
+            'framework/runtime.wit',
+        ],
     )
 
     helm_resource(
@@ -23,25 +26,7 @@ def execution_host(namespace, resource_deps=[]):
         namespace=namespace,
         image_deps = [IMAGE_REF],
         image_keys = [('image.repository', 'image.tag')],
-        labels = ['execution-host'],
+        labels = ['platform'],
         port_forwards=['3001:3000'],
         resource_deps=resource_deps,
-    )
-
-    local_resource(
-        'eh: unit-tests',
-        cmd = 'cargo test -p execution-host',
-        deps = ['components/execution-host/src'],
-        auto_init=False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
-        labels = ['execution-host'],
-    )
-
-    local_resource(
-        'eh: int-tests',
-        cmd = 'nats pub fn.hello \'{"method": "GET", "path": "/hello", "body": "world"}\' --server nats://localhost:4222',
-        resource_deps = ['execution-host'],
-        auto_init=False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
-        labels = ['execution-host'],
     )

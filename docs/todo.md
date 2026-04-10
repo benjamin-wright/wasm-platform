@@ -19,65 +19,13 @@ Active implementation plan for the wasm-platform project.
 - **Gateway route discovery:** wp-operator pushes route config to the gateway via gRPC (reuses the config-sync pattern, keeps CRD watching centralised in the operator).
 - **HTTP transport (gateway ↔ execution host):** the gateway serialises the incoming HTTP request as a platform-private JSON object for the NATS payload. The execution host decodes this and calls `on-request` with properly typed WIT records — the module never sees JSON. The execution host serialises the returned `HttpResponse` record back to JSON for the NATS reply. This is an internal platform format; a future auth middleware layer can inject a user ID by adding an `x-user-id` entry to the headers map before the NATS publish.
 - **E2E test approach:** Go module at `tests/e2e/` with `//go:build integration` tag. Traefik `Ingress` routes `localhost:80` to the gateway (no TLS, configurable host, added to gateway Helm chart). The hello-world Application CR (HTTP trigger, KV counter) is the permanent test fixture. The e2e `Tiltfile` runs `go test -tags integration -count=1 -v ./...` as a `local_resource` with a dep on `hello-world`, ensuring it runs in `tilt ci`.
-- **Logging interface:** a custom WIT `log` interface is preferred over wiring WASI stdout/stderr. Guests use explicit log levels; the host forwards to `tracing` with per-app labels. `log::emit` is fire-and-forget — no error return — to keep guest code minimal.
+- **Logging interface:** a custom WIT `log` interface is preferred over wiring WASI stdout/stderr. Guests use explicit log levels; the host forwards to `tracing` with per-app labels. `log::emit` is fire-and-forget — no error return — to keep guest code minimal. Implemented: `interface log` in `framework/runtime.wit`, `host_log.rs` in execution-host, `app_name`/`app_namespace` fields on `HostState`.
 - **Metrics interface:** two functions (`counter-increment`, `gauge-set`) cover instrumentation needs without over-designing. The host owns all Prometheus labelling; guests supply only a name and value. Metrics are aggregated in-process per execution-host pod and exposed on a `/metrics` scrape endpoint — per-app attribution comes from `app_name`/`app_namespace` labels, not separate endpoints.
+- **SQL & Application CRD structure:** SQL implementation is deferred to Phase 9, pending Phase 8 design decisions. Direction under consideration: multi-function Application CRD where `spec.functions` is a list of `{name, module, trigger}` entries; one PostgreSQL database and one Redis key-prefix per Application, shared across all functions. DB migrations are a prerequisite for SQL to be useful — a migrations step (operator-managed run-to-completion Job, image reference in the Application spec) must complete before any function is activated.
 
 ---
 
-### Phase 7a: SQL Host Function
-
-#### Design
-
-The execution host is configured once with the shared PostgreSQL host and port (`PG_HOST`, `PG_PORT` env vars). Per-app credentials (database name, username, password) arrive via `SqlConfig` in the `ConfigSync` stream. The host builds connection strings internally by combining the shared host/port with the per-app credentials. Connection pools are per-application, keyed by `(database_name, username)`, lazily initialized, and shared across invocations.
-
-#### Tasks
-
-- [ ] Implement `sql` interface in new `src/host_sql.rs` — `query`/`execute` backed by `tokio-postgres`. Build connection strings from `PG_HOST`/`PG_PORT` + per-app `SqlConfig` (database_name, username, password). Maintain a pool cache keyed by `(database_name, username)`, lazily initialized on first use.
-- [ ] Update `HostState` — add `sql_config` field populated from `ApplicationConfig` at invocation time.
-- [ ] Wire `sql` into `Linker` — call `sql::add_to_linker` in `RuntimeState::new()`, implement the generated `sql::Host` trait on `HostState`.
-
-### Phase 7b: Messaging Host Function
-
-#### Design
-
-The `messaging::send` WIT function publishes a raw byte payload to a user-supplied topic via the existing `async_nats::Client` on `HostState`. The topic is passed through the execution host's internal prefix scheme (`fn.<topic>`) so cross-module messaging stays within the platform namespace.
-
-**E2E fixture — two cooperating modules:**
-- **hello-world** (HTTP trigger, existing): on each request it publishes a message to topic `hello-world.events` (raw bytes, e.g. `b"tick"`), increments its own `requests` KV counter, and reads both the `requests` and `messages` KV keys. The response body becomes `requests=N messages=M`.
-- **message-counter** (new `message-application` example): subscribes to topic `hello-world.events`. On every received message it increments `messages` in the shared `hello-world` KV store. No HTTP trigger.
-
-The e2e test hits `GET /hello` twice and asserts that both `requests=N` and `messages=M` increase between calls, proving the full publish → subscribe → KV-write path is exercised.
-
-#### Tasks
-
-- [x] Implement `messaging` interface in new `src/host_messaging.rs` — `send` publishes to NATS via the existing `async_nats::Client` using the `fn.<topic>` prefix scheme.
-- [x] Update `HostState` — add `nats_client` field populated from `ApplicationConfig` at invocation time.
-- [x] Wire `messaging` into `Linker` — call `messaging::add_to_linker` in `RuntimeState::new()`, implement the generated `messaging::Host` trait on `HostState`.
-- [x] Update hello-world module — call `messaging::send("hello-world.events", b"tick")` on each request; read both `requests` and `messages` KV keys; update response body to `requests=N messages=M`.
-- [x] Add `examples/message-counter/` — `Cargo.toml`, `src/lib.rs` implementing `world message-application`; on each `on-message` call increment `messages` in the `hello-world` KV store.
-- [x] Add `examples/message-counter/k8s/application.yaml` — `spec.topic: hello-world.events`, `spec.keyValue: hello-world` (shares the store with hello-world).
-- [x] Add `examples/message-counter/Tiltfile` — build and deploy the module; add it as a dep of `e2e-tests`.
-- [x] Load `examples/message-counter/Tiltfile` from root `Tiltfile`.
-- [x] Update `tests/e2e/e2e_test.go` — parse `messages=M` from the response body in addition to `requests=N`; assert both counters increment across two calls.
-
-### Phase 7c: Logging Interface
-
-#### Design
-
-Add a first-class `log` interface to `framework/runtime.wit` and import it into both worlds. Guests call `log::emit(level, message)` with an explicit severity. The execution host implements the interface by forwarding each call to `tracing` with structured fields for app namespace, name, and log level. This makes application-level log output distinguishable from platform infrastructure logs and preserves per-app context without requiring WASI stdout/stderr plumbing.
-
-Log calls are fire-and-forget from the guest's perspective — the WIT function returns no error, consistent with the low-overhead intent of the interface.
-
-#### Tasks
-
-- [ ] Add `interface log` to `framework/runtime.wit` — `enum level { debug, info, warn, error }` and `emit: func(level: level, message: string)` — import it in both `world message-application` and `world http-application`.
-- [ ] Implement `src/host_log.rs` in execution-host — implement the generated `log::Host` trait on `HostState`; forward each call to the appropriate `tracing` macro with `app_name` and `app_namespace` span fields.
-- [ ] Update `HostState` — add `app_name` and `app_namespace` fields populated from `ApplicationConfig` at invocation time.
-- [ ] Wire `log` into `Linker` — call `log::add_to_linker` for both worlds in `RuntimeState::new()`.
-- [ ] Update hello-world example — emit a `log::emit(level::info, "handling request")` call to exercise the interface; update `examples/hello-world/README.md`.
-- [ ] Update `framework/runtime.wit` documentation and affected component READMEs.
-
-### Phase 7d: Metrics Interface
+### Phase 7b: Metrics Interface
 
 #### Design
 
@@ -97,7 +45,38 @@ The execution host maintains an in-process Prometheus registry (via the `prometh
 - [ ] Add Prometheus scrape config to the execution-host Helm chart.
 - [ ] Update `framework/runtime.wit` documentation and affected component READMEs.
 
-### Phase 8: Sandboxing & Resource Limits
+### Phase 8: Multi-function Application CRD Design
+
+#### Design
+
+Before implementing SQL, the Application CRD structure needs a design decision: should a single Application CR support multiple WASM functions, each its own module, all sharing one PostgreSQL database and one Redis key-prefix scoped to the application?
+
+The current shape is one-module-per-CR. A multi-function model — `spec.functions` as a list of `{name, module, trigger}` entries — has significant implications:
+- The wp-operator manages one database and one Redis prefix per Application, regardless of function count. Isolation is at the application boundary, not the function boundary.
+- DB migrations are a prerequisite for SQL to be useful. A migrations step must complete before any function is activated. The Application spec must reference a migrations image; the wp-operator manages the run-to-completion Job lifecycle, including failure and rollback.
+- Config sync, NATS subscription management, and module loading in the execution host become per-function entries grouped under an Application context.
+- The config sync proto must carry per-function module refs and triggers alongside per-application credentials.
+
+This phase produces decisions and a revised Application CRD schema. No host implementation changes. Phase 9 (SQL) is blocked on this phase completing.
+
+#### Tasks
+
+- [ ] Draft multi-function Application CRD schema — `spec.functions` list with per-function `name`, `module` (OCI ref), and `trigger` (http or topic); assess backwards compatibility with existing single-module CRs.
+- [ ] Decide migrations contract — how the migrations image is referenced in the spec, what the operator does on first apply vs. upgrade, and what the failure/rollback model is.
+- [ ] Assess config sync proto changes — how the execution host receives per-application config with multiple function entries; update `proto/configsync` design if needed.
+- [ ] Record all decisions in the Decisions block and update `docs/architecture.md` before closing this phase.
+
+### Phase 9: SQL Host Function + Migrations
+
+#### Design
+
+Deferred — expand once Phase 8 design decisions are recorded. At minimum this phase will cover: `sql` WIT interface host implementation, per-application connection pool keyed by `(database_name, username)`, migrations Job lifecycle managed by the wp-operator, and an e2e fixture exercising a SQL-backed WASM module.
+
+#### Tasks
+
+- [ ] TBD — expand after Phase 8 decisions are finalised.
+
+### Phase 10: Sandboxing & Resource Limits
 
 #### Tasks
 
@@ -106,7 +85,7 @@ The execution host maintains an in-process Prometheus registry (via the `prometh
 - [ ] Wall-clock timeout — wrap `spawn_blocking` in `tokio::time::timeout` (e.g. 30s default, `WASM_TIMEOUT_SECS`).
 - [ ] Instance pooling (stretch goal) — `PoolingAllocationConfig` for pre-allocated slots; defer if per-invocation model performs adequately.
 
-### Phase 9: README Alignment
+### Phase 11: README Alignment
 
 #### Tasks
 

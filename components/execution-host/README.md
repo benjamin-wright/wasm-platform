@@ -30,6 +30,10 @@ Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURR
 - **Redis** — single multiplexed connection to the shared instance. Keys are transparently prefixed with `<namespace>/<spec.keyValue>/`. Apps sharing a `spec.keyValue` within the same namespace intentionally share key-space.
 - **NATS** — each app is bound to its own subject. The `messaging` host function prefixes the caller-supplied topic with `fn.` and publishes to that subject; modules can send to any platform topic, not only their own.
 
+## Logging
+
+Guest modules emit log entries via the `log` WIT interface (`log::emit(level, message)`). The host forwards each call to the platform's `tracing` subscriber with `app_name` and `app_namespace` as structured fields, making application log output distinguishable from platform infrastructure logs. Log calls are fire-and-forget from the guest's perspective.
+
 ## Environment Variables
 
 | Variable | Description |

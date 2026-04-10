@@ -7,7 +7,7 @@ def db_operator(namespace):
         'db-operator',
         namespace=namespace,
         chart='oci://docker.io/benwright/db-operator-chart:v1.0.8',
-        labels=['db-operator'],
+        labels=['platform'],
         flags=[
             '--set=image.repository=docker.io/benwright/db-operator',
             '--set=image.tag=v1.0.8',
@@ -25,7 +25,7 @@ def wp_databases(namespace):
         'wp-databases',
         chart='components/wp-databases',
         namespace=namespace,
-        labels=['wp-databases'],
+        labels=['platform'],
         deps=['components/wp-databases'],
         resource_deps=[
             'db-operator-crds-ready',

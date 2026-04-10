@@ -1,6 +1,7 @@
 mod config;
 mod config_sync;
 mod host_kv;
+mod host_log;
 mod host_messaging;
 mod module_cache;
 mod modules;
@@ -190,12 +191,14 @@ async fn process_nats_messages(
         // Snapshot the current client.  If NATS is mid-reconnect the snapshot
         // is None; replies will be silently dropped and the caller will time out.
         let client_snapshot = client_rx.borrow().clone();
-        // Extract kv_prefix before the move closure captures app_config.
+        // Extract fields before the move closure captures app_config.
         let kv_prefix = app_config
             .key_value
             .as_ref()
             .map(|kv| kv.prefix.clone())
             .unwrap_or_default();
+        let app_name = app_config.name.clone();
+        let app_namespace = app_config.namespace.clone();
         // Clone for the messaging host function — used inside spawn_blocking.
         let nats_for_invoke = client_snapshot.clone();
         tokio::spawn(async move {
@@ -215,7 +218,7 @@ async fn process_nats_messages(
             let result = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, kv_prefix, nats_for_invoke)
+                        invoke_on_message(&state, &component, &payload, kv_prefix, nats_for_invoke, app_name, app_namespace)
                     })
                     .await
                 }
@@ -225,7 +228,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, kv_prefix, nats_for_invoke)?;
+                        let response = invoke_on_request(&state, &component, request, kv_prefix, nats_for_invoke, app_name, app_namespace)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;

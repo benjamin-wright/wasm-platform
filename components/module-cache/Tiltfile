@@ -23,15 +23,6 @@ def module_cache(namespace):
         chart = 'components/module-cache/helm',
         image_deps = [IMAGE_REF],
         image_keys = [('image.repository', 'image.tag')],
-        labels = ['module-cache'],
+        labels = ['platform'],
         namespace=namespace,
-    )
-
-    local_resource(
-        'mc: unit-tests',
-        cmd = 'cargo test -p module-cache',
-        deps = ['components/module-cache/src'],
-        auto_init = False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
-        labels = ['module-cache'],
     )

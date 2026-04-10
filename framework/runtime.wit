@@ -1,5 +1,10 @@
 package framework:runtime;
 
+interface log {
+    enum level { debug, info, warn, error }
+    emit: func(level: level, message: string);
+}
+
 interface sql {
     variant param {
         null,
@@ -45,6 +50,7 @@ interface http-types {
 }
 
 world message-application {
+    import log;
     import sql;
     import kv;
     import messaging;
@@ -52,6 +58,7 @@ world message-application {
 }
 
 world http-application {
+    import log;
     import sql;
     import kv;
     import messaging;
