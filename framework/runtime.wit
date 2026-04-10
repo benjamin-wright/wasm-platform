@@ -18,6 +18,10 @@ interface kv {
     get: func(store: string, key: string) -> result<option<list<u8>>, string>;
     set: func(store: string, key: string, value: list<u8>) -> result<_, string>;
     delete: func(store: string, key: string) -> result<bool, string>;
+    get-int: func(store: string, key: string) -> result<option<s64>, string>;
+    set-int: func(store: string, key: string, value: s64) -> result<_, string>;
+    incr: func(store: string, key: string) -> result<s64, string>;
+    decr: func(store: string, key: string) -> result<s64, string>;
 }
 
 interface messaging {

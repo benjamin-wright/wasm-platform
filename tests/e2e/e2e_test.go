@@ -20,6 +20,11 @@ const (
 	pollInterval = 1 * time.Second
 )
 
+type counters struct {
+	requests int
+	messages int
+}
+
 func TestHelloWorldEndToEnd(t *testing.T) {
 	g := NewWithT(t)
 
@@ -36,38 +41,66 @@ func TestHelloWorldEndToEnd(t *testing.T) {
 	first, err := fetch(baseURL)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	second, err := fetch(baseURL)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	g.Expect(second).To(BeNumerically(">", first),
-		"expected request counter to increment: first=%d second=%d", first, second)
+	// The messages counter is incremented asynchronously by the message-counter
+	// module after each request. Poll until both requests and messages have
+	// advanced beyond the first call's values.
+	g.Eventually(func() (bool, error) {
+		second, err := fetch(baseURL)
+		if err != nil {
+			return false, err
+		}
+		return second.requests > first.requests && second.messages > first.messages, nil
+	}, routeTimeout, pollInterval).Should(BeTrue(),
+		"expected both requests and messages counters to increment: first=%+v", first)
 }
 
-// fetch makes a GET request and returns the "requests=N" counter from the
+// fetch makes a GET request and returns the parsed counters from the
 // hello-world response body. Returns an error if the request fails, the
-// status is not 200, or the body does not contain a counter.
-func fetch(url string) (int, error) {
+// status is not 200, or the body does not contain the expected counters.
+func fetch(url string) (counters, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		return 0, err
+		return counters{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return counters{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("reading body: %w", err)
+		return counters{}, fmt.Errorf("reading body: %w", err)
 	}
-	return parseRequests(string(bodyBytes))
+	return parseCounters(string(bodyBytes))
 }
 
-// parseRequests extracts the N from "requests=N" in the response body.
-func parseRequests(body string) (int, error) {
+// parseCounters extracts requests=N and messages=M from the response body.
+func parseCounters(body string) (counters, error) {
+	var c counters
+	var gotRequests, gotMessages bool
 	for _, field := range strings.Fields(body) {
 		if strings.HasPrefix(field, "requests=") {
-			return strconv.Atoi(strings.TrimPrefix(field, "requests="))
+			n, err := strconv.Atoi(strings.TrimPrefix(field, "requests="))
+			if err != nil {
+				return counters{}, fmt.Errorf("parsing requests field: %w", err)
+			}
+			c.requests = n
+			gotRequests = true
+		}
+		if strings.HasPrefix(field, "messages=") {
+			n, err := strconv.Atoi(strings.TrimPrefix(field, "messages="))
+			if err != nil {
+				return counters{}, fmt.Errorf("parsing messages field: %w", err)
+			}
+			c.messages = n
+			gotMessages = true
 		}
 	}
-	return 0, fmt.Errorf("no requests= field found in %q", body)
+	if !gotRequests {
+		return counters{}, fmt.Errorf("no requests= field found in %q", body)
+	}
+	if !gotMessages {
+		return counters{}, fmt.Errorf("no messages= field found in %q", body)
+	}
+	return c, nil
 }
+

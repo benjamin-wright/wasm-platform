@@ -6,13 +6,16 @@ A minimal WebAssembly guest module written in Rust that proves the host/guest in
 
 ## Exports
 
-Implements the `http-application` world from [`framework/runtime.wit`](../../framework/runtime.wit). The handler returns a plain-text response summarising the incoming request.
+Implements the `http-application` world from [`framework/runtime.wit`](../../framework/runtime.wit). On each request the handler:
+
+1. Publishes a `tick` event to topic `hello-world.events` via `messaging::send`.
+2. Atomically increments the `requests` counter in the `hello-world` KV store via `kv::incr`.
+3. Reads the `messages` counter written by the [message-counter](../message-counter/README.md) example.
+4. Returns a plain-text response containing both counter values.
 
 | Export | Example response |
 |---|---|
-| `on-request` | `"hello from wasm: method=GET path=/hello"` |
-
-The `sql`, `kv`, and `messaging` imports are satisfied at link time by the execution host but are never called.
+| `on-request` | `"hello from wasm: method=GET path=/hello requests=3 messages=2"` |
 
 ---
 

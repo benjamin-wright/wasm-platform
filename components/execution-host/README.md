@@ -28,7 +28,7 @@ Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURR
 
 - **PostgreSQL** — per-app connection pools keyed by `(database_name, username)`, lazily initialized. Connection strings are built from the shared `PG_HOST`/`PG_PORT` combined with per-app credentials from `SqlConfig` in the config stream.
 - **Redis** — single multiplexed connection to the shared instance. Keys are transparently prefixed with `<namespace>/<spec.keyValue>/`. Apps sharing a `spec.keyValue` within the same namespace intentionally share key-space.
-- **NATS** — each app is bound to its own subject. The `messaging` host function publishes only to the app's declared scope.
+- **NATS** — each app is bound to its own subject. The `messaging` host function prefixes the caller-supplied topic with `fn.` and publishes to that subject; modules can send to any platform topic, not only their own.
 
 ## Environment Variables
 

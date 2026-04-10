@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("wasmtime not found in Cargo.lock")?;
     println!("cargo:rustc-env=WASMTIME_VERSION={wasmtime_version}");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
+    println!("cargo:rerun-if-changed=../../framework/runtime.wit");
 
     tonic_build::compile_protos("../../proto/configsync/v1/configsync.proto")?;
     Ok(())

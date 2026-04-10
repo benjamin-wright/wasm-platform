@@ -4,5 +4,6 @@ members = [
     "components/execution-host",
     "components/gateway",
     "components/module-cache",
-    "examples/hello-world"
+    "examples/hello-world",
+    "examples/message-counter",
 ]

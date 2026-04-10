@@ -18,35 +18,17 @@ Active implementation plan for the wasm-platform project.
 - **Gateway language:** Rust (consistent with execution host, avoids a Go dependency for a non-operator component).
 - **Gateway route discovery:** wp-operator pushes route config to the gateway via gRPC (reuses the config-sync pattern, keeps CRD watching centralised in the operator).
 - **HTTP transport (gateway ↔ execution host):** the gateway serialises the incoming HTTP request as a platform-private JSON object for the NATS payload. The execution host decodes this and calls `on-request` with properly typed WIT records — the module never sees JSON. The execution host serialises the returned `HttpResponse` record back to JSON for the NATS reply. This is an internal platform format; a future auth middleware layer can inject a user ID by adding an `x-user-id` entry to the headers map before the NATS publish.
-
----
-
-### Phase 6: End-to-End Test
-
-Adds a Kubernetes Ingress for the gateway and a Go-based end-to-end test suite that runs from the host machine against the deployed platform. This is the verification gate for all subsequent work — `tilt ci` must pass before a phase is considered complete.
-
-#### Design
-
-- **Ingress:** a Traefik `Ingress` resource routes external HTTP traffic on `localhost:80` (already mapped by k3d's `-p "80:80@loadbalancer"`) to the gateway `ClusterIP` Service. The Ingress is added to the gateway Helm chart with a configurable host (default: empty, meaning match all). No TLS.
-- **Test runner:** a Go module at `tests/e2e/` with `//go:build integration` tag. Uses `net/http` to send requests to `http://localhost/hello` (via the Traefik ingress). Asserts the response status, body content, and that the KV counter increments across calls.
-- **Tilt integration:** a `tests/e2e/Tiltfile` defines a `local_resource` that runs `go test -tags integration -v ./...` from `tests/e2e/`. It depends on `hello-world` (ensuring the full stack is deployed) and has `auto_init=True` / default `trigger_mode` so it runs in `tilt ci`.
-- **hello-world as test fixture:** the existing hello-world Application CR (HTTP trigger, KV counter) is the test target. No new WASM module is needed.
-
-#### Tasks
-
-- [x] Add Ingress resource to gateway Helm chart (`components/gateway/helm/templates/ingress.yaml`) — route `/*` to the gateway Service on its HTTP port.  Update `values.yaml` with `ingress.enabled: true`.
-- [x] Create `tests/e2e/` Go module — `go.mod`, `e2e_test.go` with `//go:build integration`. Test: `GET http://localhost/hello` twice, assert 200 status, parse `requests=N` from body, assert second N > first N.
-- [x] Create `tests/e2e/Tiltfile` — `local_resource('e2e-tests', cmd='cd tests/e2e && go test -tags integration -count=1 -v ./...', resource_deps=['hello-world'])`. Default `auto_init` and `trigger_mode` so it runs in `tilt ci`.
-- [x] Load `tests/e2e/Tiltfile` from root `Tiltfile` — `load('./tests/e2e/Tiltfile', 'e2e_tests')`, call `e2e_tests()`.
-- [x] Verify `tilt ci` passes end-to-end.
+- **E2E test approach:** Go module at `tests/e2e/` with `//go:build integration` tag. Traefik `Ingress` routes `localhost:80` to the gateway (no TLS, configurable host, added to gateway Helm chart). The hello-world Application CR (HTTP trigger, KV counter) is the permanent test fixture. The e2e `Tiltfile` runs `go test -tags integration -count=1 -v ./...` as a `local_resource` with a dep on `hello-world`, ensuring it runs in `tilt ci`.
 
 ---
 
 ### Phase 7a: SQL Host Function
 
-Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocation time).
+#### Design
 
-- **Connection model:** the execution host is configured once with the shared PostgreSQL host and port (`PG_HOST`, `PG_PORT` env vars). Per-app credentials (database name, username, password) arrive via `SqlConfig` in the `ConfigSync` stream. The host builds connection strings internally by combining the shared host/port with the per-app credentials. Connection pools are per-application, keyed by `(database_name, username)`, lazily initialized, and shared across invocations.
+The execution host is configured once with the shared PostgreSQL host and port (`PG_HOST`, `PG_PORT` env vars). Per-app credentials (database name, username, password) arrive via `SqlConfig` in the `ConfigSync` stream. The host builds connection strings internally by combining the shared host/port with the per-app credentials. Connection pools are per-application, keyed by `(database_name, username)`, lazily initialized, and shared across invocations.
+
+#### Tasks
 
 - [ ] Implement `sql` interface in new `src/host_sql.rs` — `query`/`execute` backed by `tokio-postgres`. Build connection strings from `PG_HOST`/`PG_PORT` + per-app `SqlConfig` (database_name, username, password). Maintain a pool cache keyed by `(database_name, username)`, lazily initialized on first use.
 - [ ] Update `HostState` — add `sql_config` field populated from `ApplicationConfig` at invocation time.
@@ -54,11 +36,31 @@ Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocati
 
 ### Phase 7b: Messaging Host Function
 
-- [ ] Implement `messaging` interface in new `src/host_messaging.rs` — `send` publishes to NATS via the existing `async_nats::Client`.
-- [ ] Update `HostState` — add `nats_client` field populated from `ApplicationConfig` at invocation time.
-- [ ] Wire `messaging` into `Linker` — call `messaging::add_to_linker` in `RuntimeState::new()`, implement the generated `messaging::Host` trait on `HostState`.
+#### Design
+
+The `messaging::send` WIT function publishes a raw byte payload to a user-supplied topic via the existing `async_nats::Client` on `HostState`. The topic is passed through the execution host's internal prefix scheme (`fn.<topic>`) so cross-module messaging stays within the platform namespace.
+
+**E2E fixture — two cooperating modules:**
+- **hello-world** (HTTP trigger, existing): on each request it publishes a message to topic `hello-world.events` (raw bytes, e.g. `b"tick"`), increments its own `requests` KV counter, and reads both the `requests` and `messages` KV keys. The response body becomes `requests=N messages=M`.
+- **message-counter** (new `message-application` example): subscribes to topic `hello-world.events`. On every received message it increments `messages` in the shared `hello-world` KV store. No HTTP trigger.
+
+The e2e test hits `GET /hello` twice and asserts that both `requests=N` and `messages=M` increase between calls, proving the full publish → subscribe → KV-write path is exercised.
+
+#### Tasks
+
+- [x] Implement `messaging` interface in new `src/host_messaging.rs` — `send` publishes to NATS via the existing `async_nats::Client` using the `fn.<topic>` prefix scheme.
+- [x] Update `HostState` — add `nats_client` field populated from `ApplicationConfig` at invocation time.
+- [x] Wire `messaging` into `Linker` — call `messaging::add_to_linker` in `RuntimeState::new()`, implement the generated `messaging::Host` trait on `HostState`.
+- [x] Update hello-world module — call `messaging::send("hello-world.events", b"tick")` on each request; read both `requests` and `messages` KV keys; update response body to `requests=N messages=M`.
+- [x] Add `examples/message-counter/` — `Cargo.toml`, `src/lib.rs` implementing `world message-application`; on each `on-message` call increment `messages` in the `hello-world` KV store.
+- [x] Add `examples/message-counter/k8s/application.yaml` — `spec.topic: hello-world.events`, `spec.keyValue: hello-world` (shares the store with hello-world).
+- [x] Add `examples/message-counter/Tiltfile` — build and deploy the module; add it as a dep of `e2e-tests`.
+- [x] Load `examples/message-counter/Tiltfile` from root `Tiltfile`.
+- [x] Update `tests/e2e/e2e_test.go` — parse `messages=M` from the response body in addition to `requests=N`; assert both counters increment across two calls.
 
 ### Phase 8: Sandboxing & Resource Limits
+
+#### Tasks
 
 - [ ] Fuel metering — enable on `Engine`, set budget per `Store` before `on-message` (configurable via `WASM_FUEL_LIMIT`).
 - [ ] Memory limits — configure `InstanceLimits` on `Engine` (e.g. 64 MB default, `WASM_MEMORY_LIMIT_MB`).
@@ -66,6 +68,8 @@ Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocati
 - [ ] Instance pooling (stretch goal) — `PoolingAllocationConfig` for pre-allocated slots; defer if per-invocation model performs adequately.
 
 ### Phase 9: README Alignment
+
+#### Tasks
 
 - [ ] Update project README status section — currently says "Phase 0 (Proof of Concept)", should reflect actual progress.
 - [ ] Replace wildcard `fn.>` / `NATS_TOPIC_PREFIX` description with per-topic subscription model and internal prefix scheme.

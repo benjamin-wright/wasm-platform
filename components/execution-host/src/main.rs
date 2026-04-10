@@ -1,6 +1,7 @@
 mod config;
 mod config_sync;
 mod host_kv;
+mod host_messaging;
 mod module_cache;
 mod modules;
 mod nats;
@@ -195,6 +196,8 @@ async fn process_nats_messages(
             .as_ref()
             .map(|kv| kv.prefix.clone())
             .unwrap_or_default();
+        // Clone for the messaging host function — used inside spawn_blocking.
+        let nats_for_invoke = client_snapshot.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let reply = message.reply.clone();
@@ -212,7 +215,7 @@ async fn process_nats_messages(
             let result = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, kv_prefix)
+                        invoke_on_message(&state, &component, &payload, kv_prefix, nats_for_invoke)
                     })
                     .await
                 }
@@ -222,7 +225,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, kv_prefix)?;
+                        let response = invoke_on_request(&state, &component, request, kv_prefix, nats_for_invoke)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
