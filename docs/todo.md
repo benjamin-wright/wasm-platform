@@ -19,6 +19,8 @@ Active implementation plan for the wasm-platform project.
 - **Gateway route discovery:** wp-operator pushes route config to the gateway via gRPC (reuses the config-sync pattern, keeps CRD watching centralised in the operator).
 - **HTTP transport (gateway ↔ execution host):** the gateway serialises the incoming HTTP request as a platform-private JSON object for the NATS payload. The execution host decodes this and calls `on-request` with properly typed WIT records — the module never sees JSON. The execution host serialises the returned `HttpResponse` record back to JSON for the NATS reply. This is an internal platform format; a future auth middleware layer can inject a user ID by adding an `x-user-id` entry to the headers map before the NATS publish.
 - **E2E test approach:** Go module at `tests/e2e/` with `//go:build integration` tag. Traefik `Ingress` routes `localhost:80` to the gateway (no TLS, configurable host, added to gateway Helm chart). The hello-world Application CR (HTTP trigger, KV counter) is the permanent test fixture. The e2e `Tiltfile` runs `go test -tags integration -count=1 -v ./...` as a `local_resource` with a dep on `hello-world`, ensuring it runs in `tilt ci`.
+- **Logging interface:** a custom WIT `log` interface is preferred over wiring WASI stdout/stderr. Guests use explicit log levels; the host forwards to `tracing` with per-app labels. `log::emit` is fire-and-forget — no error return — to keep guest code minimal.
+- **Metrics interface:** two functions (`counter-increment`, `gauge-set`) cover instrumentation needs without over-designing. The host owns all Prometheus labelling; guests supply only a name and value. Metrics are aggregated in-process per execution-host pod and exposed on a `/metrics` scrape endpoint — per-app attribution comes from `app_name`/`app_namespace` labels, not separate endpoints.
 
 ---
 
@@ -57,6 +59,43 @@ The e2e test hits `GET /hello` twice and asserts that both `requests=N` and `mes
 - [x] Add `examples/message-counter/Tiltfile` — build and deploy the module; add it as a dep of `e2e-tests`.
 - [x] Load `examples/message-counter/Tiltfile` from root `Tiltfile`.
 - [x] Update `tests/e2e/e2e_test.go` — parse `messages=M` from the response body in addition to `requests=N`; assert both counters increment across two calls.
+
+### Phase 7c: Logging Interface
+
+#### Design
+
+Add a first-class `log` interface to `framework/runtime.wit` and import it into both worlds. Guests call `log::emit(level, message)` with an explicit severity. The execution host implements the interface by forwarding each call to `tracing` with structured fields for app namespace, name, and log level. This makes application-level log output distinguishable from platform infrastructure logs and preserves per-app context without requiring WASI stdout/stderr plumbing.
+
+Log calls are fire-and-forget from the guest's perspective — the WIT function returns no error, consistent with the low-overhead intent of the interface.
+
+#### Tasks
+
+- [ ] Add `interface log` to `framework/runtime.wit` — `enum level { debug, info, warn, error }` and `emit: func(level: level, message: string)` — import it in both `world message-application` and `world http-application`.
+- [ ] Implement `src/host_log.rs` in execution-host — implement the generated `log::Host` trait on `HostState`; forward each call to the appropriate `tracing` macro with `app_name` and `app_namespace` span fields.
+- [ ] Update `HostState` — add `app_name` and `app_namespace` fields populated from `ApplicationConfig` at invocation time.
+- [ ] Wire `log` into `Linker` — call `log::add_to_linker` for both worlds in `RuntimeState::new()`.
+- [ ] Update hello-world example — emit a `log::emit(level::info, "handling request")` call to exercise the interface; update `examples/hello-world/README.md`.
+- [ ] Update `framework/runtime.wit` documentation and affected component READMEs.
+
+### Phase 7d: Metrics Interface
+
+#### Design
+
+Add a `metrics` interface to `framework/runtime.wit` and import it into both worlds. Two functions cover the primary instrumentation needs: `counter-increment` (monotonically increasing count, e.g. requests handled, errors) and `gauge-set` (point-in-time value, e.g. queue depth, current connections). Guests supply a metric name and a `u64` value; the host owns all labelling and aggregation.
+
+The execution host maintains an in-process Prometheus registry (via the `prometheus` crate). Each call is recorded against a `CounterVec` or `GaugeVec` keyed by metric name, with labels `app_name` and `app_namespace` added automatically. The existing `/metrics` Prometheus scrape endpoint (or a new one) exposes the aggregated data. This means a single scrape target captures metrics from every WASM app running on that host, labelled for per-app filtering.
+
+#### Tasks
+
+- [ ] Add `interface metrics` to `framework/runtime.wit` — `counter-increment: func(name: string, value: u64)` and `gauge-set: func(name: string, value: u64)` — import into both worlds.
+- [ ] Add `prometheus` and `prometheus-hyper` (or `axum`-based) dependencies to `components/execution-host/Cargo.toml`.
+- [ ] Implement `src/host_metrics.rs` — maintain a `prometheus::Registry` in `RuntimeState`; `CounterVec` and `GaugeVec` keyed by `(metric_name, app_name, app_namespace)`. Lazily register new metric names on first use.
+- [ ] Expose a `/metrics` HTTP endpoint in execution-host — serve the Prometheus text format from the registry.
+- [ ] Update `HostState` — pass `Arc<MetricsRegistry>` and per-invocation app labels so `host_metrics.rs` can record calls.
+- [ ] Wire `metrics` into `Linker` — call `metrics::add_to_linker` for both worlds in `RuntimeState::new()`.
+- [ ] Update hello-world example — call `metrics::counter_increment("requests_total", 1)` per invocation to exercise the interface; update `examples/hello-world/README.md`.
+- [ ] Add Prometheus scrape config to the execution-host Helm chart.
+- [ ] Update `framework/runtime.wit` documentation and affected component READMEs.
 
 ### Phase 8: Sandboxing & Resource Limits
 

@@ -22,7 +22,7 @@
 
 **Gather context freely. Reason proactively. Decide nothing without approval.**
 
-- Read broadly — search the codebase, read documentation, run tests. Never guess when you can look.
+- Read broadly — search the codebase, read documentation, use the context7 MCP server, run tests. Never guess when you can look.
 - When you identify multiple valid approaches, present them with trade-offs and a recommendation. Do not pick one silently.
 - Question directives that conflict with existing code, standards, or architecture — cite the specific conflict and ask for resolution.
 - Suggest simpler or more effective alternatives when you see them, even if not asked.
