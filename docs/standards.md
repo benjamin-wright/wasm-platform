@@ -57,6 +57,14 @@ Before writing anything new — utility, pattern, convention, or routine — che
 
 All interaction with an external system (database, message broker, HTTP service) must be encapsulated in a single module behind an exported interface. Other modules depend on the interface, never on the external system directly. This ensures that consumers can be tested with fakes and that external-system concerns live in one place.
 
+### Definition of Done
+
+A phase or feature is complete when all of the following are true:
+
+- Implementation tasks are finished and `tilt ci` exits 0.
+- Documentation (`README.md`, architecture docs) reflects any new or changed behaviour.
+- End-to-end tests (`tests/e2e/`) cover new user-facing workflows. If a feature changes what a user can observe through the platform's external interfaces, the test suite must verify it.
+
 ---
 
 ## Rust

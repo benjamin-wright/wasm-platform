@@ -67,6 +67,7 @@ Depends on Phase 1 (per-app routing provides the `ApplicationConfig` at invocati
 
 ### Phase 9: README Alignment
 
+- [ ] Update project README status section — currently says "Phase 0 (Proof of Concept)", should reflect actual progress.
 - [ ] Replace wildcard `fn.>` / `NATS_TOPIC_PREFIX` description with per-topic subscription model and internal prefix scheme.
 - [ ] Replace `for_each_concurrent` reference with actual concurrency description.
 - [ ] Verify module loading section matches Phase 1 implementation.
