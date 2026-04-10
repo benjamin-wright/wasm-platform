@@ -34,13 +34,21 @@ When in doubt, ask. Batch questions — ask everything you need in one go.
 
 The todo is a **forward-looking plan**, not a changelog.
 
-**Structure** (formalises what exists):
+**Structure:**
 - `## <Goal>` — high-level objective grouping related phases.
-- `### Decisions` — accumulated design rationale; grows over time, never pruned.
 - `### Phase N: <Title>` — `#### Design` (prose) + `#### Tasks` (checkbox list).
 - `### Verification` — the `tilt ci` gate.
 
-**Hygiene:** When adding a new phase, remove completed phases entirely. Before removing, migrate any non-obvious decisions or design rationale to the Decisions block. The todo should only contain active and upcoming work.
+**Hygiene:** When removing a completed phase, migrate any durable decisions to their permanent homes before discarding:
+
+| Decision type | Destination |
+|---|---|
+| Architectural or system-design | `docs/architecture.md` |
+| Test strategy or project-wide convention | `docs/standards.md` |
+| Component-specific behaviour or interface | `components/<name>/README.md` |
+| Implementation trivia (equivalent constructs, minor judgement calls) | Discard — git history is sufficient |
+
+The todo must only contain active and upcoming work.
 
 **Phase task planning:** Every phase's task list must satisfy the Definition of Done in `docs/standards.md`. In practice: include documentation-update tasks when behaviour changes, and include e2e test tasks when user-facing workflows are added or altered. Not every phase needs both — use judgement — but default to including them and justify omission, not the reverse.
 

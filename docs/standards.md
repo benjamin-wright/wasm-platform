@@ -65,6 +65,15 @@ A phase or feature is complete when all of the following are true:
 - Documentation (`README.md`, architecture docs) reflects any new or changed behaviour.
 - End-to-end tests (`tests/e2e/`) cover new user-facing workflows. If a feature changes what a user can observe through the platform's external interfaces, the test suite must verify it.
 
+### End-to-End Testing
+
+End-to-end tests live in `tests/e2e/` as a Go module with a `//go:build integration` build tag. They verify the full stack from the perspective of a platform user.
+
+- The permanent test fixture is the hello-world Application CR (HTTP trigger, KV counter). It must remain deployed and passing at all times. Phase-specific fixtures may be added alongside it but must not break it.
+- Traefik `Ingress` routes `localhost:80` to the gateway (no TLS; host is configurable via the gateway Helm chart).
+- Tests are run as `go test -tags integration -count=1 -v ./...`. The e2e `Tiltfile` runs this as a `local_resource` depending on `hello-world`, so `tilt ci` automatically includes e2e verification.
+- A phase that adds a new user-facing workflow is not complete until the e2e suite covers that workflow.
+
 ---
 
 ## Rust
