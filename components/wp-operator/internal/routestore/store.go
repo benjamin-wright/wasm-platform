@@ -147,12 +147,14 @@ type gatewayEntry struct {
 	ch chan *RouteUpdateBatch
 }
 
-// Store is a thread-safe in-memory registry of RouteConfig values for HTTP-type Applications.
+// Store is a thread-safe in-memory registry of RouteConfig values for HTTP-triggered functions.
+// An Application may have multiple HTTP functions; all routes for one Application are stored
+// under its NamespacedName key.
 // It also maintains a registry of connected gateway streams so that the reconciler can
 // broadcast incremental route updates.
 type Store struct {
 	mu       sync.RWMutex
-	routes   map[types.NamespacedName]*RouteConfig
+	routes   map[types.NamespacedName][]*RouteConfig
 	gateways map[string]*gatewayEntry
 	version  uint64 // accessed atomically
 }
@@ -160,7 +162,7 @@ type Store struct {
 // New returns an initialised Store.
 func New() *Store {
 	return &Store{
-		routes:   make(map[types.NamespacedName]*RouteConfig),
+		routes:   make(map[types.NamespacedName][]*RouteConfig),
 		gateways: make(map[string]*gatewayEntry),
 	}
 }
@@ -170,23 +172,30 @@ func (s *Store) Version() uint64 {
 	return atomic.LoadUint64(&s.version)
 }
 
-// Set stores or replaces the route config for key. It returns true if the config
+// Set stores or replaces all routes for key. It returns true if the routes
 // materially changed (i.e. the new value differs from the existing one).
 // The version counter is only incremented on a real change.
-func (s *Store) Set(key types.NamespacedName, cfg *RouteConfig) bool {
+func (s *Store) Set(key types.NamespacedName, cfgs []*RouteConfig) bool {
 	s.mu.Lock()
 	existing := s.routes[key]
-	if reflect.DeepEqual(existing, cfg) {
+	if reflect.DeepEqual(existing, cfgs) {
 		s.mu.Unlock()
 		return false
 	}
-	s.routes[key] = cfg
+	s.routes[key] = cfgs
 	s.mu.Unlock()
 	atomic.AddUint64(&s.version, 1)
 	return true
 }
 
-// Delete removes the route config for key and increments the version.
+// Get returns the current routes for key, or nil if none are stored.
+func (s *Store) Get(key types.NamespacedName) []*RouteConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.routes[key]
+}
+
+// Delete removes all routes for key and increments the version.
 func (s *Store) Delete(key types.NamespacedName) {
 	s.mu.Lock()
 	delete(s.routes, key)
@@ -194,13 +203,13 @@ func (s *Store) Delete(key types.NamespacedName) {
 	atomic.AddUint64(&s.version, 1)
 }
 
-// Snapshot returns a shallow copy of all stored RouteConfig pointers.
+// Snapshot returns a flat list of all stored RouteConfig pointers across all Applications.
 func (s *Store) Snapshot() []*RouteConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*RouteConfig, 0, len(s.routes))
-	for _, v := range s.routes {
-		out = append(out, v)
+	var out []*RouteConfig
+	for _, cfgs := range s.routes {
+		out = append(out, cfgs...)
 	}
 	return out
 }

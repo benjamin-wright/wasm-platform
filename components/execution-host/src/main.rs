@@ -158,10 +158,10 @@ async fn process_nats_messages(
             Err(_) => break,
         };
 
-        // Look up which app is subscribed to this topic and find its compiled module.
+        // Look up which function is subscribed to this topic.
         let subject = message.subject.to_string();
-        let app_config = match app_registry.get_by_topic(&subject) {
-            Ok(Some(cfg)) => cfg,
+        let fn_entry = match app_registry.get_by_topic(&subject) {
+            Ok(Some(entry)) => entry,
             Ok(None) => {
                 tracing::warn!(%subject, "received message for unknown topic; dropping");
                 continue;
@@ -171,12 +171,15 @@ async fn process_nats_messages(
                 continue;
             }
         };
-        let component = match module_registry.get(&app_config.namespace, &app_config.name) {
+
+        // Retrieve the compiled module for this function.
+        let component = match module_registry.get(&fn_entry.app_namespace, &fn_entry.app_name, &fn_entry.function_name) {
             Ok(Some(c)) => c,
             Ok(None) => {
                 tracing::warn!(
-                    namespace = %app_config.namespace,
-                    name = %app_config.name,
+                    namespace = %fn_entry.app_namespace,
+                    app_name = %fn_entry.app_name,
+                    function_name = %fn_entry.function_name,
                     "module not yet loaded; dropping message"
                 );
                 continue;
@@ -191,34 +194,28 @@ async fn process_nats_messages(
         // Snapshot the current client.  If NATS is mid-reconnect the snapshot
         // is None; replies will be silently dropped and the caller will time out.
         let client_snapshot = client_rx.borrow().clone();
-        // Extract fields before the move closure captures app_config.
-        let kv_prefix = app_config
+        let kv_prefix = fn_entry
             .key_value
             .as_ref()
             .map(|kv| kv.prefix.clone())
             .unwrap_or_default();
-        let app_name = app_config.name.clone();
-        let app_namespace = app_config.namespace.clone();
-        // Clone for the messaging host function — used inside spawn_blocking.
+        let app_name = fn_entry.app_name.clone();
+        let app_namespace = fn_entry.app_namespace.clone();
+        let function_name = fn_entry.function_name.clone();
+        let world_type = fn_entry.world_type;
         let nats_for_invoke = client_snapshot.clone();
+
         tokio::spawn(async move {
             let _permit = permit;
             let reply = message.reply.clone();
             let payload = message.payload.to_vec();
-
-            // Dispatch based on the world type declared in the app's config.
-            // In prost 0.13, enum fields are stored as i32; use TryFrom to
-            // convert to the typed enum, defaulting to MESSAGE on unknown values.
-            let world_type =
-                config::configsync::WorldType::try_from(app_config.world_type)
-                    .unwrap_or(config::configsync::WorldType::Message);
 
             // WASM execution is CPU-bound; run it on the blocking thread
             // pool so the async runtime stays responsive.
             let result = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, kv_prefix, nats_for_invoke, app_name, app_namespace)
+                        invoke_on_message(&state, &component, &payload, kv_prefix, nats_for_invoke, app_name, app_namespace, function_name)
                     })
                     .await
                 }
@@ -228,7 +225,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, kv_prefix, nats_for_invoke, app_name, app_namespace)?;
+                        let response = invoke_on_request(&state, &component, request, kv_prefix, nats_for_invoke, app_name, app_namespace, function_name)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
@@ -256,7 +253,7 @@ async fn process_nats_messages(
                 Ok(Ok(None)) => {}
                 Ok(Err(err)) => {
                     tracing::error!("invocation failed: {err:#}");
-                    // For HTTP apps, send a 500 back so the gateway can return
+                    // For HTTP functions, send a 500 back so the gateway can return
                     // a proper error response instead of timing out.
                     if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
                         let error_response = HttpResponsePayload {

@@ -95,11 +95,11 @@ async fn run_config_sync(
         if let Some(incremental) = request.incremental_config {
             let version = incremental.version.clone();
             let update_count = incremental.updates.len();
-            let (upserted, deleted) = registry.apply_incremental(incremental.updates)?;
+            let (to_load, to_evict) = registry.apply_incremental(incremental.updates)?;
             topics_tx.send(registry.topics()?).ok();
             tracing::debug!(version, update_count, "incremental config applied");
 
-            apply_module_changes(modules, upserted, deleted).await;
+            apply_module_changes(modules, to_load, to_evict).await;
 
             let ack = IncrementalUpdateAck {
                 host_id: host_id.to_string(),
@@ -135,9 +135,9 @@ async fn fetch_full_config(
         .into_inner();
     if let Some(full) = response.config {
         let app_count = full.applications.len();
-        let (upserted, deleted) = registry.apply_full_config(full)?;
+        let (to_load, to_evict) = registry.apply_full_config(full)?;
         tracing::info!(app_count, "full config applied");
-        apply_module_changes(modules, upserted, deleted).await;
+        apply_module_changes(modules, to_load, to_evict).await;
     } else {
         tracing::warn!("operator returned empty full config response");
     }
@@ -148,24 +148,25 @@ async fn fetch_full_config(
 // Load failures are logged but do not abort the config sync loop.
 async fn apply_module_changes(
     modules: &ModuleRegistry,
-    upserted: Vec<crate::config::ApplicationConfig>,
-    deleted: Vec<(String, String)>,
+    to_load: Vec<(String, String, String, String)>,
+    to_evict: Vec<(String, String, String)>,
 ) {
-    for app in upserted {
+    for (namespace, app_name, fn_name, module_ref) in to_load {
         let m = modules.clone();
         tokio::spawn(async move {
-            if let Err(err) = m.load(&app.namespace, &app.name, &app.module_ref).await {
+            if let Err(err) = m.load(&namespace, &app_name, &fn_name, &module_ref).await {
                 tracing::error!(
-                    namespace = %app.namespace,
-                    name = %app.name,
+                    namespace = %namespace,
+                    app_name = %app_name,
+                    function_name = %fn_name,
                     "failed to load module: {err:#}"
                 );
             }
         });
     }
-    for (namespace, name) in deleted {
-        if let Err(err) = modules.remove(&namespace, &name) {
-            tracing::warn!(namespace, name, "failed to evict module: {err:#}");
+    for (namespace, app_name, fn_name) in to_evict {
+        if let Err(err) = modules.remove(&namespace, &app_name, &fn_name) {
+            tracing::warn!(namespace, app_name, fn_name, "failed to evict module: {err:#}");
         }
     }
 }

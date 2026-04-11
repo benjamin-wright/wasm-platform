@@ -15,9 +15,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.module
-      name: Module
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -29,7 +26,7 @@ spec:
       openAPIV3Schema:
         description: |-
           Application is the primary resource for wasm-platform.
-          Each instance declares a single deployable WASM module and its runtime requirements.
+          Each instance declares one or more deployable WASM functions and their shared runtime requirements.
         properties:
           apiVersion:
             description: |-
@@ -49,82 +46,105 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              ApplicationSpec defines the desired state of an Application.
-
-              Exactly one of Topic or HTTP must be set.
+            description: ApplicationSpec defines the desired state of an Application.
             properties:
               env:
                 additionalProperties:
                   type: string
-                description: Env is an optional map of environment variables injected
-                  into the module's runtime configuration.
-                type: object
-              http:
                 description: |-
-                  HTTP declares this application as an HTTP-triggered app exposed via the gateway.
-                  The gateway auto-generates the internal NATS subject as http.<namespace>.<name>.
-                  Mutually exclusive with Topic.
-                properties:
-                  methods:
-                    description: |-
-                      Methods is the list of HTTP methods the gateway accepts on this path.
-                      If omitted, all methods are allowed.
-                      Valid values: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS.
-                    items:
-                      description: HttpMethod is a valid HTTP method string.
-                      enum:
-                      - GET
-                      - HEAD
-                      - POST
-                      - PUT
-                      - DELETE
-                      - PATCH
-                      - OPTIONS
-                      type: string
-                    type: array
-                  path:
-                    description: |-
-                      Path is the URL path the gateway exposes for this application.
-                      Must start with '/'. Must be unique cluster-wide.
-                    pattern: ^/
-                    type: string
-                required:
-                - path
+                  Env is an optional map of environment variables injected into all functions'
+                  runtime configuration.
                 type: object
+              functions:
+                description: |-
+                  Functions is the list of deployable functions in this Application.
+                  Each function has its own module and trigger.
+                items:
+                  description: FunctionSpec declares a single deployable function
+                    within an Application.
+                  properties:
+                    module:
+                      description: |-
+                        Module is the OCI URI for the .wasm module.
+                        Use a digest-pinned reference (@sha256:…) for deterministic deployments.
+                        Format: oci://<registry>/<repository>@sha256:<digest>.
+                      type: string
+                    name:
+                      description: Name is the identifier for this function, unique
+                        within the Application.
+                      minLength: 1
+                      type: string
+                    trigger:
+                      description: Trigger defines the event source for this function.
+                      properties:
+                        http:
+                          description: |-
+                            HTTP declares this function as HTTP-triggered and exposed via the gateway.
+                            The gateway auto-generates the internal NATS subject as http.<namespace>.<app-name>.<function-name>.
+                            Mutually exclusive with Topic.
+                          properties:
+                            methods:
+                              description: |-
+                                Methods is the list of HTTP methods the gateway accepts on this path.
+                                If omitted, all methods are allowed.
+                                Valid values: GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS.
+                              items:
+                                description: HttpMethod is a valid HTTP method string.
+                                enum:
+                                - GET
+                                - HEAD
+                                - POST
+                                - PUT
+                                - DELETE
+                                - PATCH
+                                - OPTIONS
+                                type: string
+                              type: array
+                            path:
+                              description: |-
+                                Path is the URL path the gateway exposes for this function.
+                                Must start with '/'. Must be unique cluster-wide.
+                              pattern: ^/
+                              type: string
+                          required:
+                          - path
+                          type: object
+                        topic:
+                          description: |-
+                            Topic is the message subject the execution host subscribes to.
+                            Messages on this subject invoke the function's on-message export.
+                            Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
+                            Mutually exclusive with HTTP.
+                          pattern: ^[^*>]+$
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one of trigger.http or trigger.topic must
+                          be set
+                        rule: has(self.http) != has(self.topic)
+                  required:
+                  - module
+                  - name
+                  - trigger
+                  type: object
+                minItems: 1
+                type: array
               keyValue:
                 description: |-
-                  KeyValue is the key prefix for the module's key-value namespace.
-                  Keys written by the module are namespaced by <namespace>/<prefix>/ to prevent conflicts.
+                  KeyValue is the key prefix for all functions' key-value namespace.
+                  Keys written by functions are namespaced by <namespace>/<prefix>/ to prevent conflicts.
                   No external provisioning required — isolation is enforced by the execution host at runtime.
                   Omit to disable KV access.
                 type: string
-              module:
-                description: |-
-                  Module is the OCI URI for the .wasm module.
-                  Use a digest-pinned reference (@sha256:…) for deterministic deployments.
-                  Format: oci://<registry>/<repository>@sha256:<digest>.
-                type: string
               sql:
                 description: |-
-                  SQL is the logical database name exposed to the module via the sql host import.
+                  SQL is the logical database name exposed to all functions via the sql host import.
                   Must correspond to a provisioned database managed by the db-operator.
                   Omit to disable SQL access.
                 type: string
-              topic:
-                description: |-
-                  Topic is the message subject the execution host subscribes to.
-                  Messages on this subject invoke the module's on-message export.
-                  Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
-                  Mutually exclusive with HTTP.
-                pattern: ^[^*>]+$
-                type: string
             required:
-            - module
+            - functions
             type: object
-            x-kubernetes-validations:
-            - message: exactly one of spec.topic or spec.http must be set
-              rule: has(self.topic) != has(self.http)
           status:
             description: ApplicationStatus defines the observed state of an Application.
             properties:
@@ -188,10 +208,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              resolvedImage:
-                description: ResolvedImage is the fully qualified OCI reference with
-                  resolved digest.
-                type: string
             type: object
         type: object
     served: true

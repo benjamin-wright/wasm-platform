@@ -4,6 +4,9 @@ metadata:
   name: message-counter
   namespace: examples
 spec:
-  module: message-counter
-  topic: hello-world.events
   keyValue: hello-world
+  functions:
+    - name: handler
+      module: message-counter
+      trigger:
+        topic: hello-world.events

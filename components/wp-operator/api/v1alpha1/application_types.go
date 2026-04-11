@@ -8,9 +8,9 @@ import (
 // +kubebuilder:validation:Enum=GET;HEAD;POST;PUT;DELETE;PATCH;OPTIONS
 type HttpMethod string
 
-// HttpConfig defines the HTTP trigger configuration for an Application.
-type HttpConfig struct {
-	// Path is the URL path the gateway exposes for this application.
+// HttpTrigger defines the HTTP trigger configuration for a function.
+type HttpTrigger struct {
+	// Path is the URL path the gateway exposes for this function.
 	// Must start with '/'. Must be unique cluster-wide.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^/`
@@ -24,7 +24,7 @@ type HttpConfig struct {
 }
 
 // MethodStrings returns Methods as a plain []string for use with proto and store types.
-func (h *HttpConfig) MethodStrings() []string {
+func (h *HttpTrigger) MethodStrings() []string {
 	out := make([]string, len(h.Methods))
 	for i, m := range h.Methods {
 		out[i] = string(m)
@@ -32,43 +32,64 @@ func (h *HttpConfig) MethodStrings() []string {
 	return out
 }
 
-// ApplicationSpec defines the desired state of an Application.
-//
-// Exactly one of Topic or HTTP must be set.
-// +kubebuilder:validation:XValidation:rule="has(self.topic) != has(self.http)",message="exactly one of spec.topic or spec.http must be set"
-type ApplicationSpec struct {
+// FunctionTrigger defines the trigger for a function.
+// Exactly one of HTTP or Topic must be set.
+// +kubebuilder:validation:XValidation:rule="has(self.http) != has(self.topic)",message="exactly one of trigger.http or trigger.topic must be set"
+type FunctionTrigger struct {
+	// HTTP declares this function as HTTP-triggered and exposed via the gateway.
+	// The gateway auto-generates the internal NATS subject as http.<namespace>.<app-name>.<function-name>.
+	// Mutually exclusive with Topic.
+	// +optional
+	HTTP *HttpTrigger `json:"http,omitempty"`
+
+	// Topic is the message subject the execution host subscribes to.
+	// Messages on this subject invoke the function's on-message export.
+	// Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
+	// Mutually exclusive with HTTP.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[^*>]+$`
+	Topic string `json:"topic,omitempty"`
+}
+
+// FunctionSpec declares a single deployable function within an Application.
+type FunctionSpec struct {
+	// Name is the identifier for this function, unique within the Application.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
 	// Module is the OCI URI for the .wasm module.
 	// Use a digest-pinned reference (@sha256:…) for deterministic deployments.
 	// Format: oci://<registry>/<repository>@sha256:<digest>.
 	// +kubebuilder:validation:Required
 	Module string `json:"module"`
 
-	// Topic is the message subject the execution host subscribes to.
-	// Messages on this subject invoke the module's on-message export.
-	// Must not contain wildcard characters ('*' or '>'); topics are unique cluster-wide.
-	// Mutually exclusive with HTTP.
-	// +optional
-	// +kubebuilder:validation:Pattern=`^[^*>]+$`
-	Topic string `json:"topic,omitempty"`
+	// Trigger defines the event source for this function.
+	// +kubebuilder:validation:Required
+	Trigger FunctionTrigger `json:"trigger"`
+}
 
-	// HTTP declares this application as an HTTP-triggered app exposed via the gateway.
-	// The gateway auto-generates the internal NATS subject as http.<namespace>.<name>.
-	// Mutually exclusive with Topic.
-	// +optional
-	HTTP *HttpConfig `json:"http,omitempty"`
+// ApplicationSpec defines the desired state of an Application.
+type ApplicationSpec struct {
+	// Functions is the list of deployable functions in this Application.
+	// Each function has its own module and trigger.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Functions []FunctionSpec `json:"functions"`
 
-	// Env is an optional map of environment variables injected into the module's runtime configuration.
+	// Env is an optional map of environment variables injected into all functions'
+	// runtime configuration.
 	// +optional
 	Env map[string]string `json:"env,omitempty"`
 
-	// SQL is the logical database name exposed to the module via the sql host import.
+	// SQL is the logical database name exposed to all functions via the sql host import.
 	// Must correspond to a provisioned database managed by the db-operator.
 	// Omit to disable SQL access.
 	// +optional
 	SQL string `json:"sql,omitempty"`
 
-	// KeyValue is the key prefix for the module's key-value namespace.
-	// Keys written by the module are namespaced by <namespace>/<prefix>/ to prevent conflicts.
+	// KeyValue is the key prefix for all functions' key-value namespace.
+	// Keys written by functions are namespaced by <namespace>/<prefix>/ to prevent conflicts.
 	// No external provisioning required — isolation is enforced by the execution host at runtime.
 	// Omit to disable KV access.
 	// +optional
@@ -77,10 +98,6 @@ type ApplicationSpec struct {
 
 // ApplicationStatus defines the observed state of an Application.
 type ApplicationStatus struct {
-	// ResolvedImage is the fully qualified OCI reference with resolved digest.
-	// +optional
-	ResolvedImage string `json:"resolvedImage,omitempty"`
-
 	// Conditions is the standard Kubernetes condition list.
 	// +optional
 	// +listType=map
@@ -89,12 +106,11 @@ type ApplicationStatus struct {
 }
 
 // Application is the primary resource for wasm-platform.
-// Each instance declares a single deployable WASM module and its runtime requirements.
+// Each instance declares one or more deployable WASM functions and their shared runtime requirements.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:printcolumn:name="Module",type=string,JSONPath=`.spec.module`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type Application struct {

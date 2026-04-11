@@ -15,10 +15,12 @@ load('./components/wp-operator/Tiltfile', 'wp_operator')
 load('./examples/hello-world/Tiltfile', 'hello_world')
 load('./examples/message-counter/Tiltfile', 'message_counter')
 load('./tests/e2e/Tiltfile', 'e2e_tests')
+load('./tilt/workspace-deps.Tiltfile', 'workspace_deps')
 
 k8s_namespace(namespace)
 db_operator(namespace = 'db-operator')
 
+workspace_deps()
 wp_databases(namespace)
 wp_operator(namespace)
 execution_host(namespace, resource_deps=['wp-operator'])

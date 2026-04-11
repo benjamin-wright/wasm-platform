@@ -87,6 +87,8 @@ Execution hosts are deployed as a **Deployment**. The wp-operator pushes configu
 
 Scaling targets concurrent invocations (not CPU/memory). A single execution host can run thousands of concurrent WASM instances. HPA with a custom metric or KEDA for event-driven scaling.
 
+**NATS queue groups:** Each execution host replica subscribes via `queue_subscribe` using the topic name as the queue group. NATS delivers each message to exactly one replica in the group, matching the Kafka consumer-group pattern. This prevents duplicate invocations during horizontal scaling and rolling updates. Old replicas that are draining leave the queue group naturally when their NATS connection closes.
+
 ---
 
 ## 3. System Architecture

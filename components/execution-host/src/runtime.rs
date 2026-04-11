@@ -55,6 +55,7 @@ pub(crate) struct HostState {
     pub(crate) nats_client: Option<async_nats::Client>,
     pub(crate) app_name: String,
     pub(crate) app_namespace: String,
+    pub(crate) function_name: String,
 }
 
 impl WasiView for HostState {
@@ -107,6 +108,7 @@ pub fn invoke_on_message(
     nats_client: Option<async_nats::Client>,
     app_name: String,
     app_namespace: String,
+    function_name: String,
 ) -> Result<Option<Vec<u8>>> {
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
@@ -116,6 +118,7 @@ pub fn invoke_on_message(
         nats_client,
         app_name,
         app_namespace,
+        function_name,
     };
     let mut store = Store::new(&state.engine, host_state);
 
@@ -138,6 +141,7 @@ pub fn invoke_on_request(
     nats_client: Option<async_nats::Client>,
     app_name: String,
     app_namespace: String,
+    function_name: String,
 ) -> Result<HttpResponsePayload> {
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
@@ -147,6 +151,7 @@ pub fn invoke_on_request(
         nats_client,
         app_name,
         app_namespace,
+        function_name,
     };
     let mut store = Store::new(&state.engine, host_state);
 

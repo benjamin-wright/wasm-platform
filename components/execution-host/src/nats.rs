@@ -148,7 +148,12 @@ pub async fn manage_nats_subscriptions(
         }
 
         for topic in desired.difference(&current) {
-            match client.subscribe(topic.clone()).await {
+            // Use queue_subscribe so that when multiple execution-host
+            // replicas are running (or during a rolling update) each message
+            // is delivered to exactly one replica rather than all of them.
+            // The queue group name is the topic itself — one competing group
+            // per subject, mirroring the Kafka consumer-group pattern.
+            match client.queue_subscribe(topic.clone(), topic.clone()).await {
                 Ok(sub) => {
                     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
                     let tx = msg_tx.clone();

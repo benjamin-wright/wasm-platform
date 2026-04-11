@@ -4,9 +4,12 @@ metadata:
   name: hello-world
   namespace: examples
 spec:
-  module: hello-world
   keyValue: hello-world
-  http:
-    path: /hello
-    methods:
-      - GET
+  functions:
+    - name: handler
+      module: hello-world
+      trigger:
+        http:
+          path: /hello
+          methods:
+            - GET
