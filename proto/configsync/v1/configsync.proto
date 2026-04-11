@@ -63,26 +63,38 @@ enum WorldType {
   WORLD_TYPE_HTTP = 1;
 }
 
+// ApplicationConfig carries all per-application configuration pushed to
+// execution hosts.  Application-level fields (env, sql, key_value) are shared
+// across all functions in the application.  Per-function configuration lives in
+// the functions list.
 message ApplicationConfig {
   string name = 1;
   string namespace = 2;
-  string module_ref = 3;
-  string topic = 4;
-  map<string, string> env = 5;
-  optional SqlConfig sql = 6;
-  optional KeyValueConfig key_value = 7;
-  WorldType world_type = 8;
-  optional HttpConfig http = 9;
+  repeated FunctionConfig functions = 3;
+  map<string, string> env = 4;
+  optional SqlConfig sql = 5;
+  optional KeyValueConfig key_value = 6;
+}
+
+// FunctionConfig describes a single deployable function within an Application.
+message FunctionConfig {
+  string name = 1;
+  string module_ref = 2;
+  WorldType world_type = 3;
+  // topic is set for message-application functions.
+  optional string topic = 4;
+  // http_config is set for http-application functions.
+  optional HttpConfig http_config = 5;
 }
 
 message SqlConfig {
   string database_name = 1;
-  string username = 2;
-  string password = 3;
+  string connection_url = 2;
 }
 
 message KeyValueConfig {
   string prefix = 1;
+  string connection_url = 2;
 }
 
 message HttpConfig {

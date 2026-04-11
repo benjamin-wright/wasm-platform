@@ -4,66 +4,102 @@ A Kubernetes operator that watches `Application` CRDs and reconciles platform re
 
 ## Application CRD
 
-Each `Application` declares a single deployable WASM module and its runtime requirements. Exactly one of `spec.topic` or `spec.http` must be set.
+Each `Application` declares one or more deployable WASM functions and their shared runtime requirements.  Functions are listed under `spec.functions`; each function has its own module reference and trigger (exactly one of `trigger.http` or `trigger.topic`).  Application-level fields (`spec.env`, `spec.sql`, `spec.keyValue`) are shared across all functions.
 
 ### Examples
 
 ```yaml
-# Topic-only (message-passing)
+# Single message-triggered function
 apiVersion: wasm-platform.io/v1alpha1
 kind: Application
 metadata:
   name: my-app
 spec:
-  module: oci://registry.example.com/my-app@sha256:<digest>
-  topic: my-app.messages
   env:
     LOG_LEVEL: info
   sql: orders
   keyValue: sessions
+  functions:
+    - name: handler
+      module: oci://registry.example.com/my-app@sha256:<digest>
+      trigger:
+        topic: my-app.messages
 ---
-# HTTP-triggered
+# Single HTTP-triggered function
 apiVersion: wasm-platform.io/v1alpha1
 kind: Application
 metadata:
   name: order-api
 spec:
-  module: oci://registry.example.com/order-api@sha256:<digest>
-  http:
-    path: /api/orders
-    methods: [GET, POST]
   sql: orders
+  functions:
+    - name: handler
+      module: oci://registry.example.com/order-api@sha256:<digest>
+      trigger:
+        http:
+          path: /api/orders
+          methods: [GET, POST]
+---
+# Multi-function application
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: order-service
+spec:
+  sql: orders
+  functions:
+    - name: api
+      module: oci://registry.example.com/order-api@sha256:<digest>
+      trigger:
+        http:
+          path: /api/orders
+          methods: [GET, POST]
+    - name: processor
+      module: oci://registry.example.com/order-processor@sha256:<digest>
+      trigger:
+        topic: orders.created
 ```
 
 ### Fields
 
+**Application-level (shared across all functions):**
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `spec.module` | string | yes | OCI reference for the `.wasm` module. Prefer digest-pinned (`@sha256:…`). |
-| `spec.topic` | string | one of `topic`/`http` | NATS subject for `on-message` invocation. Must be unique cluster-wide. Wildcards (`*`, `>`) forbidden. Internally prefixed with `fn.` before pushing to execution hosts. |
-| `spec.http.path` | string | with `http` | URL path the gateway exposes. Must start with `/`, unique cluster-wide. |
-| `spec.http.methods` | []string | no | Allowed HTTP methods. Omit to accept all. Gateway returns `405` for unlisted methods. |
-| `spec.env` | map[string]string | no | Environment variables injected into the module's runtime config. |
-| `spec.sql` | string | no | Logical database name. The operator creates a dedicated PG database + user and passes credentials (database name, username, password) to execution hosts via ConfigSync. Exposed to the module as the `db` argument in the `sql` host import. |
-| `spec.keyValue` | string | no | Key-prefix namespace in the shared Redis instance. Execution hosts prepend `<namespace>/<spec.keyValue>/` to all keys. Apps sharing a `spec.keyValue` within the same namespace intentionally share key-space. |
+| `spec.functions` | []FunctionSpec | yes (min 1) | List of functions in this application. |
+| `spec.env` | map[string]string | no | Environment variables injected into all functions. |
+| `spec.sql` | string | no | Logical database name. The operator creates a dedicated PG database + user and passes credentials to execution hosts via ConfigSync. |
+| `spec.keyValue` | string | no | Key-prefix namespace in the shared Redis instance. Execution hosts prepend `<namespace>/<spec.keyValue>/` to all keys. |
 
-**Topic uniqueness:** the operator enforces cluster-wide uniqueness — the Application with the oldest `creationTimestamp` owns the topic (tiebreak: lexicographically lower `namespace/name`). A blocked Application receives `Ready: False` with reason `TopicConflict`. When the owner is deleted or changes topic, blocked Applications are automatically re-evaluated.
+**Per-function (`spec.functions[]`):**
 
-**Internal topics:** `spec.topic` apps get a `fn.` prefix; `spec.http` apps get an auto-generated `http.<namespace>.<name>` subject. Both are invisible to the module author.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Function identifier, unique within the Application. |
+| `module` | string | yes | OCI reference for the `.wasm` module. Prefer digest-pinned (`@sha256:…`). |
+| `trigger.topic` | string | one of `topic`/`http` | NATS subject for `on-message` invocation. Must be unique cluster-wide. Wildcards (`*`, `>`) forbidden. Internally prefixed with `fn.` before pushing to execution hosts. |
+| `trigger.http.path` | string | with `http` | URL path the gateway exposes. Must start with `/`, unique cluster-wide. |
+| `trigger.http.methods` | []string | no | Allowed HTTP methods. Omit to accept all. Gateway returns `405` for unlisted methods. |
+
+**Topic uniqueness:** the operator enforces cluster-wide uniqueness per topic — the Application with the oldest `creationTimestamp` owns the topic (tiebreak: lexicographically lower `namespace/name`). A blocked Application receives `Ready: False` with reason `TopicConflict`. When the owner is deleted or changes topic, blocked Applications are automatically re-evaluated.
+
+**Internal NATS subjects:** `trigger.topic` functions get a `fn.` prefix; `trigger.http` functions get an auto-generated `http.<namespace>.<app-name>.<function-name>` subject. Both are invisible to the module author.
 
 ## Operator Behaviour
 
 **On create/update:**
 
-1. Resolves the OCI digest for `spec.module` (writes to `status.resolvedImage`).
+1. For each message-triggered function, checks cluster-wide topic uniqueness.
 2. If `spec.sql` is set, creates the PG database and user if they don't exist.
 3. If `spec.keyValue` is set, records the prefix for inclusion in the app config.
-4. Pushes an incremental config update to all connected execution hosts via `PushIncrementalUpdate`.
+4. Pushes an incremental config update (with all functions) to all connected execution hosts via `PushIncrementalUpdate`.
+5. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
 
 **On delete:**
 
 1. Pushes a delete config update to execution hosts.
-2. If `spec.sql` is set, decrements a Redis reference count for the database. At zero, sets a TTL; when the TTL elapses, drops the database and user.
+2. Pushes route delete updates for all HTTP-triggered functions to gateways.
+3. If `spec.sql` is set, decrements a Redis reference count for the database. At zero, sets a TTL; when the TTL elapses, drops the database and user.
 
 ## Config API
 
@@ -89,12 +125,9 @@ Generates: gRPC stubs → `internal/grpc/configsync/`, CRD deepcopy → `api/v1a
 | Condition | Description |
 |-----------|-------------|
 | `Ready` | `True` when config is pushed to all hosts. `False` while provisioning or on `TopicConflict`. |
-| `TopicConflict` | Set when another Application owns `spec.topic`. Cleared automatically on resolution. |
-
-| Field | Description |
-|-------|-------------|
-| `status.resolvedImage` | Fully qualified OCI reference with resolved digest. |
+| `TopicConflict` | Set when another Application owns a topic claimed by one of this app's functions. Cleared automatically on resolution. |
 
 ## TODO
 
 1. Add scheduling bindings (`spec.schedules`).
+

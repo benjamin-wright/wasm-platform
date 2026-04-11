@@ -22,7 +22,7 @@ const WASMTIME_VERSION: &str = env!("WASMTIME_VERSION");
 // ── ModuleRegistry ────────────────────────────────────────────────────────────
 
 /// Process-wide registry of AOT-compiled `Component` objects, keyed by
-/// `(namespace, name)`.
+/// `(namespace, app_name, function_name)`.
 ///
 /// All interaction with the module-cache HTTP service and OCI registry is
 /// encapsulated here. Other modules depend on this type and never call
@@ -30,7 +30,7 @@ const WASMTIME_VERSION: &str = env!("WASMTIME_VERSION");
 #[derive(Clone)]
 pub struct ModuleRegistry {
     #[allow(clippy::type_complexity)]
-    inner: Arc<RwLock<HashMap<(String, String), Arc<Component>>>>,
+    inner: Arc<RwLock<HashMap<(String, String, String), Arc<Component>>>>,
     cache: Arc<ModuleCacheClient>,
     engine: Engine,
 }
@@ -44,17 +44,19 @@ impl ModuleRegistry {
         }
     }
 
-    /// Returns the compiled `Component` for `(namespace, name)`, or `None` if
-    /// not yet loaded.
-    pub fn get(&self, namespace: &str, name: &str) -> Result<Option<Arc<Component>>> {
+    /// Returns the compiled `Component` for `(namespace, app_name, function_name)`,
+    /// or `None` if not yet loaded.
+    pub fn get(&self, namespace: &str, app_name: &str, fn_name: &str) -> Result<Option<Arc<Component>>> {
         let map = self
             .inner
             .read()
             .map_err(|_| anyhow::anyhow!("ModuleRegistry lock poisoned"))?;
-        Ok(map.get(&(namespace.to_string(), name.to_string())).cloned())
+        Ok(map
+            .get(&(namespace.to_string(), app_name.to_string(), fn_name.to_string()))
+            .cloned())
     }
 
-    /// Ensures a `Component` is loaded for the given application.
+    /// Ensures a `Component` is loaded for the given function.
     ///
     /// Flow:
     /// 1. Resolve OCI manifest digest (no layer download).
@@ -62,7 +64,7 @@ impl ModuleRegistry {
     /// 3. If found, deserialize directly.
     /// 4. If not found, pull the raw `.wasm`, AOT-compile, push back to cache,
     ///    then store in the registry.
-    pub async fn load(&self, namespace: &str, name: &str, module_ref: &str) -> Result<()> {
+    pub async fn load(&self, namespace: &str, app_name: &str, fn_name: &str, module_ref: &str) -> Result<()> {
         let digest = oci::resolve_digest(module_ref).await?;
         // Strip any "sha256:" prefix so the cache path segment is URL-safe.
         let digest_key = digest.strip_prefix("sha256:").unwrap_or(&digest);
@@ -72,7 +74,8 @@ impl ModuleRegistry {
         {
             tracing::debug!(
                 namespace,
-                name,
+                app_name,
+                fn_name,
                 digest = digest_key,
                 "loading precompiled module from cache"
             );
@@ -83,7 +86,8 @@ impl ModuleRegistry {
         } else {
             tracing::info!(
                 namespace,
-                name,
+                app_name,
+                fn_name,
                 digest = digest_key,
                 "cache miss — pulling and compiling module"
             );
@@ -108,20 +112,20 @@ impl ModuleRegistry {
             .write()
             .map_err(|_| anyhow::anyhow!("ModuleRegistry lock poisoned"))?;
         map.insert(
-            (namespace.to_string(), name.to_string()),
+            (namespace.to_string(), app_name.to_string(), fn_name.to_string()),
             Arc::new(component),
         );
-        tracing::info!(namespace, name, "module registered");
+        tracing::info!(namespace, app_name, fn_name, "module registered");
         Ok(())
     }
 
-    /// Removes the entry for `(namespace, name)` when an application is deleted.
-    pub fn remove(&self, namespace: &str, name: &str) -> Result<()> {
+    /// Removes the entry for `(namespace, app_name, function_name)` when a function is deleted.
+    pub fn remove(&self, namespace: &str, app_name: &str, fn_name: &str) -> Result<()> {
         let mut map = self
             .inner
             .write()
             .map_err(|_| anyhow::anyhow!("ModuleRegistry lock poisoned"))?;
-        map.remove(&(namespace.to_string(), name.to_string()));
+        map.remove(&(namespace.to_string(), app_name.to_string(), fn_name.to_string()));
         Ok(())
     }
 }

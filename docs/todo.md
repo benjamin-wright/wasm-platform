@@ -29,18 +29,20 @@ PR review only — no functional change, so `tilt ci` is not a signal here.
 
 ---
 
-### Phase 8.2: Multi-Function CRD + Config-Sync Proto
+### Phase 8.2: Multi-Function CRD + Config-Sync Proto ✅
 
 Migrate the Application CRD from a single-module shape to a `spec.functions` list and propagate that shape through the config-sync proto, operator, and execution host.
 
 #### Tasks
 
-- [ ] Update Go `Application` CRD types to `spec.functions` (list of `{name, module, trigger}`).
-- [ ] Regenerate CRD manifests (`make generate` in `components/wp-operator/`).
-- [ ] Update config-sync proto: per-function module refs and triggers grouped under an application context.
-- [ ] Update operator reconciler to push per-function config using the new proto shape.
-- [ ] Update execution host to receive and index per-function config.
-- [ ] Migrate the hello-world Application CR to the new `spec.functions` single-entry shape.
+- [x] Update Go `Application` CRD types to `spec.functions` (list of `{name, module, trigger}`).
+- [x] Regenerate CRD manifests (`make generate` in `components/wp-operator/`).
+- [x] Update config-sync proto: per-function module refs and triggers grouped under an application context.
+- [x] Update operator reconciler to push per-function config using the new proto shape.
+- [x] Update execution host to receive and index per-function config.
+- [x] Migrate the hello-world Application CR to the new `spec.functions` single-entry shape.
+- [x] Migrate the message-counter Application CR to the new `spec.functions` single-entry shape.
+- [x] Update wp-operator README to document new CRD shape.
 
 #### Verification
 

@@ -29,9 +29,9 @@ import (
 
 const applicationFinalizer = "wasm-platform.io/application-protection"
 
-// topicIndexField is the cache field index key for Application.spec.topic.
+// topicIndexField is the cache field index key for function topics within an Application.
 // Used by findTopicOwner and the topic-peer watch handler to avoid full-list scans.
-const topicIndexField = "spec.topic"
+const topicIndexField = "spec.functions.topic"
 
 // Config holds environment-driven settings injected into the reconciler at
 // startup. Values are sourced from env vars (see cmd/main.go).
@@ -100,8 +100,8 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return result, err
 }
 
-// reconcileDelete removes the Application's config from the store, broadcasts
-// a delete update to connected hosts, and strips the finalizer.
+// reconcileDelete removes the Application's config from the stores, broadcasts
+// delete updates to connected hosts and gateways, and strips the finalizer.
 func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
@@ -124,12 +124,13 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	}
 
 	r.Store.Delete(key)
-	r.Store.BroadcastUpdate(buildDeleteUpdate(app, internalTopic(app)))
+	r.Store.BroadcastUpdate(buildDeleteUpdate(app))
 
-	// For HTTP apps, also remove the route from the gateway route store.
-	if app.Spec.HTTP != nil {
+	// Remove all HTTP routes for this application from the gateway route store.
+	oldRoutes := r.RouteStore.Get(key)
+	if len(oldRoutes) > 0 {
 		r.RouteStore.Delete(key)
-		r.RouteStore.BroadcastUpdate(buildRouteDeleteUpdate(app.Spec.HTTP.Path))
+		r.RouteStore.BroadcastUpdate(buildRouteDeleteUpdate(oldRoutes))
 	}
 
 	controllerutil.RemoveFinalizer(app, applicationFinalizer)
@@ -147,16 +148,19 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
-	// Phase 2: topic uniqueness — short-circuit if another app owns this topic.
-	// HTTP apps derive their topic from (namespace, name) so are inherently unique; skip the check.
-	if app.Spec.Topic != "" {
-		owner, err := findTopicOwner(ctx, r.Client, app.Spec.Topic, app)
+	// Check topic uniqueness across all message-triggered functions.
+	for i := range app.Spec.Functions {
+		fn := &app.Spec.Functions[i]
+		if fn.Trigger.Topic == "" {
+			continue
+		}
+		owner, err := findTopicOwner(ctx, r.Client, fn.Trigger.Topic, app)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("checking topic ownership: %w", err)
+			return ctrl.Result{}, fmt.Errorf("checking topic ownership for function %q: %w", fn.Name, err)
 		}
 		if owner != nil {
-			msg := fmt.Sprintf("topic %q is already claimed by %s/%s", app.Spec.Topic, owner.Namespace, owner.Name)
-			logger.Info("topic conflict detected", "topic", app.Spec.Topic, "owner", owner.Namespace+"/"+owner.Name)
+			msg := fmt.Sprintf("function %q: topic %q is already claimed by %s/%s", fn.Name, fn.Trigger.Topic, owner.Namespace, owner.Name)
+			logger.Info("topic conflict detected", "function", fn.Name, "topic", fn.Trigger.Topic, "owner", owner.Namespace+"/"+owner.Name)
 			apimeta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 				Type:               "TopicConflict",
 				Status:             metav1.ConditionTrue,
@@ -173,22 +177,34 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		}
 	}
 
+	// Build FunctionConfig list for the proto payload.
+	functions := make([]*configsync.FunctionConfig, 0, len(app.Spec.Functions))
+	for i := range app.Spec.Functions {
+		fn := &app.Spec.Functions[i]
+		topic := internalFunctionTopic(app, fn)
+		fnCfg := &configsync.FunctionConfig{
+			Name:      fn.Name,
+			// TODO: resolve mutable OCI tags via registry; copy spec.module directly for now.
+			ModuleRef: fn.Module,
+			Topic:     &topic,
+		}
+		if fn.Trigger.HTTP != nil {
+			fnCfg.WorldType = configsync.WorldType_WORLD_TYPE_HTTP
+			fnCfg.HttpConfig = &configsync.HttpConfig{
+				Path:    fn.Trigger.HTTP.Path,
+				Methods: fn.Trigger.HTTP.MethodStrings(),
+			}
+		} else {
+			fnCfg.WorldType = configsync.WorldType_WORLD_TYPE_MESSAGE
+		}
+		functions = append(functions, fnCfg)
+	}
+
 	cfg := &configsync.ApplicationConfig{
 		Name:      app.Name,
 		Namespace: app.Namespace,
-		// TODO: resolve mutable OCI tags via registry; copy spec.module directly for now.
-		ModuleRef: app.Spec.Module,
-		Topic:     internalTopic(app),
+		Functions: functions,
 		Env:       app.Spec.Env,
-		WorldType: configsync.WorldType_WORLD_TYPE_MESSAGE,
-	}
-
-	if app.Spec.HTTP != nil {
-		cfg.WorldType = configsync.WorldType_WORLD_TYPE_HTTP
-		cfg.Http = &configsync.HttpConfig{
-			Path:    app.Spec.HTTP.Path,
-			Methods: app.Spec.HTTP.MethodStrings(),
-		}
 	}
 
 	if app.Spec.SQL != "" {
@@ -215,23 +231,25 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
 	}
 
-	// For HTTP apps, keep the gateway route store in sync.
-	if app.Spec.HTTP != nil {
-		routeCfg := &routestore.RouteConfig{
-			Path:        app.Spec.HTTP.Path,
-			Methods:     app.Spec.HTTP.MethodStrings(),
-			NatsSubject: internalTopic(app),
+	// Sync HTTP routes for all HTTP-triggered functions to the gateway route store.
+	var httpRoutes []*routestore.RouteConfig
+	for i := range app.Spec.Functions {
+		fn := &app.Spec.Functions[i]
+		if fn.Trigger.HTTP != nil {
+			httpRoutes = append(httpRoutes, &routestore.RouteConfig{
+				Path:        fn.Trigger.HTTP.Path,
+				Methods:     fn.Trigger.HTTP.MethodStrings(),
+				NatsSubject: internalFunctionTopic(app, fn),
+			})
 		}
-		if r.RouteStore.Set(key, routeCfg) {
-			r.RouteStore.BroadcastUpdate(buildRouteUpsertUpdate(routeCfg))
-		}
+	}
+	if r.RouteStore.Set(key, httpRoutes) {
+		r.RouteStore.BroadcastUpdate(buildRouteUpsertUpdate(httpRoutes))
 	}
 
 	// Clear any stale TopicConflict condition from a previous blocked state.
 	apimeta.RemoveStatusCondition(&app.Status.Conditions, "TopicConflict")
 
-	// TODO: replace with real digest resolution from the OCI registry.
-	app.Status.ResolvedImage = app.Spec.Module
 	r.setReadyCondition(app, metav1.ConditionTrue, "ConfigPushed", "Application config pushed to execution hosts.")
 	if err := r.Status().Update(ctx, app); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
@@ -317,10 +335,13 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		topicIndexField,
 		func(obj client.Object) []string {
 			app := obj.(*wasmplatformv1alpha1.Application)
-			if app.Spec.Topic == "" {
-				return nil // HTTP apps have no spec.topic to index
+			var topics []string
+			for _, fn := range app.Spec.Functions {
+				if fn.Trigger.Topic != "" {
+					topics = append(topics, fn.Trigger.Topic)
+				}
 			}
-			return []string{app.Spec.Topic}
+			return topics
 		},
 	); err != nil {
 		return fmt.Errorf("registering topic field index: %w", err)
@@ -331,17 +352,21 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&wasmplatformv1alpha1.Application{},
 			handler.Funcs{
-				// On delete, wake up all apps sharing the deleted app's topic.
+				// On delete, wake up all apps sharing the deleted app's topics.
 				// They may now be the rightful owner.
 				DeleteFunc: func(ctx context.Context, de event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 					app, ok := de.Object.(*wasmplatformv1alpha1.Application)
 					if !ok {
 						return
 					}
-					r.enqueueTopicPeers(ctx, q, app.Spec.Topic, app.Namespace, app.Name)
+					for _, fn := range app.Spec.Functions {
+						if fn.Trigger.Topic != "" {
+							r.enqueueTopicPeers(ctx, q, fn.Trigger.Topic, app.Namespace, app.Name)
+						}
+					}
 				},
-				// On update, wake up apps sharing the *old* topic when the topic
-				// has changed — they may now be unblocked.
+				// On update, wake up apps sharing any *old* topic that changed —
+				// they may now be unblocked.
 				UpdateFunc: func(ctx context.Context, ue event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 					oldApp, ok := ue.ObjectOld.(*wasmplatformv1alpha1.Application)
 					if !ok {
@@ -351,10 +376,14 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					if !ok {
 						return
 					}
-					if oldApp.Spec.Topic == newApp.Spec.Topic {
-						return // topic unchanged; no peers need waking
+					oldTopics := functionTopicSet(oldApp)
+					newTopics := functionTopicSet(newApp)
+					for topic := range oldTopics {
+						if !newTopics[topic] {
+							// This topic was removed — wake peers that may now own it.
+							r.enqueueTopicPeers(ctx, q, topic, newApp.Namespace, newApp.Name)
+						}
 					}
-					r.enqueueTopicPeers(ctx, q, oldApp.Spec.Topic, newApp.Namespace, newApp.Name)
 				},
 			},
 		).
@@ -480,6 +509,17 @@ func (r *ApplicationReconciler) enqueueTopicPeers(
 	}
 }
 
+// functionTopicSet returns a set of all user-supplied topics across all functions.
+func functionTopicSet(app *wasmplatformv1alpha1.Application) map[string]bool {
+	topics := make(map[string]bool)
+	for _, fn := range app.Spec.Functions {
+		if fn.Trigger.Topic != "" {
+			topics[fn.Trigger.Topic] = true
+		}
+	}
+	return topics
+}
+
 func buildUpsertUpdate(cfg *configsync.ApplicationConfig) *configsync.IncrementalConfig {
 	now := time.Now().UnixMilli()
 	return &configsync.IncrementalConfig{
@@ -489,7 +529,7 @@ func buildUpsertUpdate(cfg *configsync.ApplicationConfig) *configsync.Incrementa
 	}
 }
 
-func buildDeleteUpdate(app *wasmplatformv1alpha1.Application, topic string) *configsync.IncrementalConfig {
+func buildDeleteUpdate(app *wasmplatformv1alpha1.Application) *configsync.IncrementalConfig {
 	now := time.Now().UnixMilli()
 	return &configsync.IncrementalConfig{
 		Version: fmt.Sprintf("%d", now),
@@ -498,7 +538,6 @@ func buildDeleteUpdate(app *wasmplatformv1alpha1.Application, topic string) *con
 				AppConfig: &configsync.ApplicationConfig{
 					Name:      app.Name,
 					Namespace: app.Namespace,
-					Topic:     topic,
 				},
 				Delete: true,
 			},
@@ -507,29 +546,38 @@ func buildDeleteUpdate(app *wasmplatformv1alpha1.Application, topic string) *con
 	}
 }
 
-// internalTopic returns the fully-prefixed NATS subject for the given Application.
-// Topic-only apps use the "fn." prefix; HTTP apps use "http.<namespace>.<name>".
-func internalTopic(app *wasmplatformv1alpha1.Application) string {
-	if app.Spec.Topic != "" {
-		return "fn." + app.Spec.Topic
+// internalFunctionTopic returns the fully-prefixed NATS subject for a function.
+// Message-triggered functions use the "fn." prefix; HTTP-triggered functions
+// use "http.<namespace>.<app-name>.<function-name>".
+func internalFunctionTopic(app *wasmplatformv1alpha1.Application, fn *wasmplatformv1alpha1.FunctionSpec) string {
+	if fn.Trigger.Topic != "" {
+		return "fn." + fn.Trigger.Topic
 	}
-	return fmt.Sprintf("http.%s.%s", app.Namespace, app.Name)
+	return fmt.Sprintf("http.%s.%s.%s", app.Namespace, app.Name, fn.Name)
 }
 
-func buildRouteUpsertUpdate(cfg *routestore.RouteConfig) *routestore.RouteUpdateBatch {
+func buildRouteUpsertUpdate(cfgs []*routestore.RouteConfig) *routestore.RouteUpdateBatch {
 	now := time.Now().UnixMilli()
+	updates := make([]*routestore.RouteUpdate, len(cfgs))
+	for i, cfg := range cfgs {
+		updates[i] = &routestore.RouteUpdate{Config: cfg, Delete: false}
+	}
 	return &routestore.RouteUpdateBatch{
 		Version:   fmt.Sprintf("%d", now),
-		Updates:   []*routestore.RouteUpdate{{Config: cfg, Delete: false}},
+		Updates:   updates,
 		Timestamp: now,
 	}
 }
 
-func buildRouteDeleteUpdate(path string) *routestore.RouteUpdateBatch {
+func buildRouteDeleteUpdate(cfgs []*routestore.RouteConfig) *routestore.RouteUpdateBatch {
 	now := time.Now().UnixMilli()
+	updates := make([]*routestore.RouteUpdate, len(cfgs))
+	for i, cfg := range cfgs {
+		updates[i] = &routestore.RouteUpdate{Config: cfg, Delete: true}
+	}
 	return &routestore.RouteUpdateBatch{
 		Version:   fmt.Sprintf("%d", now),
-		Updates:   []*routestore.RouteUpdate{{Config: &routestore.RouteConfig{Path: path}, Delete: true}},
+		Updates:   updates,
 		Timestamp: now,
 	}
 }
