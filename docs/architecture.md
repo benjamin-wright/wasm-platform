@@ -157,3 +157,78 @@ Scaling targets concurrent invocations (not CPU/memory). A single execution host
 4. Guest runs, may call `sql`/`kv`/`messaging` imports → returns an `HttpResponse`.
 5. Execution host serialises the response as JSON → publishes to NATS reply subject → gateway constructs HTTP response.
 
+---
+
+## 4. Decisions (Phase 8+)
+
+### Multi-Function Application CRD Shape
+
+**Decision:** Replace `spec.module`, `spec.topic`, and `spec.http` with a `spec.functions` list. Each entry has:
+
+- `name` — identifier unique within the Application.
+- `module` — OCI image reference for the `.wasm` module.
+- `trigger` — exactly one of `trigger.http` (`HttpConfig`) or `trigger.topic` (string); enforced by CEL validation, consistent with the existing pattern.
+
+Application-level fields (`spec.env`, `spec.sql`, `spec.keyValue`) are retained and remain shared across all functions in the Application. The CRD is v1alpha1, so this is a clean breaking migration; no backwards-compatibility shim is provided. The hello-world Application CR is migrated to the new single-entry `spec.functions` shape in Phase 8.2.
+
+**Uniqueness:** topic uniqueness remains cluster-wide per the existing `TopicConflict` enforcement. HTTP path uniqueness is enforced the same way. Uniqueness is checked against the user-supplied value at the function level, not the application level.
+
+---
+
+### `spec.metrics` Schema and Validation
+
+**Decision:** `spec.metrics` is a list of metric definitions. Each entry:
+
+- `name` — Prometheus metric name; must match `[a-zA-Z_:][a-zA-Z0-9_:]*`, max 64 characters, must not start with `__` (Prometheus reserved prefix).
+- `type` — enum: `counter` or `gauge`.
+- `labels` — list of Prometheus label key strings; each must match `[a-zA-Z_][a-zA-Z0-9_]*`, max 10 entries per metric, must not include `app_name` or `app_namespace` (host-injected labels).
+
+`spec.metrics` names must be unique within a single Application (enforced by CEL). Cross-Application uniqueness is enforced by the operator (see below). A metric `name` is the globally unique identifier — `type` and `labels` are not part of the uniqueness key.
+
+---
+
+### Metric Name Uniqueness Enforcement Strategy
+
+**Decision:** Reconciler-time validation — no admission webhook.
+
+The operator checks all existing Applications for metric name collisions at reconcile time. The Application with the oldest `creationTimestamp` owns each metric name (tiebreak: lexicographically lower `namespace/name`). An Application whose metric names collide with an existing owner enters a `MetricConflict` condition (`Ready: False`). When the owner is deleted or removes the conflicting metric name, blocked Applications are re-evaluated automatically on the next reconcile.
+
+**Rationale:** Consistent with the existing `TopicConflict` pattern. No additional infrastructure (cert-manager, webhook configuration) is required. Reconciler-time feedback (seconds) is sufficient for a v1alpha1 API — the cost of delayed feedback is low compared to the cost of adding and maintaining webhook infrastructure.
+
+---
+
+### Migrations Contract
+
+**Decision:**
+
+- **Image reference:** `spec.migrations.image` (optional OCI image reference) at the Application level. The image is expected to run to completion (exit 0 = success). No arguments are passed by the platform; the image is responsible for connecting to its own database using credentials injected as environment variables by the operator (`PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`).
+- **Trigger:** A migrations Job is created on the first apply of any Application that has `spec.migrations.image` set, and on any subsequent apply where `spec.migrations.image` or any `spec.functions[*].module` digest changes (detected via `metadata.generation` increment). Job name pattern: `<app-name>-migrations-<generation>`.
+- **Activation gate:** The operator does not push an ApplicationConfig to execution hosts until the migrations Job for the current generation has completed successfully. Applications without `spec.migrations.image` are unaffected.
+- **Failure model:** If the Job fails (all retries exhausted), the operator sets `MigrationFailed: True` on the Application status and does not push config. No traffic flows to the Application. The user fixes the migrations image and re-applies, incrementing `metadata.generation` and triggering a new Job.
+- **Rollback:** Out of scope for v1alpha1. Migrations are forward-only.
+- **Job retention:** Jobs are retained after completion for debugging. A completed Job for a prior generation is deleted when a new generation's Job is created.
+
+---
+
+### Config-Sync Proto Changes for Multi-Function and Metrics
+
+**Decision:** Clean break — field numbers are reassigned for clarity. Since the operator and execution host are always deployed together and the API is v1alpha1, no wire-format backwards compatibility is required.
+
+`ApplicationConfig` is restructured:
+
+| Field number | Name | Description |
+|---|---|---|
+| 1 | `name` | unchanged |
+| 2 | `namespace` | unchanged |
+| 3 | `functions` | `repeated FunctionConfig` — replaces `module_ref` (old 3), `topic` (old 4), `world_type` (old 8), `http` (old 9) |
+| 4 | `env` | `map<string, string>` — was field 5 |
+| 5 | `sql` | `optional SqlConfig` — was field 6 |
+| 6 | `key_value` | `optional KeyValueConfig` — was field 7 |
+| 7 | `metrics` | `repeated MetricDefinition` — new |
+
+New messages and enums added:
+
+- **`FunctionConfig`** — `name`, `module_ref`, `world_type` (`WorldType`), `topic` (optional string), `http_config` (optional `HttpConfig`).
+- **`MetricDefinition`** — `name`, `type` (`MetricType`), `label_keys` (`repeated string`).
+- **`MetricType`** enum — `METRIC_TYPE_COUNTER = 0`, `METRIC_TYPE_GAUGE = 1`.
+

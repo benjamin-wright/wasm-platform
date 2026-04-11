@@ -16,12 +16,12 @@ Make and record all design decisions required before CRD and proto changes can b
 
 #### Tasks
 
-- [ ] Draft multi-function Application CRD schema — `spec.functions` list with per-function `name`, `module` (OCI ref), and `trigger` (http or topic); assess backwards compatibility with existing single-module CRs.
-- [ ] Draft `spec.metrics` schema — `{name, type, labels}` list; decide validation rules (name format, max label count, reserved names).
-- [ ] Decide operator uniqueness enforcement strategy for metric names — admission webhook vs. reconciler-time validation; assess failure UX for each.
-- [ ] Decide migrations contract — how the migrations image is referenced in the spec, what the operator does on first apply vs. upgrade, and what the failure/rollback model is.
-- [ ] Assess config-sync proto changes needed — per-function module refs and triggers grouped by application, plus `MetricDefinition` repeated field.
-- [ ] Record all decisions in a Decisions block in `docs/architecture.md`.
+- [x] Draft multi-function Application CRD schema — `spec.functions` list with per-function `name`, `module` (OCI ref), and `trigger` (http or topic); assess backwards compatibility with existing single-module CRs.
+- [x] Draft `spec.metrics` schema — `{name, type, labels}` list; decide validation rules (name format, max label count, reserved names).
+- [x] Decide operator uniqueness enforcement strategy for metric names — admission webhook vs. reconciler-time validation; assess failure UX for each.
+- [x] Decide migrations contract — how the migrations image is referenced in the spec, what the operator does on first apply vs. upgrade, and what the failure/rollback model is.
+- [x] Assess config-sync proto changes needed — per-function module refs and triggers grouped by application, plus `MetricDefinition` repeated field.
+- [x] Record all decisions in a Decisions block in `docs/architecture.md`.
 
 #### Verification
 
