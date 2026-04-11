@@ -6,17 +6,13 @@ Active implementation plan for the wasm-platform project.
 
 ## Execution Host: Align Implementation with README Spec
 
-### Phase 8: Application CRD Redesign + Metrics
+Each phase is independently launchable in its own agent session. The permanent regression guard throughout is the hello-world e2e fixture (HTTP trigger, KV counter) — it must pass at every phase boundary. After every phase, `tilt ci` must exit 0.
 
-#### Design
+---
 
-The Application CRD needs a structural redesign before SQL and metrics can be implemented. Two concerns are bundled here because both require CRD changes, config-sync proto changes, and operator work — doing them in one pass avoids a second CRD migration.
+### Phase 8.1: Design Record (no code)
 
-**Multi-function shape:** should a single Application CR support multiple WASM functions, each its own module, all sharing one PostgreSQL database and one Redis key-prefix? The current shape is one-module-per-CR. A multi-function model — `spec.functions` as a list of `{name, module, trigger}` entries — has significant implications: isolation is at the application boundary; DB migrations must complete before any function is activated; config-sync proto must carry per-function entries grouped under an application context.
-
-**CRD-declared metrics:** `spec.metrics` carries a list of `{name, type: counter|gauge, labels: [string]}` entries. The operator validates uniqueness across all Applications (no two apps may claim the same metric name) and rejects CRDs that would collide. Definitions are pushed to execution hosts via config-sync. The host pre-registers `CounterVec`/`GaugeVec` on config arrival — no lazy registration, no schema drift. A label schema change requires a CRD update and redeploy, making it intentional. Guests call `counter-increment(name, value, labels: list<tuple<string,string>>)` — the host validates the call against the declared schema and drops calls with unexpected keys. The `/metrics` endpoint exposes all series with `app_name`/`app_namespace` labels added by the host. Low-cardinality labels are a documented constraint; there is no per-metric series cap in this iteration.
-
-This phase produces decisions and a revised CRD schema. No host implementation of metrics or SQL. Phase 9 (SQL) is blocked on this phase completing.
+Make and record all design decisions required before CRD and proto changes can begin. No implementation. This phase is complete when all decisions are captured in `docs/architecture.md`.
 
 #### Tasks
 
@@ -24,29 +20,139 @@ This phase produces decisions and a revised CRD schema. No host implementation o
 - [ ] Draft `spec.metrics` schema — `{name, type, labels}` list; decide validation rules (name format, max label count, reserved names).
 - [ ] Decide operator uniqueness enforcement strategy for metric names — admission webhook vs. reconciler-time validation; assess failure UX for each.
 - [ ] Decide migrations contract — how the migrations image is referenced in the spec, what the operator does on first apply vs. upgrade, and what the failure/rollback model is.
-- [ ] Assess config sync proto changes — per-function module refs and triggers, plus `MetricDefinition` repeated field; update `proto/configsync` design.
-- [ ] Record all decisions in the Decisions block and update `docs/architecture.md` before closing this phase.
+- [ ] Assess config-sync proto changes needed — per-function module refs and triggers grouped by application, plus `MetricDefinition` repeated field.
+- [ ] Record all decisions in a Decisions block in `docs/architecture.md`.
 
-### Phase 9: SQL Host Function + Migrations
+#### Verification
 
-#### Design
+PR review only — no functional change, so `tilt ci` is not a signal here.
 
-Deferred — expand once Phase 8 design decisions are recorded. At minimum this phase will cover: `sql` WIT interface host implementation, per-application connection pool keyed by `(database_name, username)`, migrations Job lifecycle managed by the wp-operator, and an e2e fixture exercising a SQL-backed WASM module.
+---
 
-#### Tasks
+### Phase 8.2: Multi-Function CRD + Config-Sync Proto
 
-- [ ] TBD — expand after Phase 8 decisions are finalised.
-
-### Phase 10: Sandboxing & Resource Limits
+Migrate the Application CRD from a single-module shape to a `spec.functions` list and propagate that shape through the config-sync proto, operator, and execution host.
 
 #### Tasks
 
-- [ ] Fuel metering — enable on `Engine`, set budget per `Store` before `on-message` (configurable via `WASM_FUEL_LIMIT`).
-- [ ] Memory limits — configure `InstanceLimits` on `Engine` (e.g. 64 MB default, `WASM_MEMORY_LIMIT_MB`).
-- [ ] Wall-clock timeout — wrap `spawn_blocking` in `tokio::time::timeout` (e.g. 30s default, `WASM_TIMEOUT_SECS`).
-- [ ] Instance pooling (stretch goal) — `PoolingAllocationConfig` for pre-allocated slots; defer if per-invocation model performs adequately.
+- [ ] Update Go `Application` CRD types to `spec.functions` (list of `{name, module, trigger}`).
+- [ ] Regenerate CRD manifests (`make generate` in `components/wp-operator/`).
+- [ ] Update config-sync proto: per-function module refs and triggers grouped under an application context.
+- [ ] Update operator reconciler to push per-function config using the new proto shape.
+- [ ] Update execution host to receive and index per-function config.
+- [ ] Migrate the hello-world Application CR to the new `spec.functions` single-entry shape.
+
+#### Verification
+
+`tilt ci` passes — hello-world continues to work under the new CRD shape.
+
+---
+
+### Phase 8.3: Metrics CRD Schema + Operator Validation
+
+Add `spec.metrics` to the Application CR, enforce cluster-wide uniqueness in the operator, and forward metric definitions to execution hosts (no host registration yet).
+
+#### Tasks
+
+- [ ] Add `spec.metrics` (`{name, type, labels}`) to the Application CRD types and regenerate manifests.
+- [ ] Add operator reconciler logic to reject Applications whose metric names collide with an existing Application's names (reconciler-time validation, per the Phase 8.1 decision).
+- [ ] Extend config-sync proto with a `MetricDefinition` repeated field.
+- [ ] Update operator to include metric definitions in the config pushed to execution hosts.
+- [ ] Update execution host to receive metric definitions — store in config and log on receipt; do **not** register them yet.
+- [ ] Add a `spec.metrics` entry to the hello-world Application CR.
+
+#### Verification
+
+Deploying two Applications that claim the same metric name causes the second one to enter an error status. `tilt ci` passes.
+
+---
+
+### Phase 8.4: Host Metrics Implementation
+
+Pre-register metrics on config arrival, wire the `counter-increment` WIT host function, and expose `/metrics`.
+
+#### Tasks
+
+- [ ] Host pre-registers `CounterVec`/`GaugeVec` from received metric definitions on config arrival.
+- [ ] Implement the `counter-increment` WIT host function — validate call against declared schema, drop calls with unexpected label keys.
+- [ ] Expose a `/metrics` Prometheus endpoint; add `app_name` and `app_namespace` labels to all series.
+- [ ] Add a `message-application` example module that increments a counter on each invocation.
+- [ ] Add an e2e test that hits `/metrics` after invoking the example module and asserts the counter has advanced.
+
+#### Verification
+
+New e2e test passes demonstrating guest → host metric increment. `tilt ci` passes.
+
+---
+
+### Phase 9.1: SQL Host Function (No Migrations)
+
+Implement the `sql` WIT interface host functions backed by a per-app PostgreSQL connection pool, without any migrations machinery.
+
+#### Tasks
+
+- [ ] Implement `sql.query` and `sql.execute` WIT host functions.
+- [ ] Per-app connection pool keyed by `(database_name, username)`, lazily initialised from config-sync credentials.
+- [ ] Add a `sql-hello` example module that reads from a pre-seeded fixture table.
+- [ ] Add an e2e fixture: deploy the `sql-hello` Application with a pre-seeded table created via a Kubernetes Job; assert the HTTP response includes data from the table.
+
+#### Verification
+
+New e2e test passes. `tilt ci` passes. hello-world e2e test is unaffected.
+
+---
+
+### Phase 9.2: Migrations Job Lifecycle
+
+Add migrations support to the operator: create a Job on Application create/upgrade, gate activation on Job success, and surface failure in Application status.
+
+#### Tasks
+
+- [ ] Operator creates a Kubernetes Job running the migrations image on Application create/upgrade (per Phase 8.1 migrations contract).
+- [ ] Activation gate: no function receives traffic until the migrations Job completes successfully.
+- [ ] Surface `MigrationFailed` in Application status when the Job fails.
+- [ ] Extend the `sql-hello` e2e fixture to use a migrations Job rather than a pre-seeded table.
+
+#### Verification
+
+e2e test exercises the full migrations-then-activate flow. `tilt ci` passes.
+
+---
+
+### Phase 10.1: Fuel Metering + Memory Limits
+
+Add engine-level resource limits for CPU (fuel) and memory.
+
+#### Tasks
+
+- [ ] Enable fuel metering on `Engine`; set fuel budget per `Store` before each invocation (`WASM_FUEL_LIMIT` env var).
+- [ ] Configure `InstanceLimits` for linear memory on `Engine` (`WASM_MEMORY_LIMIT_MB` env var, default 64 MB).
+- [ ] Add unit tests: a module that loops infinitely is killed with a fuel error; a module that allocates beyond the limit is killed.
+
+#### Verification
+
+Unit tests pass. `tilt ci` passes.
+
+---
+
+### Phase 10.2: Wall-Clock Timeout
+
+Add a per-invocation wall-clock timeout to cover host calls that fuel metering does not reach.
+
+#### Tasks
+
+- [ ] Wrap each `spawn_blocking` invocation in `tokio::time::timeout` (`WASM_TIMEOUT_SECS` env var, default 30s).
+- [ ] Add a unit test: a module that sleeps longer than the timeout is cancelled and returns an error.
+
+#### Verification
+
+Unit test passes. `tilt ci` passes.
+
+---
 
 ### Phase 11: README Alignment
+
+Documentation-only pass to bring all READMEs and docs into sync with the current implementation. No functional change.
 
 #### Tasks
 
@@ -58,6 +164,6 @@ Deferred — expand once Phase 8 design decisions are recorded. At minimum this 
 - [ ] Document the two WIT worlds in the project README and `framework/` — note `message-application` for pure message-passing and `http-application` for HTTP endpoints.
 - [ ] Full pass for any remaining stale claims.
 
-### Verification
+#### Verification
 
-After every phase, run `tilt ci` to confirm the full stack deploys and the end-to-end test passes. A phase is not complete until `tilt ci` exits 0.
+`tilt ci` passes. PR is reviewable as a docs-only change.
