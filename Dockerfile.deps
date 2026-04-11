@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1
+# Shared workspace dependency image.
+#
+# Compiles all third-party crates for every workspace member so that
+# component builds can skip straight to compiling their own source.
+# Rebuilt only when Cargo.toml, Cargo.lock, proto definitions, or the
+# WIT file change — never on application source changes.
+#
+# The resulting image contains the Rust toolchain, protobuf-compiler, and a
+# pre-cooked target/ directory. Component Dockerfiles use this as their builder
+# base via the WORKSPACE_DEPS_IMAGE build arg, then run only `cargo build`.
+#
+# Build context: repo root.
+# Requires BuildKit (default in Docker >= 23.0).
+
+# ── Stage 1: cargo-chef installer ─────────────────────────────────────────────
+FROM lukemathwalker/cargo-chef:latest-rust-1.91-slim-bookworm AS chef
+WORKDIR /build
+
+# ── Stage 2: dependency planner ───────────────────────────────────────────────
+FROM chef AS planner
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY --parents components/*/Cargo.toml examples/*/Cargo.toml ./
+RUN find components examples -maxdepth 2 -name Cargo.toml -exec dirname {} \; \
+    | xargs -I{} sh -c 'mkdir -p {}/src && touch {}/src/lib.rs {}/src/main.rs'
+COPY --parents proto/configsync/v1/configsync.proto proto/gateway/v1/gateway.proto ./
+COPY framework/runtime.wit ./framework/runtime.wit
+COPY --parents components/*/build.rs ./
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 3: dependency builder ───────────────────────────────────────────────
+# Cooks all third-party crates for the full workspace. Source-only changes in
+# any component will cache-hit this image entirely.
+FROM chef AS workspace-deps
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
+COPY --from=planner /build/recipe.json recipe.json
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json

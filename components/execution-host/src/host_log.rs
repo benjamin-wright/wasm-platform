@@ -5,11 +5,12 @@ impl message_bindings::framework::runtime::log::Host for HostState {
         use message_bindings::framework::runtime::log::Level;
         let app_name = &self.app_name;
         let app_namespace = &self.app_namespace;
+        let function_name = &self.function_name;
         match level {
-            Level::Debug => tracing::debug!(app_name, app_namespace, "{message}"),
-            Level::Info => tracing::info!(app_name, app_namespace, "{message}"),
-            Level::Warn => tracing::warn!(app_name, app_namespace, "{message}"),
-            Level::Error => tracing::error!(app_name, app_namespace, "{message}"),
+            Level::Debug => tracing::debug!(app_name, app_namespace, function_name, "{message}"),
+            Level::Info => tracing::info!(app_name, app_namespace, function_name, "{message}"),
+            Level::Warn => tracing::warn!(app_name, app_namespace, function_name, "{message}"),
+            Level::Error => tracing::error!(app_name, app_namespace, function_name, "{message}"),
         }
     }
 }

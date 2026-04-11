@@ -50,7 +50,33 @@ Migrate the Application CRD from a single-module shape to a `spec.functions` lis
 
 ---
 
-### Phase 8.3: Metrics CRD Schema + Operator Validation
+### Phase 8.3: Graceful Shutdown & NATS Drain
+
+Implement true graceful drain on SIGTERM so that in-flight WASM invocations complete before the process exits, and the pod leaves its NATS queue groups cleanly before Kubernetes sends SIGKILL.
+
+#### Design
+
+- A `shutdown` broadcast channel fires when SIGTERM is received.
+- `manage_nats_subscriptions` listens for shutdown and drops all subscriptions (sends UNSUB to NATS, removes the replica from every queue group).
+- Dropping the subscriptions closes the per-topic forwarding tasks, which close the senders on `msg_tx`, which causes `msg_rx` in `process_nats_messages` to drain and return naturally.
+- Replace the fire-and-forget `tokio::spawn` per invocation with a `tokio::task::JoinSet` so the message loop can `.join_all()` after `msg_rx` closes.
+- `main` awaits the drain to complete, then exits — Kubernetes sees a clean process exit within the termination grace period.
+
+#### Tasks
+
+- [ ] Add a `shutdown` `tokio::sync::broadcast` channel in `main.rs` and install a SIGTERM handler that sends on it.
+- [ ] Pass the shutdown receiver into `manage_nats_subscriptions`; on signal, clear all subscriptions and return.
+- [ ] Pass the shutdown receiver into `process_nats_messages`; switch per-invocation spawns to a `JoinSet`; after `msg_rx` closes, `join_all()` the set before returning.
+- [ ] Update `main`'s `tokio::select!` to await the `process_nats_messages` future (which now drains and returns) rather than racing it against the health server.
+- [ ] Update `components/execution-host/README.md` to document the shutdown sequence.
+
+#### Verification
+
+`tilt ci` passes. Manual test: trigger an invocation, immediately `kubectl delete pod` the execution-host pod, confirm the invocation completes and the counter increments exactly once with no duplicate.
+
+---
+
+### Phase 8.5: Metrics CRD Schema + Operator Validation
 
 Add `spec.metrics` to the Application CR, enforce cluster-wide uniqueness in the operator, and forward metric definitions to execution hosts (no host registration yet).
 
@@ -69,7 +95,7 @@ Deploying two Applications that claim the same metric name causes the second one
 
 ---
 
-### Phase 8.4: Host Metrics Implementation
+### Phase 8.6: Host Metrics Implementation
 
 Pre-register metrics on config arrival, wire the `counter-increment` WIT host function, and expose `/metrics`.
 

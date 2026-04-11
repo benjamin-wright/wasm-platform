@@ -5,7 +5,7 @@ def hello_world(namespace, resource_deps=[]):
     # exactly as it does for Deployment images.  pod_readiness='ignore'
     # because the Application itself spawns no pods.
     k8s_kind('Application',
-             image_json_path = '{.spec.module}',
+             image_json_path = '{.spec.functions[*].module}',
              pod_readiness = 'ignore')
 
     # Build the WASM module and push it to the local registry.  Tilt passes

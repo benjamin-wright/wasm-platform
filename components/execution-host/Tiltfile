@@ -8,6 +8,7 @@ def execution_host(namespace, resource_deps=[]):
         command = (
             'docker build' +
             ' --build-context workspace=.' +
+            ' --build-arg WORKSPACE_DEPS_IMAGE=$TILT_IMAGE_0' +
             ' -f components/execution-host/Dockerfile' +
             ' -t $EXPECTED_REF' +
             ' components/execution-host'
@@ -18,6 +19,7 @@ def execution_host(namespace, resource_deps=[]):
             'proto/configsync/v1/configsync.proto',
             'framework/runtime.wit',
         ],
+        image_deps = ['workspace-deps'],
     )
 
     helm_resource(

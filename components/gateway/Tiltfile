@@ -8,6 +8,7 @@ def gateway(namespace, resource_deps=[]):
         command = (
             'docker build' +
             ' --build-context workspace=.' +
+            ' --build-arg WORKSPACE_DEPS_IMAGE=$TILT_IMAGE_0' +
             ' -f components/gateway/Dockerfile' +
             ' -t $EXPECTED_REF' +
             ' components/gateway'
@@ -17,6 +18,7 @@ def gateway(namespace, resource_deps=[]):
             'components/gateway/Cargo.toml',
             'proto/gateway/v1/gateway.proto',
         ],
+        image_deps = ['workspace-deps'],
     )
 
     helm_resource(

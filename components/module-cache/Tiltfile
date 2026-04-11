@@ -8,6 +8,7 @@ def module_cache(namespace):
         command = (
             'docker build' +
             ' --build-context workspace=.' +
+            ' --build-arg WORKSPACE_DEPS_IMAGE=$TILT_IMAGE_0' +
             ' -f components/module-cache/Dockerfile' +
             ' -t $EXPECTED_REF' +
             ' components/module-cache'
@@ -16,6 +17,7 @@ def module_cache(namespace):
             'components/module-cache/src',
             'components/module-cache/Cargo.toml',
         ],
+        image_deps = ['workspace-deps'],
     )
 
     helm_resource(
