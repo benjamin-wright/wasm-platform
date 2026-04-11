@@ -12,8 +12,7 @@ load('./components/execution-host/Tiltfile', 'execution_host')
 load('./components/gateway/Tiltfile', 'gateway')
 load('./components/module-cache/Tiltfile', 'module_cache')
 load('./components/wp-operator/Tiltfile', 'wp_operator')
-load('./examples/hello-world/Tiltfile', 'hello_world')
-load('./examples/message-counter/Tiltfile', 'message_counter')
+load('./examples/demo-app/Tiltfile', 'demo_app')
 load('./tests/e2e/Tiltfile', 'e2e_tests')
 load('./tilt/workspace-deps.Tiltfile', 'workspace_deps')
 
@@ -31,9 +30,8 @@ module_cache(namespace)
 ## Example applications ##
 
 k8s_namespace('examples')
-hello_world('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
-message_counter('examples', resource_deps=['wp-operator', 'execution-host'])
+demo_app('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
 
 ## Tests ##
 
-e2e_tests(resource_deps=['message-counter'])
+e2e_tests()

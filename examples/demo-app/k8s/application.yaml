@@ -1,0 +1,19 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: examples
+spec:
+  keyValue: demo-app
+  functions:
+    - name: http-handler
+      module: demo-app-http
+      trigger:
+        http:
+          path: /hello
+          methods:
+            - GET
+    - name: message-handler
+      module: demo-app-messages
+      trigger:
+        topic: demo-app.events

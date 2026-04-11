@@ -1,18 +1,18 @@
 wit_bindgen::generate!({
     world: "http-application",
-    path: "../../framework/runtime.wit",
+    path: "../../../framework/runtime.wit",
 });
 
 use framework::runtime::{kv, log, messaging};
 
-struct HelloWorld;
+struct HttpHandler;
 
-impl Guest for HelloWorld {
+impl Guest for HttpHandler {
     fn on_request(request: HttpRequest) -> Result<HttpResponse, String> {
         log::emit(log::Level::Info, "handling request");
 
-        // Publish an event so the message-counter module can track activity.
-        messaging::send("hello-world.events", &b"tick".to_vec())?;
+        // Publish an event so the message-handler function can track activity.
+        messaging::send("demo-app.events", &b"tick".to_vec())?;
 
         let requests = kv::incr("counters", "requests")?;
         let messages = kv::get_int("counters", "messages")?.unwrap_or(0);
@@ -29,4 +29,4 @@ impl Guest for HelloWorld {
     }
 }
 
-export!(HelloWorld);
+export!(HttpHandler);

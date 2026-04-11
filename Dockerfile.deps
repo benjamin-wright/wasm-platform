@@ -21,8 +21,8 @@ WORKDIR /build
 FROM chef AS planner
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
-COPY --parents components/*/Cargo.toml examples/*/Cargo.toml lib/*/Cargo.toml ./
-RUN find components examples lib -maxdepth 2 -name Cargo.toml -exec dirname {} \; \
+COPY --parents components/*/Cargo.toml examples/*/Cargo.toml examples/*/*/Cargo.toml lib/*/Cargo.toml ./
+RUN find components examples lib -maxdepth 3 -name Cargo.toml -exec dirname {} \; \
     | xargs -I{} sh -c 'mkdir -p {}/src && touch {}/src/lib.rs {}/src/main.rs'
 COPY --parents proto/configsync/v1/configsync.proto proto/gateway/v1/gateway.proto ./
 COPY framework/runtime.wit ./framework/runtime.wit

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +15,21 @@ import (
 
 	. "github.com/onsi/gomega"
 )
+
+func TestMain(m *testing.M) {
+	cmd := exec.Command("kubectl", "wait", "application", "demo-app",
+		"-n", "examples",
+		"--for=condition=Ready",
+		"--timeout=120s",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "demo-app not ready: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 const (
 	baseURL      = "http://localhost/hello"
@@ -28,18 +45,20 @@ type counters struct {
 func TestHelloWorldEndToEnd(t *testing.T) {
 	g := NewWithT(t)
 
-	// Wait until the hello-world WASM module is fully serving — status 200
-	// AND a valid "requests=N" counter in the body. This ensures the full
-	// stack (operator → module-cache → execution-host → gateway) is ready
-	// before we assert on counter increments.
-	g.Eventually(func() error {
-		_, err := fetch(baseURL)
-		return err
-	}, routeTimeout, pollInterval).Should(Succeed(),
+	// Poll until the full stack (operator → module-cache → execution-host →
+	// gateway) is serving. Capture the first successful response so we can
+	// assert counter increments against it without a separate bare fetch that
+	// could race during startup.
+	var first counters
+	g.Eventually(func() (counters, error) {
+		c, err := fetch(baseURL)
+		if err != nil {
+			return counters{}, err
+		}
+		first = c
+		return c, nil
+	}, routeTimeout, pollInterval).Should(Not(Equal(counters{})),
 		"hello-world module should be serving at %s within %s", baseURL, routeTimeout)
-
-	first, err := fetch(baseURL)
-	g.Expect(err).NotTo(HaveOccurred())
 
 	// The messages counter is incremented asynchronously by the message-counter
 	// module after each request. Poll until both requests and messages have
@@ -103,4 +122,3 @@ func parseCounters(body string) (counters, error) {
 	}
 	return c, nil
 }
-

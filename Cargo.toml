@@ -4,7 +4,7 @@ members = [
     "components/execution-host",
     "components/gateway",
     "components/module-cache",
-    "examples/hello-world",
-    "examples/message-counter",
+    "examples/demo-app/http-handler",
+    "examples/demo-app/message-handler",
     "lib/platform-common",
 ]

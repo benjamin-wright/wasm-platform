@@ -1,13 +1,13 @@
 wit_bindgen::generate!({
     world: "message-application",
-    path: "../../framework/runtime.wit",
+    path: "../../../framework/runtime.wit",
 });
 
 use framework::runtime::{kv, log};
 
-struct MessageCounter;
+struct MessageHandler;
 
-impl Guest for MessageCounter {
+impl Guest for MessageHandler {
     fn on_message(_payload: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
         log::emit(log::Level::Info, "handling message");
 
@@ -16,4 +16,4 @@ impl Guest for MessageCounter {
     }
 }
 
-export!(MessageCounter);
+export!(MessageHandler);
