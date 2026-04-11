@@ -39,14 +39,17 @@ Every line in a component README must pass these checks:
 Before writing anything new — utility, pattern, convention, or routine — check whether an equivalent already exists in the project or an existing dependency. If it does, use it. If it does not, create it in an appropriate shared location so others can reuse it.
 
 - Never duplicate a helper inline across files; parameterise a shared function to cover variant contexts.
+- Shared data types that define cross-component contracts (serialisation payloads, protocol types, common infrastructure) must live in a `lib/` crate so the contract is enforced at compile time, not by convention. If two components independently define the same type, extract it.
 - Follow the conventions established in sibling components. Consistency takes priority over local preference.
 - Prefer library-provided functions over hand-rolled logic for serialisation, encoding, etc.
 
 ### Code Clarity
 
-- Names (functions, variables, types) must be descriptive enough to make their purpose obvious without a comment.
-- Comments must add information the code cannot express — explain *why*, not *what*. Never write a comment that just restates the line it sits next to.
-- Prefer fewer, meaningful comments over many redundant ones.
+- Names (functions, variables, types) must be descriptive enough to make their purpose obvious without a comment. Prefer renaming or restructuring over adding an explanatory comment.
+- Doc-comments on public functions and types are encouraged — they improve IDE tooling and serve as the API contract.
+- Inline comments are reserved for cases where the code's *current structure* cannot convey the reasoning — e.g. a non-obvious ordering constraint or a subtlety that naming alone cannot capture.
+- Comments must not duplicate information that belongs elsewhere. Architectural decisions belong in `docs/architecture.md`, behavioural contracts belong in component READMEs, and historical context belongs in version control. Code comments are not a distributed changelog or a substitute for documentation.
+- If a comment explains *what* the code does rather than *why* it does it that way, the code should be refactored until the comment is unnecessary.
 
 ### Single Responsibility Principle
 
@@ -73,6 +76,61 @@ End-to-end tests live in `tests/e2e/` as a Go module with a `//go:build integrat
 - Traefik `Ingress` routes `localhost:80` to the gateway (no TLS; host is configurable via the gateway Helm chart).
 - Tests are run as `go test -tags integration -count=1 -v ./...`. The e2e `Tiltfile` runs this as a `local_resource` depending on `hello-world`, so `tilt ci` automatically includes e2e verification.
 - A phase that adds a new user-facing workflow is not complete until the e2e suite covers that workflow.
+
+---
+
+## Component Runtime
+
+Standards that apply to every deployed component (Rust or Go). These ensure consistent operational behaviour across the platform.
+
+### Graceful Shutdown
+
+Every component must handle `SIGTERM` by stopping acceptance of new work, draining in-flight work to completion, and exiting cleanly before Kubernetes sends `SIGKILL`. A component must not rely on being force-killed to stop.
+
+- **Rust components:** install a `tokio::signal` handler; broadcast shutdown to all subsystems; await drain.
+- **Go components:** `controller-runtime` handles this via its manager lifecycle; gRPC servers use `GracefulStop()`.
+
+### Health Probes
+
+Every component must expose both `/healthz` (liveness) and `/readyz` (readiness) HTTP endpoints.
+
+- **Liveness** — the process is alive and not deadlocked. Return `200` unconditionally.
+- **Readiness** — all required dependencies are connected and the component can serve traffic. Return `503` until ready.
+
+Rust components should use the shared `platform_common::health` module.
+
+### Structured Logging
+
+All components must use structured logging with discrete severity levels.
+
+- **Rust:** `tracing` with `tracing-subscriber` and `EnvFilter` (controlled via `RUST_LOG`).
+- **Go:** controller-runtime's structured logger.
+
+Log entries must use key-value fields, not interpolated message strings. Components must log their name at startup (e.g. `tracing::info!("gateway starting")`) so they are identifiable in aggregated log streams.
+
+### No Secrets in Logs
+
+Credentials, connection strings with embedded passwords, tokens, and key material must never appear in log output at any level. Logging a struct that contains secret fields requires explicit exclusion of those fields — do not rely on the struct's default formatting.
+
+### Prometheus Metrics
+
+Every component must expose a `/metrics` endpoint in Prometheus exposition format for scraping. Use this to surface request counts, error rates, latency histograms, and component-specific activity indicators. The wp-operator already exposes metrics via controller-runtime; Rust components must add an equivalent endpoint.
+
+### Fail-Fast on Invalid Configuration
+
+All required environment variables and configuration must be validated at startup before the component enters its main loop. If configuration is missing or invalid, the component must exit immediately with a clear error message. A component must not start serving traffic with incomplete configuration.
+
+### Bounded Concurrency and Backpressure
+
+Components must cap in-flight work and propagate backpressure rather than buffering unboundedly. A traffic spike must result in rejection or throttling, not unbounded memory growth or cascading latency. The execution host's semaphore (`MAX_CONCURRENT_INVOCATIONS`) is the reference pattern.
+
+### Outbound Call Timeouts
+
+Every outbound network call (gRPC, NATS publish, HTTP, database query) must have a finite timeout. No unbounded waits. A slow dependency must not silently stall the component.
+
+### Connection Resilience
+
+Persistent connections (NATS, gRPC streams, database pools) must auto-reconnect on failure with exponential backoff. A transient infrastructure blip must not require a pod restart to recover.
 
 ---
 

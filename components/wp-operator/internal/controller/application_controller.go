@@ -82,7 +82,6 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.reconcileDelete(ctx, &app)
 	}
 
-	// Ensure the finalizer is present before doing any meaningful work.
 	if !controllerutil.ContainsFinalizer(&app, applicationFinalizer) {
 		controllerutil.AddFinalizer(&app, applicationFinalizer)
 		if err := r.Update(ctx, &app); err != nil {
@@ -106,7 +105,6 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
-	// Remove the PostgresCredential CR (and its Secret) that we own for this app.
 	if app.Spec.SQL != "" {
 		credName := postgresCredentialName(app)
 		var cred dboperator.PostgresCredential
@@ -126,7 +124,6 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	r.Store.Delete(key)
 	r.Store.BroadcastUpdate(buildDeleteUpdate(app))
 
-	// Remove all HTTP routes for this application from the gateway route store.
 	oldRoutes := r.RouteStore.Get(key)
 	if len(oldRoutes) > 0 {
 		r.RouteStore.Delete(key)
@@ -148,7 +145,6 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
-	// Check topic uniqueness across all message-triggered functions.
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
 		if fn.Trigger.Topic == "" {
@@ -177,14 +173,12 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		}
 	}
 
-	// Build FunctionConfig list for the proto payload.
 	functions := make([]*configsync.FunctionConfig, 0, len(app.Spec.Functions))
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
 		topic := internalFunctionTopic(app, fn)
 		fnCfg := &configsync.FunctionConfig{
 			Name:      fn.Name,
-			// TODO: resolve mutable OCI tags via registry; copy spec.module directly for now.
 			ModuleRef: fn.Module,
 			Topic:     &topic,
 		}
@@ -231,7 +225,6 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
 	}
 
-	// Sync HTTP routes for all HTTP-triggered functions to the gateway route store.
 	var httpRoutes []*routestore.RouteConfig
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
@@ -452,7 +445,6 @@ func findTopicOwner(ctx context.Context, c client.Client, topic string, self *wa
 		return nil, fmt.Errorf("listing applications for topic %q: %w", topic, err)
 	}
 
-	// Find the single rightful owner across all claimants (including self).
 	var owner *wasmplatformv1alpha1.Application
 	for i := range list.Items {
 		app := &list.Items[i]

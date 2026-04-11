@@ -7,6 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use platform_common::health;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
@@ -33,7 +34,7 @@ async fn main() -> Result<()> {
             "/modules/{digest}/{arch}/{version}",
             get(get_module).put(put_module),
         )
-        .route("/healthz", get(healthz_handler))
+        .route("/healthz", get(health::healthz_handler))
         .with_state(cache);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
@@ -73,6 +74,3 @@ async fn put_module(
     StatusCode::NO_CONTENT
 }
 
-async fn healthz_handler() -> &'static str {
-    "OK"
-}

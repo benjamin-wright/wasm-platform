@@ -10,10 +10,12 @@ mod oci;
 mod runtime;
 
 use anyhow::Result;
-use axum::{Router, extract::State, http::StatusCode, routing::get};
+use axum::{Router, routing::get};
 use config::AppRegistry;
 use modules::ModuleRegistry;
-use runtime::{RuntimeState, HttpRequestPayload, HttpResponsePayload, invoke_on_message, invoke_on_request};
+use platform_common::health::{self, ReadyState};
+use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
+use runtime::{RuntimeState, invoke_on_message, invoke_on_request};
 use std::{path::PathBuf, sync::Arc};
 use wasmtime::Engine;
 
@@ -29,8 +31,6 @@ async fn main() -> Result<()> {
     wasm_config.wasm_component_model(true);
     let engine = Engine::new(&wasm_config)?;
 
-    // REDIS_URL is optional — if absent, kv host functions return an error at
-    // runtime rather than preventing startup.
     let redis_client = match std::env::var("REDIS_URL") {
         Ok(url) => {
             tracing::info!(%url, "connecting to Redis");
@@ -47,8 +47,6 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(RuntimeState::new(engine.clone(), redis_client)?);
 
-    // MODULE_CACHE_ADDR is required — without a module cache the host cannot
-    // load compiled WASM artifacts for any application.
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
 
@@ -56,45 +54,29 @@ async fn main() -> Result<()> {
 
     tracing::info!("execution-host starting");
 
-    // Build the app registry and populate it with the operator's current config
-    // snapshot.  CONFIG_SYNC_ADDR is required — the host cannot serve any apps
-    // without knowing which topics to subscribe to.
     let addr = std::env::var("CONFIG_SYNC_ADDR")
         .map_err(|_| anyhow::anyhow!("CONFIG_SYNC_ADDR environment variable is required"))?;
     let host_id = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
 
-    // NATS_CREDENTIALS_PATH must point to a directory containing NATS_USERNAME,
-    // NATS_PASSWORD, NATS_HOST, and NATS_PORT files (Kubernetes secret volume
-    // mount layout).  The manager re-reads this directory on every connection
-    // attempt so that rotated credentials are picked up without pod restarts.
     let credentials_path = std::env::var("NATS_CREDENTIALS_PATH")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("NATS_CREDENTIALS_PATH environment variable is required"))?;
 
     let app_registry = AppRegistry::new();
-    // Watch channel for topic-set changes published by the config sync loop.
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
-    // Channel through which all per-topic NATS subscribers forward messages.
     let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<async_nats::Message>(256);
 
-    // Readiness state — the pod is ready only when both NATS and the config
-    // sync stream have been successfully established.
     let (nats_ready_tx, nats_ready_rx) = tokio::sync::watch::channel(false);
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
 
-    // Live NATS client watch — None while the manager is (re)connecting.
     let (client_tx, client_rx) = tokio::sync::watch::channel::<Option<async_nats::Client>>(None);
 
-    // NATS manager — connects, broadcasts the live client, and automatically
-    // reconnects (re-reading credentials from disk) on auth failures.
     tokio::spawn(nats::run_nats_manager(
         credentials_path,
         client_tx,
         nats_ready_tx,
     ));
 
-    // Config sync loop — fetches a full snapshot on startup then maintains the
-    // incremental update stream, reconnecting automatically on failure.
     tokio::spawn(config_sync::run_config_sync_loop(
         addr,
         host_id,
@@ -103,8 +85,6 @@ async fn main() -> Result<()> {
         topics_tx,
         synced_tx,
     ));
-    // Subscription manager — watches the client and topic set, maintaining one
-    // NATS subscription per live topic; re-subscribes on client replacement.
     tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx));
 
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
@@ -112,19 +92,15 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(64);
 
-    // Health-check HTTP server on port 3000.
-    // /healthz — liveness probe: always 200 while the process is alive.
-    // /readyz  — readiness probe: 200 only when NATS is connected AND the
-    //            config sync loop has received at least one full snapshot.
-    tokio::spawn(watch_readiness(
+    tokio::spawn(health::watch_readiness(
         nats_ready_rx.clone(),
         synced_rx.clone(),
         "config sync",
     ));
     let ready_state = ReadyState { nats_ready_rx, synced_rx };
     let health_app = Router::new()
-        .route("/healthz", get(healthz_handler))
-        .route("/readyz", get(readyz_handler))
+        .route("/healthz", get(health::healthz_handler))
+        .route("/readyz", get(health::readyz_handler))
         .with_state(ready_state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     let health_server = axum::serve(listener, health_app);
@@ -158,7 +134,6 @@ async fn process_nats_messages(
             Err(_) => break,
         };
 
-        // Look up which function is subscribed to this topic.
         let subject = message.subject.to_string();
         let fn_entry = match app_registry.get_by_topic(&subject) {
             Ok(Some(entry)) => entry,
@@ -172,7 +147,6 @@ async fn process_nats_messages(
             }
         };
 
-        // Retrieve the compiled module for this function.
         let component = match module_registry.get(&fn_entry.app_namespace, &fn_entry.app_name, &fn_entry.function_name) {
             Ok(Some(c)) => c,
             Ok(None) => {
@@ -284,78 +258,5 @@ async fn process_nats_messages(
     }
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
-struct ReadyState {
-    nats_ready_rx: tokio::sync::watch::Receiver<bool>,
-    synced_rx: tokio::sync::watch::Receiver<bool>,
-}
-
-async fn healthz_handler() -> &'static str {
-    tracing::trace!("healthz_handler called");
-    "OK"
-}
-
-async fn readyz_handler(
-    State(state): State<ReadyState>,
-) -> (StatusCode, &'static str) {
-    let nats_ready = *state.nats_ready_rx.borrow();
-    let synced = *state.synced_rx.borrow();
-    if nats_ready && synced {
-        (StatusCode::OK, "ready")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
-    }
-}
-
-// Watches the two readiness channels and logs whenever either component or the
-// combined ready state transitions.  Runs as a background task for the lifetime
-// of the process.
-async fn watch_readiness(
-    mut nats_ready_rx: tokio::sync::watch::Receiver<bool>,
-    mut synced_rx: tokio::sync::watch::Receiver<bool>,
-    sync_label: &'static str,
-) {
-    let mut prev_nats = *nats_ready_rx.borrow();
-    let mut prev_synced = *synced_rx.borrow();
-    let mut was_ready = prev_nats && prev_synced;
-    loop {
-        tokio::select! {
-            result = nats_ready_rx.changed() => {
-                if result.is_err() { return; }
-                let nats_ready = *nats_ready_rx.borrow_and_update();
-                if nats_ready != prev_nats {
-                    if nats_ready {
-                        tracing::info!("NATS ready");
-                    } else {
-                        tracing::warn!("NATS not ready");
-                    }
-                    prev_nats = nats_ready;
-                }
-            }
-            result = synced_rx.changed() => {
-                if result.is_err() { return; }
-                let synced = *synced_rx.borrow_and_update();
-                if synced != prev_synced {
-                    if synced {
-                        tracing::info!("{sync_label} synced");
-                    } else {
-                        tracing::warn!("{sync_label} not synced");
-                    }
-                    prev_synced = synced;
-                }
-            }
-        }
-        let is_ready = prev_nats && prev_synced;
-        if is_ready != was_ready {
-            if is_ready {
-                tracing::info!("readiness: ready");
-            } else {
-                tracing::warn!(nats_ready = prev_nats, synced = prev_synced, "readiness: not ready");
-            }
-            was_ready = is_ready;
-        }
-    }
-}
 

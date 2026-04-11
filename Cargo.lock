@@ -851,6 +851,7 @@ dependencies = [
  "axum 0.8.8",
  "futures-util",
  "oci-distribution",
+ "platform-common",
  "prost",
  "redis",
  "reqwest",
@@ -1030,6 +1031,7 @@ dependencies = [
  "async-nats",
  "axum 0.8.8",
  "futures-util",
+ "platform-common",
  "prost",
  "serde",
  "serde_json",
@@ -1724,6 +1726,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
+ "platform-common",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1934,6 +1937,18 @@ name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+
+[[package]]
+name = "platform-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "axum 0.8.8",
+ "serde",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "portable-atomic"

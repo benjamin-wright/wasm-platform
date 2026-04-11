@@ -61,7 +61,6 @@ impl AppRegistry {
             .write()
             .map_err(|_| anyhow::anyhow!("AppRegistry lock poisoned"))?;
 
-        // Build the incoming topic set and flat function entries.
         let mut incoming: HashMap<String, FunctionEntry> = HashMap::new();
         for app in &full.applications {
             for fn_cfg in &app.functions {
@@ -72,7 +71,6 @@ impl AppRegistry {
             }
         }
 
-        // Evict anything present in the current map but absent in the incoming snapshot.
         let evicted: Vec<(String, String, String)> = map
             .iter()
             .filter(|(topic, _)| !incoming.contains_key(topic.as_str()))
@@ -117,7 +115,6 @@ impl AppRegistry {
             };
 
             if update.delete {
-                // Remove all function entries belonging to this application.
                 let removed: Vec<String> = map
                     .iter()
                     .filter(|(_, e)| {
@@ -131,8 +128,6 @@ impl AppRegistry {
                     }
                 }
             } else {
-                // Remove all existing entries for this application first (handles
-                // function removal or topic changes).
                 let old_topics: Vec<String> = map
                     .iter()
                     .filter(|(_, e)| {
@@ -146,8 +141,6 @@ impl AppRegistry {
                     }
                 }
 
-                // Detect displaced entries: a different application previously held a topic
-                // that this application now claims.
                 for fn_cfg in &app.functions {
                     if let Some(topic) = &fn_cfg.topic {
                         if let Some(old) = map.get(topic.as_str()) {
@@ -164,7 +157,6 @@ impl AppRegistry {
                     }
                 }
 
-                // Insert the new function entries.
                 for fn_cfg in &app.functions {
                     if let Some(topic) = &fn_cfg.topic {
                         let entry = function_entry_from(&app, fn_cfg);

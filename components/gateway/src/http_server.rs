@@ -7,30 +7,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use serde::{Deserialize, Serialize};
+use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 
 use crate::route_table::RouteTable;
-
-// ── Platform-private HTTP payload types ───────────────────────────────────────
-// These must match the types defined in execution-host/src/runtime.rs exactly.
-// They are independently defined in each binary; both sides serialize/deserialize
-// the same JSON shape so the module never sees raw JSON.
-
-#[derive(Debug, Serialize)]
-struct HttpRequestPayload {
-    method: String,
-    path: String,
-    query: String,
-    headers: Vec<(String, String)>,
-    body: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HttpResponsePayload {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: Option<Vec<u8>>,
-}
 
 // ── Shared gateway state ──────────────────────────────────────────────────────
 
@@ -59,14 +38,12 @@ async fn handle_request(
     let path = uri.path().to_string();
     let query = uri.query().unwrap_or("").to_string();
 
-    // Extract headers — skip any whose values are not valid UTF-8.
     let headers: Vec<(String, String)> = req
         .headers()
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|v_str| (k.to_string(), v_str.to_string())))
         .collect();
 
-    // Consume and buffer the request body.
     let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -77,7 +54,6 @@ async fn handle_request(
         Some(body_bytes.to_vec())
     };
 
-    // Route lookup.
     let route_entry = match state.table.get(&path) {
         Ok(Some(e)) => e,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -114,7 +90,6 @@ async fn handle_request(
         }
     };
 
-    // Serialise the request as a platform-private JSON payload.
     let payload = HttpRequestPayload {
         method,
         path,
@@ -130,7 +105,6 @@ async fn handle_request(
         }
     };
 
-    // Publish via NATS request-reply, respecting the configured timeout.
     let response_msg = match tokio::time::timeout(
         state.timeout,
         nats.request(route_entry.nats_subject.clone(), payload_bytes.into()),
@@ -148,7 +122,6 @@ async fn handle_request(
         }
     };
 
-    // Deserialise the platform-private JSON response from the execution host.
     let http_response: HttpResponsePayload = match serde_json::from_slice(&response_msg.payload) {
         Ok(r) => r,
         Err(err) => {
@@ -157,7 +130,6 @@ async fn handle_request(
         }
     };
 
-    // Build the HTTP response.
     let status = StatusCode::from_u16(http_response.status)
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 

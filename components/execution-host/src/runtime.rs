@@ -1,10 +1,11 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use wasmtime::{
     Engine, Store,
     component::{Component, Linker, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+pub use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 
 // Bindings for `world message-application` — binary payload in/out.
 pub(crate) mod message_bindings {
@@ -20,28 +21,6 @@ mod http_bindings {
         world: "http-application",
         path: "../../framework/runtime.wit",
     });
-}
-
-// ── Platform-private HTTP payload types ───────────────────────────────────────
-// The gateway serialises incoming HTTP requests into this JSON format before
-// publishing to the app's NATS subject.  The execution host deserialises,
-// calls `on-request` with typed WIT records, and serialises the returned
-// `http-response` back to JSON for the reply.  Guest modules never see JSON.
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HttpRequestPayload {
-    pub method: String,
-    pub path: String,
-    pub query: String,
-    pub headers: Vec<(String, String)>,
-    pub body: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HttpResponsePayload {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Option<Vec<u8>>,
 }
 
 // ── Host state ────────────────────────────────────────────────────────────────

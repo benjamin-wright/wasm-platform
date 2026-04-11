@@ -12,10 +12,11 @@
 ARG WORKSPACE_DEPS_IMAGE=lukemathwalker/cargo-chef:latest-rust-1.91-slim-bookworm
 FROM ${WORKSPACE_DEPS_IMAGE} AS builder
 COPY --from=workspace Cargo.toml Cargo.lock ./
-COPY --parents --from=workspace components/*/Cargo.toml examples/*/Cargo.toml ./
-RUN find components examples -maxdepth 2 -name Cargo.toml -exec dirname {} \; \
+COPY --parents --from=workspace components/*/Cargo.toml examples/*/Cargo.toml lib/*/Cargo.toml ./
+RUN find components examples lib -maxdepth 2 -name Cargo.toml -exec dirname {} \; \
     | xargs -I{} sh -c 'mkdir -p {}/src && touch {}/src/lib.rs {}/src/main.rs'
 COPY --parents --from=workspace proto/gateway/v1/gateway.proto ./
+COPY --from=workspace lib/ ./lib/
 COPY . ./components/gateway/
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \

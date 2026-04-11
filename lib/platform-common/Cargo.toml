@@ -1,0 +1,13 @@
+[package]
+name = "platform-common"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.0"
+
+[dependencies]
+anyhow = "1.0.102"
+async-nats = "0.46.0"
+axum = "0.8.8"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.50.0", features = ["sync", "time"] }
+tracing = "0.1.44"

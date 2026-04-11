@@ -6,4 +6,5 @@ members = [
     "components/module-cache",
     "examples/hello-world",
     "examples/message-counter",
+    "lib/platform-common",
 ]

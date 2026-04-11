@@ -66,7 +66,6 @@ impl ModuleRegistry {
     ///    then store in the registry.
     pub async fn load(&self, namespace: &str, app_name: &str, fn_name: &str, module_ref: &str) -> Result<()> {
         let digest = oci::resolve_digest(module_ref).await?;
-        // Strip any "sha256:" prefix so the cache path segment is URL-safe.
         let digest_key = digest.strip_prefix("sha256:").unwrap_or(&digest);
 
         let component = if let Some(artifact) =
