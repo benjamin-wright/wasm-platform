@@ -119,6 +119,6 @@ Use `tilt-wait-for-build` (with `timeoutSeconds: 900`) to block until all builds
 | Limitation | Detail |
 |---|---|
 | No load balancer | `make cluster-up` uses `-p 80:80@loadbalancer` which fails in CI. Use the manual bootstrap above or rely on setup steps. |
-| E2e tests require port 80 | The `e2e-tests` Tilt resource hits `http://localhost/hello`. Without the LB this will time out — do not trigger e2e tests from a cloud agent session. |
+| E2e tests use port 3000 | The `e2e-tests` Tilt resource hits `http://localhost:3000/hello` via Tilt's built-in port-forward on the gateway resource — no ingress controller required. |
 | System image list is pinned | The k3s image versions in `copilot-setup-steps.yml` are pinned to k3s v1.31. If the k3s image in k3d changes, update the versions to match (`kubectl get pods -A -o jsonpath='{...image...}'` after cluster creation). |
 | `host.docker.internal` in tilt-mcp | Must be fixed manually each session (see above). |
