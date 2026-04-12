@@ -31,8 +31,14 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+var baseURL = func() string {
+	if v := os.Getenv("E2E_BASE_URL"); v != "" {
+		return v
+	}
+	return "http://localhost:3000/hello"
+}()
+
 const (
-	baseURL      = "http://localhost/hello"
 	routeTimeout = 60 * time.Second
 	pollInterval = 1 * time.Second
 )
