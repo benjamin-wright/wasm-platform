@@ -1,0 +1,149 @@
+name: "Copilot Setup Steps"
+
+# Runs automatically when this file changes so you can validate it, and
+# can be triggered manually from the Actions tab.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # Job name MUST be `copilot-setup-steps` — Copilot will not pick it up otherwise.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Tool installation ────────────────────────────────────────────────────
+
+      - name: Install k3d
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          k3d version
+
+      - name: Install Tilt
+        run: |
+          curl -fsSL https://github.com/tilt-dev/tilt/releases/download/v0.37.1/tilt.0.37.1.linux.x86_64.tar.gz \
+            -o /tmp/tilt.tar.gz
+          tar -xzf /tmp/tilt.tar.gz -C /tmp/ tilt
+          sudo mv /tmp/tilt /usr/local/bin/tilt
+          tilt version
+
+      - name: Install oras
+        run: |
+          curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz \
+            -o /tmp/oras.tar.gz
+          tar -xzf /tmp/oras.tar.gz -C /tmp/ oras
+          sudo mv /tmp/oras /usr/local/bin/oras
+          oras version
+
+      - name: Install Rust wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2
+
+      # ── Cluster creation ─────────────────────────────────────────────────────
+      #
+      # --no-lb           port 80 cannot be bound in the runner environment.
+      # --disable=...     removes Traefik, servicelb, and metrics-server.
+      #                   Disabling these three eliminates a pod-networking
+      #                   failure observed when they are present and reduces the
+      #                   number of system images that must be pre-seeded.
+
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create wasm-platform \
+            --registry-create wasm-platform-registry.localhost:0.0.0.0:5001 \
+            --kubeconfig-update-default=false \
+            --no-lb \
+            --k3s-arg "--disable=traefik,servicelb,metrics-server@server:*" \
+            --wait
+          mkdir -p ~/.scratch
+          k3d kubeconfig get wasm-platform > ~/.scratch/wasm-platform.yaml
+          echo "KUBECONFIG=$HOME/.scratch/wasm-platform.yaml" >> "$GITHUB_ENV"
+
+      # ── System image seeding ─────────────────────────────────────────────────
+      #
+      # DNS resolution for registry-1.docker.io is unreliable inside k3d
+      # containers on Azure-hosted runners (transient EAGAIN errors). Pull all
+      # required images on the host where DNS is stable, then import them
+      # directly into the cluster with k3d image import.
+      #
+      # Image versions are pinned to the k3s release bundled with k3d's default
+      # k3s image (currently v1.31). If k3d bumps its default k3s version, run
+      # `kubectl get pods -A -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}'`
+      # on a freshly created cluster and update the list below.
+
+      - name: Pre-pull k3s system images on host
+        run: |
+          docker pull rancher/mirrored-pause:3.6 &
+          docker pull rancher/mirrored-coredns-coredns:1.12.0 &
+          docker pull rancher/local-path-provisioner:v0.0.30 &
+          docker pull benwright/db-operator:v1.0.8 &
+          wait
+
+      - name: Import system images into cluster
+        run: |
+          k3d image import \
+            rancher/mirrored-pause:3.6 \
+            rancher/mirrored-coredns-coredns:1.12.0 \
+            rancher/local-path-provisioner:v0.0.30 \
+            benwright/db-operator:v1.0.8 \
+            --cluster wasm-platform
+
+      # ── Registry hostname fix ────────────────────────────────────────────────
+      #
+      # wasm-platform-registry.localhost resolves on the host (it's in the
+      # k3d Docker network) but not inside the k3d server container.  Add the
+      # registry container's IP directly to the server container's /etc/hosts.
+
+      - name: Fix registry hostname in k3d server container
+        run: |
+          REGISTRY_IP=$(docker inspect \
+            --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "k3d-wasm-platform"}}{{$v.IPAddress}}{{end}}{{end}}' \
+            wasm-platform-registry.localhost)
+          echo "Registry IP: $REGISTRY_IP"
+          docker exec -u root k3d-wasm-platform-server-0 \
+            sh -c "echo '${REGISTRY_IP} wasm-platform-registry.localhost' >> /etc/hosts"
+
+      # ── Build cache warm-up ───────────────────────────────────────────────────
+      #
+      # workspace-deps is the shared Rust dependency layer used by every
+      # component.  Building it here seeds the Docker layer cache so that
+      # subsequent `tilt up` builds skip the majority of Rust compilation.
+      # This step takes ~5-10 minutes but saves equivalent time later.
+
+      - name: Pre-warm Docker layer cache (workspace-deps)
+        run: |
+          docker build \
+            --file Dockerfile.deps \
+            --target workspace-deps \
+            --tag workspace-deps-cache:latest \
+            .
+
+      # ── Start Tilt in the background ─────────────────────────────────────────
+      #
+      # Starting Tilt here means builds begin during the agent startup window.
+      # The agent should run `tilt-wait-for-build` (timeoutSeconds: 900) before
+      # inspecting resource state.
+      #
+      # Note: the Tilt MCP container needs host.docker.internal to resolve.
+      # That fix cannot be done here (the MCP container starts after setup).
+      # See the Cloud Agent Environment section in .github/copilot-instructions.md.
+
+      - name: Start Tilt
+        run: |
+          tilt up --host 0.0.0.0 --port 10350 > /tmp/tilt.log 2>&1 &
+          echo "Tilt PID: $!"
+          sleep 10
+          curl -sf http://localhost:10350/api/view > /dev/null \
+            && echo "Tilt is responding" \
+            || echo "Tilt is still initialising (builds will continue in background)"
