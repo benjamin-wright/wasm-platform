@@ -70,6 +70,7 @@ spec:
 | `spec.env` | map[string]string | no | Environment variables injected into all functions. |
 | `spec.sql` | string | no | Logical database name. The operator creates a dedicated PG database + user and passes credentials to execution hosts via ConfigSync. |
 | `spec.keyValue` | string | no | Key-prefix namespace in the shared Redis instance. Execution hosts prepend `<namespace>/<spec.keyValue>/` to all keys. |
+| `spec.metrics` | []MetricDefinition | no | User-defined Prometheus metrics (max 50). Each metric has a `name`, `type` (`counter`/`gauge`), and optional `labels` (max 10). Names must follow `[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$` and must not start with `__`. Labels must not include `app_name` or `app_namespace` (host-injected). |
 
 **Per-function (`spec.functions[]`):**
 
@@ -82,6 +83,8 @@ spec:
 | `trigger.http.methods` | []string | no | Allowed HTTP methods. Omit to accept all. Gateway returns `405` for unlisted methods. |
 
 **Topic uniqueness:** the operator enforces cluster-wide uniqueness per topic — the Application with the oldest `creationTimestamp` owns the topic (tiebreak: lexicographically lower `namespace/name`). A blocked Application receives `Ready: False` with reason `TopicConflict`. When the owner is deleted or changes topic, blocked Applications are automatically re-evaluated.
+
+**Metric name uniqueness:** the operator enforces cluster-wide uniqueness per metric name across all Applications — same ownership rule as topics (oldest `creationTimestamp` wins, tiebreak: lexicographically lower `namespace/name`). A blocked Application receives `Ready: False` with reason `MetricConflict`. When the owner is deleted or removes the conflicting metric name, blocked Applications are automatically re-evaluated.
 
 **Internal NATS subjects:** `trigger.topic` functions get a `fn.` prefix; `trigger.http` functions get an auto-generated `http.<namespace>.<app-name>.<function-name>` subject. Both are invisible to the module author.
 
@@ -124,8 +127,9 @@ Generates: gRPC stubs → `internal/grpc/configsync/`, CRD deepcopy → `api/v1a
 
 | Condition | Description |
 |-----------|-------------|
-| `Ready` | `True` when config is pushed to all hosts. `False` while provisioning or on `TopicConflict`. |
+| `Ready` | `True` when config is pushed to all hosts. `False` while provisioning or on `TopicConflict` or `MetricConflict`. |
 | `TopicConflict` | Set when another Application owns a topic claimed by one of this app's functions. Cleared automatically on resolution. |
+| `MetricConflict` | Set when another Application owns a metric name claimed by this app. Cleared automatically on resolution. |
 
 ## TODO
 

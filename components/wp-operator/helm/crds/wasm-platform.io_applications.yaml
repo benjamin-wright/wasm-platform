@@ -136,6 +136,51 @@ spec:
                   No external provisioning required — isolation is enforced by the execution host at runtime.
                   Omit to disable KV access.
                 type: string
+              metrics:
+                description: |-
+                  Metrics is the list of user-defined Prometheus metrics declared by this Application.
+                  Names must be unique within the Application and cluster-wide; the operator enforces
+                  cluster-wide uniqueness at reconcile time (oldest Application wins).
+                items:
+                  description: |-
+                    MetricDefinition declares a single user-defined Prometheus metric.
+                    Names are globally unique — the operator enforces cluster-wide uniqueness at reconcile time.
+                  properties:
+                    labels:
+                      description: |-
+                        Labels is the list of label key names for this metric.
+                        Each key must match [a-zA-Z_][a-zA-Z0-9_]*. Max 10 entries.
+                        Must not include 'app_name' or 'app_namespace' (injected by the execution host).
+                      items:
+                        type: string
+                      maxItems: 10
+                      type: array
+                    name:
+                      description: |-
+                        Name is the Prometheus metric name. Must match [a-zA-Z_:][a-zA-Z0-9_:]*, max 64 characters.
+                        Must not start with '__' (Prometheus reserved prefix). Unique cluster-wide.
+                      pattern: ^[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$
+                      type: string
+                    type:
+                      description: Type is the Prometheus metric type.
+                      enum:
+                      - counter
+                      - gauge
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: metric name must not start with '__' (Prometheus reserved
+                      prefix)
+                    rule: '!self.name.startsWith(''__'')'
+                  - message: labels must not include 'app_name' or 'app_namespace'
+                      (host-injected labels)
+                    rule: '!has(self.labels) || !self.labels.exists(l, l == ''app_name''
+                      || l == ''app_namespace'')'
+                maxItems: 50
+                type: array
               sql:
                 description: |-
                   SQL is the logical database name exposed to all functions via the sql host import.

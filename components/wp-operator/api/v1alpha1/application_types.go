@@ -8,6 +8,39 @@ import (
 // +kubebuilder:validation:Enum=GET;HEAD;POST;PUT;DELETE;PATCH;OPTIONS
 type HttpMethod string
 
+// MetricType is the Prometheus metric type for a user-defined metric.
+// +kubebuilder:validation:Enum=counter;gauge
+type MetricType string
+
+const (
+	MetricTypeCounter MetricType = "counter"
+	MetricTypeGauge   MetricType = "gauge"
+)
+
+// MetricDefinition declares a single user-defined Prometheus metric.
+// Names are globally unique — the operator enforces cluster-wide uniqueness at reconcile time.
+//
+// +kubebuilder:validation:XValidation:rule="!self.name.startsWith('__')",message="metric name must not start with '__' (Prometheus reserved prefix)"
+// +kubebuilder:validation:XValidation:rule="!has(self.labels) || !self.labels.exists(l, l == 'app_name' || l == 'app_namespace')",message="labels must not include 'app_name' or 'app_namespace' (host-injected labels)"
+type MetricDefinition struct {
+	// Name is the Prometheus metric name. Must match [a-zA-Z_:][a-zA-Z0-9_:]*, max 64 characters.
+	// Must not start with '__' (Prometheus reserved prefix). Unique cluster-wide.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$`
+	Name string `json:"name"`
+
+	// Type is the Prometheus metric type.
+	// +kubebuilder:validation:Required
+	Type MetricType `json:"type"`
+
+	// Labels is the list of label key names for this metric.
+	// Each key must match [a-zA-Z_][a-zA-Z0-9_]*. Max 10 entries.
+	// Must not include 'app_name' or 'app_namespace' (injected by the execution host).
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	Labels []string `json:"labels,omitempty"`
+}
+
 // HttpTrigger defines the HTTP trigger configuration for a function.
 type HttpTrigger struct {
 	// Path is the URL path the gateway exposes for this function.
@@ -94,6 +127,13 @@ type ApplicationSpec struct {
 	// Omit to disable KV access.
 	// +optional
 	KeyValue string `json:"keyValue,omitempty"`
+
+	// Metrics is the list of user-defined Prometheus metrics declared by this Application.
+	// Names must be unique within the Application and cluster-wide; the operator enforces
+	// cluster-wide uniqueness at reconcile time (oldest Application wins).
+	// +optional
+	// +kubebuilder:validation:MaxItems=50
+	Metrics []MetricDefinition `json:"metrics,omitempty"`
 }
 
 // ApplicationStatus defines the observed state of an Application.
