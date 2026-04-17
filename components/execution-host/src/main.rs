@@ -3,6 +3,8 @@ mod config_sync;
 mod host_kv;
 mod host_log;
 mod host_messaging;
+mod host_metrics;
+mod metrics;
 mod module_cache;
 mod modules;
 mod nats;
@@ -10,8 +12,9 @@ mod oci;
 mod runtime;
 
 use anyhow::Result;
-use axum::{Router, routing::get};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use config::AppRegistry;
+use metrics::MetricsRegistry;
 use modules::ModuleRegistry;
 use platform_common::health::{self, ReadyState};
 use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
@@ -45,12 +48,14 @@ async fn main() -> Result<()> {
         }
     };
 
-    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client)?);
+    let metrics_registry = MetricsRegistry::new()?;
+
+    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone())?);
 
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
 
-    let module_registry = ModuleRegistry::new(cache_addr, engine);
+    let module_registry = ModuleRegistry::new(cache_addr, engine, metrics_registry.clone());
 
     tracing::info!("execution-host starting");
 
@@ -94,6 +99,7 @@ async fn main() -> Result<()> {
         host_id,
         app_registry.clone(),
         module_registry.clone(),
+        metrics_registry.clone(),
         topics_tx,
         synced_tx,
     ));
@@ -117,11 +123,17 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     let health_server = axum::serve(listener, health_app);
 
+    let metrics_app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(metrics_registry.clone());
+    let metrics_listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
+    tokio::spawn(axum::serve(metrics_listener, metrics_app));
+
     tokio::select! {
         result = health_server => {
             result?;
         }
-        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, client_rx, shutdown_tx.subscribe(), max_concurrent) => {}
+        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, metrics_registry, client_rx, shutdown_tx.subscribe(), max_concurrent) => {}
     }
 
     Ok(())
@@ -137,6 +149,7 @@ async fn process_nats_messages(
     state: Arc<RuntimeState>,
     app_registry: AppRegistry,
     module_registry: ModuleRegistry,
+    metrics_registry: MetricsRegistry,
     client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     max_concurrent: usize,
@@ -204,6 +217,12 @@ async fn process_nats_messages(
         let function_name = fn_entry.function_name.clone();
         let world_type = fn_entry.world_type;
         let nats_for_invoke = client_snapshot.clone();
+
+        let trigger = match world_type {
+            config::configsync::WorldType::Http => "http",
+            config::configsync::WorldType::Message => "topic",
+        };
+        metrics_registry.record_event(&app_name, &app_namespace, trigger);
 
         join_set.spawn(async move {
             let _permit = permit;
@@ -288,5 +307,24 @@ async fn process_nats_messages(
     tracing::info!("drain complete; exiting");
 }
 
+// ── Metrics endpoint ──────────────────────────────────────────────────────────
+
+async fn metrics_handler(State(registry): State<MetricsRegistry>) -> impl IntoResponse {
+    match registry.render() {
+        Ok(body) => (
+            axum::http::StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!("failed to render metrics: {err:#}");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
 
 

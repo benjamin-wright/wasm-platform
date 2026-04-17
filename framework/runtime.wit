@@ -33,6 +33,11 @@ interface messaging {
     send: func(topic: string, payload: list<u8>) -> result<_, string>;
 }
 
+interface metrics {
+    counter-increment: func(name: string, labels: list<tuple<string, string>>) -> result<_, string>;
+    gauge-set: func(name: string, value: f64, labels: list<tuple<string, string>>) -> result<_, string>;
+}
+
 interface http-types {
     record http-request {
         method: string,
@@ -54,6 +59,7 @@ world message-application {
     import sql;
     import kv;
     import messaging;
+    import metrics;
     export on-message: func(payload: list<u8>) -> result<option<list<u8>>, string>;
 }
 
@@ -62,6 +68,7 @@ world http-application {
     import sql;
     import kv;
     import messaging;
+    import metrics;
     use http-types.{http-request, http-response};
     export on-request: func(request: http-request) -> result<http-response, string>;
 }

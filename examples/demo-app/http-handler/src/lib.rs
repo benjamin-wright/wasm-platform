@@ -3,7 +3,7 @@ wit_bindgen::generate!({
     path: "../../../framework/runtime.wit",
 });
 
-use framework::runtime::{kv, log, messaging};
+use framework::runtime::{kv, log, messaging, metrics};
 
 struct HttpHandler;
 
@@ -16,6 +16,11 @@ impl Guest for HttpHandler {
 
         let requests = kv::incr("counters", "requests")?;
         let messages = kv::get_int("counters", "messages")?.unwrap_or(0);
+
+        metrics::counter_increment(
+            "demo_requests_total",
+            &[("handler".to_string(), "http".to_string())],
+        )?;
 
         let body = format!(
             "hello from wasm: method={} path={} requests={} messages={}",

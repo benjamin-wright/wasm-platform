@@ -5,6 +5,8 @@ use wasmtime::{
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+use crate::metrics::MetricsRegistry;
+
 pub use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 
 // Bindings for `world message-application` — binary payload in/out.
@@ -35,6 +37,7 @@ pub(crate) struct HostState {
     pub(crate) app_name: String,
     pub(crate) app_namespace: String,
     pub(crate) function_name: String,
+    pub(crate) metrics_registry: MetricsRegistry,
 }
 
 impl WasiView for HostState {
@@ -55,10 +58,11 @@ pub struct RuntimeState {
     pub engine: Engine,
     linker: Linker<HostState>,
     pub redis_client: Option<redis::Client>,
+    pub metrics_registry: MetricsRegistry,
 }
 
 impl RuntimeState {
-    pub fn new(engine: Engine, redis_client: Option<redis::Client>) -> Result<Self> {
+    pub fn new(engine: Engine, redis_client: Option<redis::Client>, metrics_registry: MetricsRegistry) -> Result<Self> {
         let mut linker: Linker<HostState> = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
         message_bindings::framework::runtime::kv::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
@@ -73,7 +77,11 @@ impl RuntimeState {
             &mut linker,
             |h: &mut HostState| h,
         )?;
-        Ok(Self { engine, linker, redis_client })
+        message_bindings::framework::runtime::metrics::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
+            &mut linker,
+            |h: &mut HostState| h,
+        )?;
+        Ok(Self { engine, linker, redis_client, metrics_registry })
     }
 }
 
@@ -98,6 +106,7 @@ pub fn invoke_on_message(
         app_name,
         app_namespace,
         function_name,
+        metrics_registry: state.metrics_registry.clone(),
     };
     let mut store = Store::new(&state.engine, host_state);
 
@@ -128,9 +137,10 @@ pub fn invoke_on_request(
         kv_prefix,
         redis_client: state.redis_client.clone(),
         nats_client,
-        app_name,
-        app_namespace,
+        app_name: app_name.clone(),
+        app_namespace: app_namespace.clone(),
         function_name,
+        metrics_registry: state.metrics_registry.clone(),
     };
     let mut store = Store::new(&state.engine, host_state);
 
@@ -151,11 +161,14 @@ pub fn invoke_on_request(
     let result = app.call_on_request(&mut store, &wit_request)?;
 
     match result {
-        Ok(wit_response) => Ok(HttpResponsePayload {
-            status: wit_response.status,
-            headers: wit_response.headers,
-            body: wit_response.body,
-        }),
+        Ok(wit_response) => {
+            state.metrics_registry.record_http_request(&app_name, &app_namespace, wit_response.status);
+            Ok(HttpResponsePayload {
+                status: wit_response.status,
+                headers: wit_response.headers,
+                body: wit_response.body,
+            })
+        }
         Err(msg) => Err(anyhow::anyhow!("component returned error: {msg}")),
     }
 }

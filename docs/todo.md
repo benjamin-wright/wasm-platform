@@ -12,16 +12,29 @@ Each phase is independently launchable in its own agent session. The permanent r
 
 ### Phase 8.6: Host Metrics Implementation
 
-Pre-register user-defined metrics on config arrival, wire the `counter-increment` WIT host function, instrument the execution host with built-in platform metrics, and expose `/metrics`.
+Wire the `metrics` WIT host interface, pre-register user-defined metrics on config arrival, instrument the execution host with platform-level metrics, and expose `/metrics` on a dedicated port.
 
 #### Design
 
-Two classes of metrics are exposed on `/metrics`:
+Two classes of metrics are exposed on `/metrics` (port 9090):
 
-- **User-defined** — registered from `spec.metrics` on config arrival; incremented by guests via the `counter-increment` WIT host function. Labelled with `app_name` and `app_namespace` (host-injected).
+- **User-defined** — registered from `spec.metrics` on config arrival using the `prometheus` crate (`CounterVec`/`GaugeVec`). Guests mutate them via the `metrics` WIT interface (`counter-increment`, `gauge-set`). The host injects `app_name` and `app_namespace` labels on every series; guests supply any additional labels declared in the spec.
 - **Platform** — fixed metrics emitted by the host itself, independent of any Application spec. Labelled with `app_name` and `app_namespace` where per-app attribution is meaningful.
 
-Platform metrics to implement:
+**Invalid calls** (unknown metric name or mismatched label keys) are silently dropped from the guest's perspective, but the host logs an error with the app, function, metric name, and supplied labels, and increments `wasm_dropped_metric_calls_total`.
+
+**WIT interface addition** (`framework/runtime.wit`):
+
+```wit
+interface metrics {
+    counter-increment: func(name: string, labels: list<tuple<string, string>>) -> result<_, string>;
+    gauge-set: func(name: string, value: f64, labels: list<tuple<string, string>>) -> result<_, string>;
+}
+```
+
+Both worlds (`message-application`, `http-application`) import `metrics`.
+
+**Platform metrics:**
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
@@ -31,24 +44,31 @@ Platform metrics to implement:
 | `wasm_kv_reads_total` | Counter | `app_name`, `app_namespace` | `kv.get` host function calls. |
 | `wasm_kv_writes_total` | Counter | `app_name`, `app_namespace` | `kv.set` / `kv.delete` host function calls. |
 | `wasm_http_requests_received_total` | Counter | `app_name`, `app_namespace`, `status` (HTTP status code) | HTTP invocations completed; status is the guest's response code. |
+| `wasm_dropped_metric_calls_total` | Counter | `app_name`, `app_namespace`, `reason` (`unknown_metric`/`wrong_labels`) | Guest metric calls dropped due to schema violations. |
 
 #### Tasks
 
-- [ ] Expose a `/metrics` Prometheus endpoint.
-- [ ] Host pre-registers `CounterVec`/`GaugeVec` from received metric definitions on config arrival; add `app_name` and `app_namespace` labels to all user-defined series.
-- [ ] Implement the `counter-increment` WIT host function — validate call against declared schema, drop calls with unexpected label keys.
-- [ ] Register and increment `wasm_module_compilations_total` on each AOT compilation attempt.
-- [ ] Register and increment `wasm_events_received_total` on each invocation dispatch (HTTP and topic triggers).
-- [ ] Register and increment `wasm_messages_sent_total` on each `messaging.send` host function call.
-- [ ] Register and increment `wasm_kv_reads_total` and `wasm_kv_writes_total` on the corresponding KV host function calls.
-- [ ] Register and increment `wasm_http_requests_received_total` (labelled by guest response status) on each completed HTTP invocation.
-- [ ] Add a `message-application` example module that increments a user-defined counter on each invocation.
-- [ ] Add an e2e test that hits `/metrics` after invoking the example module and asserts both the user-defined counter and at least one platform counter (`wasm_events_received_total`) have advanced.
+- [x] Implement `buildMetricDefs` in the operator and remove the `TODO(phase-8.5)` comment so `cfg.Metrics` is populated in `ApplicationConfig`.
+- [x] Add the `metrics` interface (`counter-increment`, `gauge-set`) to `framework/runtime.wit`; import it in both worlds.
+- [x] Add `prometheus` crate to `execution-host`. Create a `MetricsRegistry` that holds a shared Prometheus registry and owns all `CounterVec`/`GaugeVec` handles.
+- [x] Expose `/metrics` on port 9090 (separate from the health port 3000); add the port to the Helm chart service and deployment.
+- [x] Add a Tilt port-forward for port 9090 on the `execution-host` resource so e2e tests can reach `/metrics` from the host machine.
+- [x] On config arrival, pre-register user-defined `CounterVec`/`GaugeVec` from `MetricDefinition`; inject `app_name` and `app_namespace` as additional label dimensions.
+- [x] Implement `counter-increment` WIT host function — validate name and label keys against the registered schema; on mismatch, log error and increment `wasm_dropped_metric_calls_total` with the appropriate `reason`.
+- [x] Implement `gauge-set` WIT host function — same validation and drop semantics as `counter-increment`.
+- [x] Register and increment `wasm_module_compilations_total` on each AOT compilation attempt.
+- [x] Register and increment `wasm_events_received_total` on each invocation dispatch (HTTP and topic triggers).
+- [x] Register and increment `wasm_messages_sent_total` on each `messaging.send` host function call.
+- [x] Register and increment `wasm_kv_reads_total` and `wasm_kv_writes_total` on the corresponding KV host function calls.
+- [x] Register and increment `wasm_http_requests_received_total` (labelled by guest response status) on each completed HTTP invocation.
+- [x] Update `demo-app` http-handler to call `counter-increment` for the existing `demo_requests_total` metric (already declared in `k8s/application.yaml`).
+- [x] Add an e2e test that invokes the demo-app endpoint then scrapes `localhost:9090/metrics` and asserts `demo_requests_total` and `wasm_events_received_total` have both advanced.
+- [x] Update `execution-host/README.md` to document the `/metrics` endpoint, port, and the two classes of metrics.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 #### Verification
 
-New e2e test passes demonstrating guest → host metric increment and platform metric emission. `e2e-tests` resource passes.
+New e2e test passes: guest-incremented `demo_requests_total` and platform `wasm_events_received_total` are visible and non-zero at `/metrics`. `e2e-tests` resource passes.
 
 ---
 

@@ -221,3 +221,66 @@ func TestKVIsolation(t *testing.T) {
 	g.Expect(counterAfter2).To(Equal(counterBaseline2+1),
 		"counter-app KV store must be isolated from demo-app")
 }
+
+const metricsURL = "http://localhost:9090/metrics"
+
+// TestMetrics invokes the demo-app endpoint then scrapes the execution-host
+// /metrics endpoint and asserts that both the user-defined counter
+// (demo_requests_total) and the platform counter (wasm_events_received_total)
+// are non-zero.
+func TestMetrics(t *testing.T) {
+	g := NewWithT(t)
+
+	// Trigger at least one request so both counters advance.
+	_, err := fetch(baseURL)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Eventually(func() (float64, error) {
+		return scrapeMetricSum(metricsURL, "demo_requests_total")
+	}, routeTimeout, pollInterval).Should(BeNumerically(">", 0),
+		"demo_requests_total should be non-zero after invoking demo-app")
+
+	g.Eventually(func() (float64, error) {
+		return scrapeMetricSum(metricsURL, "wasm_events_received_total")
+	}, routeTimeout, pollInterval).Should(BeNumerically(">", 0),
+		"wasm_events_received_total should be non-zero after invoking demo-app")
+}
+
+// scrapeMetricSum fetches the Prometheus text output at url and returns the sum
+// of all sample values whose metric base name equals name.
+func scrapeMetricSum(url, name string) (float64, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("reading body: %w", err)
+	}
+	var total float64
+	for _, line := range strings.Split(string(bodyBytes), "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		// Lines: name{labels} value or name value
+		metricPart, rest, found := strings.Cut(line, " ")
+		if !found {
+			continue
+		}
+		baseName, _, _ := strings.Cut(metricPart, "{")
+		if baseName != name {
+			continue
+		}
+		valueStr := strings.Fields(rest)[0]
+		v, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil {
+			continue
+		}
+		total += v
+	}
+	return total, nil
+}
