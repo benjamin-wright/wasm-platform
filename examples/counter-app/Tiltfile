@@ -1,0 +1,32 @@
+def counter_app(namespace, resource_deps=[]):
+    k8s_kind('Application',
+             image_json_path = '{.spec.functions[*].module}',
+             pod_readiness = 'ignore')
+
+    custom_build(
+        'counter-app-http',
+        command = (
+            'cargo build --manifest-path examples/counter-app/http-handler/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --locked &&' +
+            ' oras push $EXPECTED_REF' +
+            ' target/wasm32-wasip2/release/counter_app_http_handler.wasm' +
+            ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/counter-app/http-handler/src',
+            'examples/counter-app/http-handler/Cargo.toml',
+            'Cargo.toml',
+            'Cargo.lock',
+            'framework/runtime.wit',
+        ],
+        skips_local_docker = True,
+    )
+
+    k8s_yaml('examples/counter-app/k8s/application.yaml')
+
+    k8s_resource(
+        'counter-app',
+        resource_deps = ['module-cache', 'wp-operator'] + resource_deps,
+        labels = ['example'],
+    )

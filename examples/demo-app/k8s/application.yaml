@@ -5,6 +5,11 @@ metadata:
   namespace: examples
 spec:
   keyValue: demo-app
+  metrics:
+    - name: demo_requests_total
+      type: counter
+      labels:
+        - handler
   functions:
     - name: http-handler
       module: demo-app-http

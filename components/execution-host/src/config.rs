@@ -12,7 +12,7 @@ pub mod configsync {
 pub use configsync::{AppUpdate, ApplicationConfig, FullConfig};
 
 /// A flattened view of a single deployable function, combining both application-level
-/// (shared env, sql, key_value) and function-level (module_ref, world_type, topic)
+/// (shared env, sql, key_value, metrics) and function-level (module_ref, world_type, topic)
 /// fields.  The registry maps each NATS subject (topic) to one FunctionEntry so that
 /// message dispatch is a single O(1) map lookup.
 #[derive(Clone, Debug)]
@@ -27,6 +27,8 @@ pub struct FunctionEntry {
     pub env: HashMap<String, String>,
     pub sql: Option<configsync::SqlConfig>,
     pub key_value: Option<configsync::KeyValueConfig>,
+    /// User-defined Prometheus metrics declared by the application.
+    pub metrics: Vec<configsync::MetricDefinition>,
 }
 
 /// The result of applying a config update.
@@ -63,6 +65,15 @@ impl AppRegistry {
 
         let mut incoming: HashMap<String, FunctionEntry> = HashMap::new();
         for app in &full.applications {
+            let metric_count = app.metrics.len();
+            if metric_count > 0 {
+                tracing::info!(
+                    app_name = %app.name,
+                    namespace = %app.namespace,
+                    metric_count,
+                    "received metric definitions",
+                );
+            }
             for fn_cfg in &app.functions {
                 if let Some(topic) = &fn_cfg.topic {
                     let entry = function_entry_from(app, fn_cfg);
@@ -128,6 +139,15 @@ impl AppRegistry {
                     }
                 }
             } else {
+                let metric_count = app.metrics.len();
+                if metric_count > 0 {
+                    tracing::info!(
+                        app_name = %app.name,
+                        namespace = %app.namespace,
+                        metric_count,
+                        "received metric definitions",
+                    );
+                }
                 let old_topics: Vec<String> = map
                     .iter()
                     .filter(|(_, e)| {
@@ -211,5 +231,6 @@ fn function_entry_from(
         env: app.env.clone(),
         sql: app.sql.clone(),
         key_value: app.key_value.clone(),
+        metrics: app.metrics.clone(),
     }
 }

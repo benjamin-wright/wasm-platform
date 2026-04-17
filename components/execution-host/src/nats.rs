@@ -15,6 +15,7 @@ pub async fn manage_nats_subscriptions(
     mut client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
     mut topics_rx: tokio::sync::watch::Receiver<Vec<String>>,
     msg_tx: tokio::sync::mpsc::Sender<async_nats::Message>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     // Keys are topic strings; values are oneshot senders used to cancel the
     // per-topic forwarding task (dropping the sender signals the task to stop,
@@ -30,6 +31,11 @@ pub async fn manage_nats_subscriptions(
             result = topics_rx.changed() => {
                 if result.is_err() { break; }
                 false
+            }
+            _ = shutdown_rx.recv() => {
+                tracing::info!("shutdown signal received; clearing NATS subscriptions");
+                subscriptions.clear();
+                return;
             }
         };
 

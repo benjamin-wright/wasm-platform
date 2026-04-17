@@ -10,106 +10,45 @@ Each phase is independently launchable in its own agent session. The permanent r
 
 ---
 
-### Phase 8.1: Design Record (no code)
+### Phase 8.6: Host Metrics Implementation
 
-Make and record all design decisions required before CRD and proto changes can begin. No implementation. This phase is complete when all decisions are captured in `docs/architecture.md`.
-
-#### Tasks
-
-- [x] Draft multi-function Application CRD schema — `spec.functions` list with per-function `name`, `module` (OCI ref), and `trigger` (http or topic); assess backwards compatibility with existing single-module CRs.
-- [x] Draft `spec.metrics` schema — `{name, type, labels}` list; decide validation rules (name format, max label count, reserved names).
-- [x] Decide operator uniqueness enforcement strategy for metric names — admission webhook vs. reconciler-time validation; assess failure UX for each.
-- [x] Decide migrations contract — how the migrations image is referenced in the spec, what the operator does on first apply vs. upgrade, and what the failure/rollback model is.
-- [x] Assess config-sync proto changes needed — per-function module refs and triggers grouped by application, plus `MetricDefinition` repeated field.
-- [x] Record all decisions in a Decisions block in `docs/architecture.md`.
-
-#### Verification
-
-PR review only — no functional change, so e2e verification is not a signal here.
-
----
-
-### Phase 8.2: Multi-Function CRD + Config-Sync Proto ✅
-
-Migrate the Application CRD from a single-module shape to a `spec.functions` list and propagate that shape through the config-sync proto, operator, and execution host.
-
-#### Tasks
-
-- [x] Update Go `Application` CRD types to `spec.functions` (list of `{name, module, trigger}`).
-- [x] Regenerate CRD manifests (`make generate` in `components/wp-operator/`).
-- [x] Update config-sync proto: per-function module refs and triggers grouped under an application context.
-- [x] Update operator reconciler to push per-function config using the new proto shape.
-- [x] Update execution host to receive and index per-function config.
-- [x] Migrate the hello-world Application CR to the new `spec.functions` single-entry shape.
-- [x] Migrate the message-counter Application CR to the new `spec.functions` single-entry shape.
-- [x] Update wp-operator README to document new CRD shape.
-
-#### Verification
-
-`e2e-tests` resource passes — hello-world continues to work under the new CRD shape.
-
----
-
-### Phase 8.3: Graceful Shutdown & NATS Drain
-
-Implement true graceful drain on SIGTERM so that in-flight WASM invocations complete before the process exits, and the pod leaves its NATS queue groups cleanly before Kubernetes sends SIGKILL.
+Pre-register user-defined metrics on config arrival, wire the `counter-increment` WIT host function, instrument the execution host with built-in platform metrics, and expose `/metrics`.
 
 #### Design
 
-- A `shutdown` broadcast channel fires when SIGTERM is received.
-- `manage_nats_subscriptions` listens for shutdown and drops all subscriptions (sends UNSUB to NATS, removes the replica from every queue group).
-- Dropping the subscriptions closes the per-topic forwarding tasks, which close the senders on `msg_tx`, which causes `msg_rx` in `process_nats_messages` to drain and return naturally.
-- Replace the fire-and-forget `tokio::spawn` per invocation with a `tokio::task::JoinSet` so the message loop can `.join_all()` after `msg_rx` closes.
-- `main` awaits the drain to complete, then exits — Kubernetes sees a clean process exit within the termination grace period.
+Two classes of metrics are exposed on `/metrics`:
+
+- **User-defined** — registered from `spec.metrics` on config arrival; incremented by guests via the `counter-increment` WIT host function. Labelled with `app_name` and `app_namespace` (host-injected).
+- **Platform** — fixed metrics emitted by the host itself, independent of any Application spec. Labelled with `app_name` and `app_namespace` where per-app attribution is meaningful.
+
+Platform metrics to implement:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `wasm_module_compilations_total` | Counter | `app_name`, `app_namespace`, `result` (`ok`/`err`) | AOT compilations triggered on config arrival. |
+| `wasm_events_received_total` | Counter | `app_name`, `app_namespace`, `trigger` (`http`/`topic`) | Invocation requests received (before dispatch). |
+| `wasm_messages_sent_total` | Counter | `app_name`, `app_namespace` | `messaging.send` host function calls. |
+| `wasm_kv_reads_total` | Counter | `app_name`, `app_namespace` | `kv.get` host function calls. |
+| `wasm_kv_writes_total` | Counter | `app_name`, `app_namespace` | `kv.set` / `kv.delete` host function calls. |
+| `wasm_http_requests_received_total` | Counter | `app_name`, `app_namespace`, `status` (HTTP status code) | HTTP invocations completed; status is the guest's response code. |
 
 #### Tasks
 
-- [ ] Add a `shutdown` `tokio::sync::broadcast` channel in `main.rs` and install a SIGTERM handler that sends on it.
-- [ ] Pass the shutdown receiver into `manage_nats_subscriptions`; on signal, clear all subscriptions and return.
-- [ ] Pass the shutdown receiver into `process_nats_messages`; switch per-invocation spawns to a `JoinSet`; after `msg_rx` closes, `join_all()` the set before returning.
-- [ ] Update `main`'s `tokio::select!` to await the `process_nats_messages` future (which now drains and returns) rather than racing it against the health server.
-- [ ] Update `components/execution-host/README.md` to document the shutdown sequence.
-
-#### Verification
-
-`e2e-tests` resource passes. Manual test: trigger an invocation, immediately `kubectl delete pod` the execution-host pod, confirm the invocation completes and the counter increments exactly once with no duplicate.
-
----
-
-### Phase 8.5: Metrics CRD Schema + Operator Validation
-
-Add `spec.metrics` to the Application CR, enforce cluster-wide uniqueness in the operator, and forward metric definitions to execution hosts (no host registration yet).
-
-#### Tasks
-
-- [ ] Add `spec.metrics` (`{name, type, labels}`) to the Application CRD types and regenerate manifests.
-- [ ] Add operator reconciler logic to reject Applications whose metric names collide with an existing Application's names (reconciler-time validation, per the Phase 8.1 decision).
-- [ ] Extend config-sync proto with a `MetricDefinition` repeated field.
-- [ ] Update operator to include metric definitions in the config pushed to execution hosts.
-- [ ] Update execution host to receive metric definitions — store in config and log on receipt; do **not** register them yet.
-- [ ] Add a `spec.metrics` entry to the hello-world Application CR.
-
-#### Verification
-
-Deploying two Applications that claim the same metric name causes the second one to enter an error status. `e2e-tests` resource passes.
-
----
-
-### Phase 8.6: Host Metrics Implementation
-
-Pre-register metrics on config arrival, wire the `counter-increment` WIT host function, and expose `/metrics`.
-
-#### Tasks
-
-- [ ] Host pre-registers `CounterVec`/`GaugeVec` from received metric definitions on config arrival.
+- [ ] Expose a `/metrics` Prometheus endpoint.
+- [ ] Host pre-registers `CounterVec`/`GaugeVec` from received metric definitions on config arrival; add `app_name` and `app_namespace` labels to all user-defined series.
 - [ ] Implement the `counter-increment` WIT host function — validate call against declared schema, drop calls with unexpected label keys.
-- [ ] Expose a `/metrics` Prometheus endpoint; add `app_name` and `app_namespace` labels to all series.
-- [ ] Add a `message-application` example module that increments a counter on each invocation.
-- [ ] Add an e2e test that hits `/metrics` after invoking the example module and asserts the counter has advanced.
+- [ ] Register and increment `wasm_module_compilations_total` on each AOT compilation attempt.
+- [ ] Register and increment `wasm_events_received_total` on each invocation dispatch (HTTP and topic triggers).
+- [ ] Register and increment `wasm_messages_sent_total` on each `messaging.send` host function call.
+- [ ] Register and increment `wasm_kv_reads_total` and `wasm_kv_writes_total` on the corresponding KV host function calls.
+- [ ] Register and increment `wasm_http_requests_received_total` (labelled by guest response status) on each completed HTTP invocation.
+- [ ] Add a `message-application` example module that increments a user-defined counter on each invocation.
+- [ ] Add an e2e test that hits `/metrics` after invoking the example module and asserts both the user-defined counter and at least one platform counter (`wasm_events_received_total`) have advanced.
+- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 #### Verification
 
-New e2e test passes demonstrating guest → host metric increment. `e2e-tests` resource passes.
+New e2e test passes demonstrating guest → host metric increment and platform metric emission. `e2e-tests` resource passes.
 
 ---
 

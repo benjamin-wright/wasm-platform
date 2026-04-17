@@ -48,3 +48,13 @@ Guest modules emit log entries via the `log` WIT interface (`log::emit(level, me
 | `REDIS_URL` | Shared Redis URL (e.g. `redis://redis:6379`). |
 | `MAX_CONCURRENT_INVOCATIONS` | Concurrency limit per host (default `64`). |
 | `HOSTNAME` | Used as `host_id` in gRPC (injected by downward API). |
+
+## Graceful Shutdown
+
+On `SIGTERM` the execution host performs an ordered drain before exiting:
+
+1. A shutdown signal is broadcast to all subsystems.
+2. `manage_nats_subscriptions` receives the signal, drops all queue subscriptions (sending `UNSUB` to NATS and removing the pod from every queue group), and returns.
+3. The per-topic forwarding tasks exit and drop their senders on the message channel.
+4. `process_nats_messages` sees the channel close, waits for all in-flight WASM invocations to complete via a `JoinSet`, then returns.
+5. `main` exits cleanly within Kubernetes' termination grace period.

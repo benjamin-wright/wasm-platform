@@ -74,6 +74,7 @@ message ApplicationConfig {
   map<string, string> env = 4;
   optional SqlConfig sql = 5;
   optional KeyValueConfig key_value = 6;
+  repeated MetricDefinition metrics = 7;
 }
 
 // FunctionConfig describes a single deployable function within an Application.
@@ -100,4 +101,19 @@ message KeyValueConfig {
 message HttpConfig {
   string path = 1;
   repeated string methods = 2;
+}
+
+// MetricType is the Prometheus metric type for a user-defined metric.
+enum MetricType {
+  METRIC_TYPE_COUNTER = 0;
+  METRIC_TYPE_GAUGE = 1;
+}
+
+// MetricDefinition describes a single user-defined Prometheus metric declared
+// by an Application.  The execution host pre-registers the metric on config
+// arrival; guests increment it via the counter-increment WIT host function.
+message MetricDefinition {
+  string name = 1;
+  MetricType type = 2;
+  repeated string label_keys = 3;
 }

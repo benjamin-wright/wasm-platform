@@ -7,7 +7,7 @@ def demo_app(namespace, resource_deps=[]):
         'demo-app-http',
         command = (
             'cargo build --manifest-path examples/demo-app/http-handler/Cargo.toml' +
-            ' --target wasm32-wasip2 --release &&' +
+            ' --target wasm32-wasip2 --release --locked &&' +
             ' oras push $EXPECTED_REF' +
             ' target/wasm32-wasip2/release/http_handler.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
@@ -15,6 +15,9 @@ def demo_app(namespace, resource_deps=[]):
         ),
         deps = [
             'examples/demo-app/http-handler/src',
+            'examples/demo-app/http-handler/Cargo.toml',
+            'Cargo.toml',
+            'Cargo.lock',
             'framework/runtime.wit',
         ],
         skips_local_docker = True,
@@ -24,7 +27,7 @@ def demo_app(namespace, resource_deps=[]):
         'demo-app-messages',
         command = (
             'cargo build --manifest-path examples/demo-app/message-handler/Cargo.toml' +
-            ' --target wasm32-wasip2 --release &&' +
+            ' --target wasm32-wasip2 --release --locked &&' +
             ' oras push $EXPECTED_REF' +
             ' target/wasm32-wasip2/release/message_handler.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
@@ -32,6 +35,9 @@ def demo_app(namespace, resource_deps=[]):
         ),
         deps = [
             'examples/demo-app/message-handler/src',
+            'examples/demo-app/message-handler/Cargo.toml',
+            'Cargo.toml',
+            'Cargo.lock',
             'framework/runtime.wit',
         ],
         skips_local_docker = True,

@@ -71,6 +71,18 @@ async fn main() -> Result<()> {
 
     let (client_tx, client_rx) = tokio::sync::watch::channel::<Option<async_nats::Client>>(None);
 
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+    let shutdown_tx_for_sigterm = shutdown_tx.clone();
+    tokio::spawn(async move {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+        tracing::info!("received SIGTERM; initiating graceful shutdown");
+        let _ = shutdown_tx_for_sigterm.send(());
+    });
+
     tokio::spawn(nats::run_nats_manager(
         credentials_path,
         client_tx,
@@ -85,7 +97,7 @@ async fn main() -> Result<()> {
         topics_tx,
         synced_tx,
     ));
-    tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx));
+    tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx, shutdown_tx.subscribe()));
 
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
         .ok()
@@ -109,7 +121,7 @@ async fn main() -> Result<()> {
         result = health_server => {
             result?;
         }
-        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, client_rx, max_concurrent) => {}
+        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, client_rx, shutdown_tx.subscribe(), max_concurrent) => {}
     }
 
     Ok(())
@@ -118,17 +130,31 @@ async fn main() -> Result<()> {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // Receives NATS messages from all per-topic subscribers and dispatches them
-// concurrently up to max_concurrent in-flight invocations.
+// concurrently up to max_concurrent in-flight invocations.  On shutdown, drains
+// all in-flight tasks before returning.
 async fn process_nats_messages(
     mut msg_rx: tokio::sync::mpsc::Receiver<async_nats::Message>,
     state: Arc<RuntimeState>,
     app_registry: AppRegistry,
     module_registry: ModuleRegistry,
     client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     max_concurrent: usize,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-    while let Some(message) = msg_rx.recv().await {
+    let mut join_set = tokio::task::JoinSet::new();
+
+    loop {
+        let message = tokio::select! {
+            msg = msg_rx.recv() => {
+                match msg {
+                    Some(m) => m,
+                    None => break,
+                }
+            }
+            _ = shutdown_rx.recv() => break,
+        };
+
         let permit = match Arc::clone(&semaphore).acquire_owned().await {
             Ok(p) => p,
             Err(_) => break,
@@ -179,7 +205,7 @@ async fn process_nats_messages(
         let world_type = fn_entry.world_type;
         let nats_for_invoke = client_snapshot.clone();
 
-        tokio::spawn(async move {
+        join_set.spawn(async move {
             let _permit = permit;
             let reply = message.reply.clone();
             let payload = message.payload.to_vec();
@@ -256,6 +282,10 @@ async fn process_nats_messages(
             }
         });
     }
+
+    tracing::info!("message channel closed; draining in-flight invocations");
+    join_set.join_all().await;
+    tracing::info!("drain complete; exiting");
 }
 
 
