@@ -64,7 +64,7 @@ All interaction with an external system (database, message broker, HTTP service)
 
 A phase or feature is complete when all of the following are true:
 
-- Implementation tasks are finished and `tilt ci` exits 0.
+- Implementation tasks are finished and the `e2e-tests` Tilt resource passes (triggered via the Tilt MCP server).
 - Documentation (`README.md`, architecture docs) reflects any new or changed behaviour.
 - End-to-end tests (`tests/e2e/`) cover new user-facing workflows. If a feature changes what a user can observe through the platform's external interfaces, the test suite must verify it.
 
@@ -74,7 +74,7 @@ End-to-end tests live in `tests/e2e/` as a Go module with a `//go:build integrat
 
 - The permanent test fixture is the hello-world Application CR (HTTP trigger, KV counter). It must remain deployed and passing at all times. Phase-specific fixtures may be added alongside it but must not break it.
 - Traefik `Ingress` routes `localhost:80` to the gateway (no TLS; host is configurable via the gateway Helm chart).
-- Tests are run as `go test -tags integration -count=1 -v ./...`. The e2e `Tiltfile` runs this as a `local_resource` depending on `hello-world`, so `tilt ci` automatically includes e2e verification.
+- Tests are run as `go test -tags integration -count=1 -v ./...`, wired as the `e2e-tests` local resource in Tilt depending on `demo-app`. Trigger this resource and verify it passes using the Tilt MCP server.
 - A phase that adds a new user-facing workflow is not complete until the e2e suite covers that workflow.
 
 ---

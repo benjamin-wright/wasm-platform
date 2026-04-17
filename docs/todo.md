@@ -6,7 +6,7 @@ Active implementation plan for the wasm-platform project.
 
 ## Execution Host: Align Implementation with README Spec
 
-Each phase is independently launchable in its own agent session. The permanent regression guard throughout is the hello-world e2e fixture (HTTP trigger, KV counter) — it must pass at every phase boundary. After every phase, `tilt ci` must exit 0.
+Each phase is independently launchable in its own agent session. The permanent regression guard throughout is the hello-world e2e fixture (HTTP trigger, KV counter) — it must pass at every phase boundary. After every phase, the `e2e-tests` resource must pass (trigger via the Tilt MCP server).
 
 ---
 
@@ -25,7 +25,7 @@ Make and record all design decisions required before CRD and proto changes can b
 
 #### Verification
 
-PR review only — no functional change, so `tilt ci` is not a signal here.
+PR review only — no functional change, so e2e verification is not a signal here.
 
 ---
 
@@ -46,7 +46,7 @@ Migrate the Application CRD from a single-module shape to a `spec.functions` lis
 
 #### Verification
 
-`tilt ci` passes — hello-world continues to work under the new CRD shape.
+`e2e-tests` resource passes — hello-world continues to work under the new CRD shape.
 
 ---
 
@@ -72,7 +72,7 @@ Implement true graceful drain on SIGTERM so that in-flight WASM invocations comp
 
 #### Verification
 
-`tilt ci` passes. Manual test: trigger an invocation, immediately `kubectl delete pod` the execution-host pod, confirm the invocation completes and the counter increments exactly once with no duplicate.
+`e2e-tests` resource passes. Manual test: trigger an invocation, immediately `kubectl delete pod` the execution-host pod, confirm the invocation completes and the counter increments exactly once with no duplicate.
 
 ---
 
@@ -91,7 +91,7 @@ Add `spec.metrics` to the Application CR, enforce cluster-wide uniqueness in the
 
 #### Verification
 
-Deploying two Applications that claim the same metric name causes the second one to enter an error status. `tilt ci` passes.
+Deploying two Applications that claim the same metric name causes the second one to enter an error status. `e2e-tests` resource passes.
 
 ---
 
@@ -109,7 +109,7 @@ Pre-register metrics on config arrival, wire the `counter-increment` WIT host fu
 
 #### Verification
 
-New e2e test passes demonstrating guest → host metric increment. `tilt ci` passes.
+New e2e test passes demonstrating guest → host metric increment. `e2e-tests` resource passes.
 
 ---
 
@@ -126,7 +126,7 @@ Implement the `sql` WIT interface host functions backed by a per-app PostgreSQL 
 
 #### Verification
 
-New e2e test passes. `tilt ci` passes. hello-world e2e test is unaffected.
+New e2e test passes. `e2e-tests` resource passes. hello-world e2e test is unaffected.
 
 ---
 
@@ -143,7 +143,7 @@ Add migrations support to the operator: create a Job on Application create/upgra
 
 #### Verification
 
-e2e test exercises the full migrations-then-activate flow. `tilt ci` passes.
+e2e test exercises the full migrations-then-activate flow. `e2e-tests` resource passes.
 
 ---
 
@@ -159,7 +159,7 @@ Add engine-level resource limits for CPU (fuel) and memory.
 
 #### Verification
 
-Unit tests pass. `tilt ci` passes.
+Unit tests pass. `e2e-tests` resource passes.
 
 ---
 
@@ -174,7 +174,7 @@ Add a per-invocation wall-clock timeout to cover host calls that fuel metering d
 
 #### Verification
 
-Unit test passes. `tilt ci` passes.
+Unit test passes. `e2e-tests` resource passes.
 
 ---
 
@@ -194,7 +194,7 @@ Documentation-only pass to bring all READMEs and docs into sync with the current
 
 #### Verification
 
-`tilt ci` passes. PR is reviewable as a docs-only change.
+`e2e-tests` resource passes. PR is reviewable as a docs-only change.
 
 ---
 
