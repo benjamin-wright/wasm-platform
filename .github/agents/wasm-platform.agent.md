@@ -30,6 +30,7 @@ When in doubt, ask. Batch questions — ask everything you need in one go.
 - **Respect component boundaries.** Components own their own concerns. Do not reach across boundaries.
 - **No new patterns without checking sibling code.** Follow existing module layout, error handling, and naming conventions.
 - **Confirm before running formatters/linters** (`cargo fmt`, `cargo clippy`, `go vet`).
+- **Use Tilt for build feedback, not local build commands.** Tilt watches source files and rebuilds automatically. After making a code change, use the Tilt MCP (`mcp_tilt_wait-for-build` or `mcp_tilt_get-resource`) to confirm the affected resource builds successfully — do not run `cargo build`, `go build`, or equivalent in the terminal.
 
 ## Managing `docs/todo.md`
 
@@ -59,4 +60,5 @@ The todo must only contain active and upcoming work.
 - **Rust:** inline `#[cfg(test)]` modules or `tests/` integration test directories within each component.
 - **Go (wp-operator):** table-driven tests following sibling controller patterns.
 - **User-facing changes:** review `tests/e2e/` and determine whether existing tests cover the new workflow. Add or update e2e tests before the phase is complete.
+- **Build checking:** after each code change, call `mcp_tilt_wait-for-build` to confirm all resources rebuild cleanly before moving to the next task. Check `mcp_tilt_get-resource-logs` on the affected resource if the build fails.
 - **Verification:** trigger the `e2e-tests` resource via the Tilt MCP server after every phase. A phase is not complete until that resource passes.
