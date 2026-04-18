@@ -17,6 +17,7 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let result: redis::RedisResult<Option<Vec<u8>>> = conn.get(&full_key);
+        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
         result.map_err(|e| e.to_string())
     }
 
@@ -35,6 +36,7 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let result: redis::RedisResult<()> = conn.set(&full_key, value);
+        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
         result.map_err(|e| e.to_string())
     }
 
@@ -52,6 +54,7 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let count: redis::RedisResult<i64> = conn.del(&full_key);
+        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
         count.map(|n| n > 0).map_err(|e| e.to_string())
     }
 
@@ -69,6 +72,7 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let result: redis::RedisResult<Option<i64>> = conn.get(&full_key);
+        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
         result.map_err(|e| e.to_string())
     }
 
@@ -87,6 +91,7 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let result: redis::RedisResult<()> = conn.set(&full_key, value);
+        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
         result.map_err(|e| e.to_string())
     }
 
@@ -104,6 +109,8 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let result: redis::RedisResult<i64> = conn.incr(&full_key, 1);
+        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
+        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
         result.map_err(|e| e.to_string())
     }
 
@@ -121,6 +128,9 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
             Err(e) => return Err(format!("Redis connection failed: {e}")),
         };
         let result: redis::RedisResult<i64> = conn.decr(&full_key, 1);
+        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
+        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
         result.map_err(|e| e.to_string())
     }
 }
+

@@ -49,6 +49,28 @@ Guest modules emit log entries via the `log` WIT interface (`log::emit(level, me
 | `MAX_CONCURRENT_INVOCATIONS` | Concurrency limit per host (default `64`). |
 | `HOSTNAME` | Used as `host_id` in gRPC (injected by downward API). |
 
+## Metrics
+
+The execution host exposes a Prometheus-compatible `/metrics` endpoint on **port 9090**.
+
+Two classes of metrics are served:
+
+**User-defined** — registered from `spec.metrics` on config arrival.  Guests call `counter-increment` or `gauge-set` via the `metrics` WIT interface.  The host injects `app_name` and `app_namespace` labels on every series; guests supply any additional labels declared in the spec.
+
+**Platform** — emitted by the host itself, independent of any Application spec.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `wasm_host_module_compilations_total` | Counter | `app_name`, `app_namespace`, `result` (`ok`/`err`) |
+| `wasm_host_events_received_total` | Counter | `app_name`, `app_namespace`, `trigger` (`http`/`topic`) |
+| `wasm_host_messages_sent_total` | Counter | `app_name`, `app_namespace` |
+| `wasm_host_kv_reads_total` | Counter | `app_name`, `app_namespace` |
+| `wasm_host_kv_writes_total` | Counter | `app_name`, `app_namespace` |
+| `wasm_host_http_requests_received_total` | Counter | `app_name`, `app_namespace`, `status` |
+| `wasm_host_dropped_metric_calls_total` | Counter | `app_name`, `app_namespace`, `reason` (`unknown_metric`/`wrong_labels`) |
+
+Invalid guest metric calls (unknown name or mismatched label keys) are silently dropped and logged at error level; `wasm_host_dropped_metric_calls_total` is incremented with the appropriate `reason`.
+
 ## Graceful Shutdown
 
 On `SIGTERM` the execution host performs an ordered drain before exiting:

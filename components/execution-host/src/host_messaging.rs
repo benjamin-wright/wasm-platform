@@ -7,8 +7,13 @@ impl message_bindings::framework::runtime::messaging::Host for HostState {
         };
         let subject = format!("fn.{topic}");
         // We are inside spawn_blocking, so a Tokio runtime handle is available.
-        tokio::runtime::Handle::current()
+        let result = tokio::runtime::Handle::current()
             .block_on(client.publish(subject, payload.into()))
-            .map_err(|e| format!("NATS publish failed: {e}"))
+            .map_err(|e| format!("NATS publish failed: {e}"));
+        if result.is_ok() {
+            self.metrics_registry
+                .record_message_sent(&self.app_name, &self.app_namespace);
+        }
+        result
     }
 }

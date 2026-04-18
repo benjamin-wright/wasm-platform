@@ -29,6 +29,6 @@ def execution_host(namespace, resource_deps=[]):
         image_deps = [IMAGE_REF],
         image_keys = [('image.repository', 'image.tag')],
         labels = ['platform'],
-        port_forwards=['3001:3000'],
+        port_forwards=['3001:3000', '9090:9090'],
         resource_deps=resource_deps,
     )

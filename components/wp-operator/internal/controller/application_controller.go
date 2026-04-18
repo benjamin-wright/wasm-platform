@@ -229,9 +229,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		Functions: functions,
 		Env:       app.Spec.Env,
 	}
-	// TODO(phase-8.5): populate cfg.Metrics once `make generate-proto` regenerates
-	// configsync.pb.go with MetricDefinition and ApplicationConfig.Metrics.
-	// cfg.Metrics = buildMetricDefs(app.Spec.Metrics)
+	cfg.Metrics = buildMetricDefs(app.Spec.Metrics)
 
 	if app.Spec.SQL != "" {
 		sqlCfg, requeue, err := r.reconcileSQLBinding(ctx, app)
@@ -678,6 +676,23 @@ func buildRouteUpsertUpdate(cfgs []*routestore.RouteConfig) *routestore.RouteUpd
 		Updates:   updates,
 		Timestamp: now,
 	}
+}
+
+func buildMetricDefs(metrics []wasmplatformv1alpha1.MetricDefinition) []*configsync.MetricDefinition {
+	defs := make([]*configsync.MetricDefinition, len(metrics))
+	for i := range metrics {
+		m := &metrics[i]
+		mt := configsync.MetricType_METRIC_TYPE_COUNTER
+		if m.Type == wasmplatformv1alpha1.MetricTypeGauge {
+			mt = configsync.MetricType_METRIC_TYPE_GAUGE
+		}
+		defs[i] = &configsync.MetricDefinition{
+			Name:      m.Name,
+			Type:      mt,
+			LabelKeys: m.Labels,
+		}
+	}
+	return defs
 }
 
 func buildRouteDeleteUpdate(cfgs []*routestore.RouteConfig) *routestore.RouteUpdateBatch {

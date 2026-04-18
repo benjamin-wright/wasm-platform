@@ -7,6 +7,7 @@ use crate::{
         AppRegistry,
         configsync::{FullConfigRequest, IncrementalUpdateAck, config_sync_client::ConfigSyncClient},
     },
+    metrics::MetricsRegistry,
     modules::ModuleRegistry,
 };
 
@@ -19,12 +20,13 @@ pub async fn run_config_sync_loop(
     host_id: String,
     registry: AppRegistry,
     modules: ModuleRegistry,
+    metrics: MetricsRegistry,
     topics_tx: tokio::sync::watch::Sender<Vec<String>>,
     synced_tx: tokio::sync::watch::Sender<bool>,
 ) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_config_sync(&addr, &host_id, &registry, &modules, &topics_tx, &synced_tx).await {
+        match run_config_sync(&addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx).await {
             Ok(()) => {
                 tracing::warn!("config sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
@@ -46,10 +48,14 @@ async fn run_config_sync(
     host_id: &str,
     registry: &AppRegistry,
     modules: &ModuleRegistry,
+    metrics: &MetricsRegistry,
     topics_tx: &tokio::sync::watch::Sender<Vec<String>>,
     synced_tx: &tokio::sync::watch::Sender<bool>,
 ) -> Result<()> {
     fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules).await?;
+    if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
+        tracing::warn!("failed to sync user metrics after full config: {e:#}");
+    }
     topics_tx.send(registry.topics()?).ok();
     let _ = synced_tx.send(true);
 
@@ -96,6 +102,9 @@ async fn run_config_sync(
             let version = incremental.version.clone();
             let update_count = incremental.updates.len();
             let (to_load, to_evict) = registry.apply_incremental(incremental.updates)?;
+            if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
+                tracing::warn!("failed to sync user metrics after incremental config: {e:#}");
+            }
             topics_tx.send(registry.topics()?).ok();
             tracing::debug!(version, update_count, "incremental config applied");
 

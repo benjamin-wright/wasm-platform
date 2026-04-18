@@ -212,6 +212,28 @@ impl AppRegistry {
             .map_err(|_| anyhow::anyhow!("AppRegistry lock poisoned"))?;
         Ok(map.get(topic).cloned())
     }
+
+    /// Returns the metric definitions for each unique application currently in the registry.
+    ///
+    /// Each application may have multiple function entries (all sharing the same `metrics`
+    /// list), so the result is deduplicated by `(namespace, app_name)`.
+    pub fn all_app_metric_defs(
+        &self,
+    ) -> Result<Vec<(String, String, Vec<configsync::MetricDefinition>)>> {
+        let map = self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("AppRegistry lock poisoned"))?;
+        let mut seen: HashMap<(String, String), Vec<configsync::MetricDefinition>> = HashMap::new();
+        for entry in map.values() {
+            let key = (entry.app_namespace.clone(), entry.app_name.clone());
+            seen.entry(key).or_insert_with(|| entry.metrics.clone());
+        }
+        Ok(seen
+            .into_iter()
+            .map(|((ns, name), defs)| (ns, name, defs))
+            .collect())
+    }
 }
 
 // Constructs a FunctionEntry by combining an ApplicationConfig and a FunctionConfig.

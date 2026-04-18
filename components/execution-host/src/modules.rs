@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use wasmtime::{Engine, component::Component};
 
-use crate::{module_cache::ModuleCacheClient, oci};
+use crate::{metrics::MetricsRegistry, module_cache::ModuleCacheClient, oci};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -33,14 +33,16 @@ pub struct ModuleRegistry {
     inner: Arc<RwLock<HashMap<(String, String, String), Arc<Component>>>>,
     cache: Arc<ModuleCacheClient>,
     engine: Engine,
+    metrics: MetricsRegistry,
 }
 
 impl ModuleRegistry {
-    pub fn new(cache_base_url: String, engine: Engine) -> Self {
+    pub fn new(cache_base_url: String, engine: Engine, metrics: MetricsRegistry) -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
             cache: Arc::new(ModuleCacheClient::new(cache_base_url)),
             engine,
+            metrics,
         }
     }
 
@@ -91,19 +93,27 @@ impl ModuleRegistry {
                 "cache miss — pulling and compiling module"
             );
             let wasm = oci::pull_wasm_bytes(module_ref).await?;
-            let compiled = self.engine.precompile_component(&wasm)?;
+            match self.engine.precompile_component(&wasm) {
+                Ok(compiled) => {
+                    self.metrics.record_compilation(app_name, namespace, "ok");
 
-            if let Err(err) = self
-                .cache
-                .put(digest_key, ARCH, WASMTIME_VERSION, compiled.clone())
-                .await
-            {
-                // A failed cache write is non-fatal; we can still run.
-                tracing::warn!("failed to push compiled module to cache: {err:#}");
+                    if let Err(err) = self
+                        .cache
+                        .put(digest_key, ARCH, WASMTIME_VERSION, compiled.clone())
+                        .await
+                    {
+                        // A failed cache write is non-fatal; we can still run.
+                        tracing::warn!("failed to push compiled module to cache: {err:#}");
+                    }
+
+                    // Safety: same as above — just compiled with this engine.
+                    unsafe { Component::deserialize(&self.engine, &compiled)? }
+                }
+                Err(err) => {
+                    self.metrics.record_compilation(app_name, namespace, "err");
+                    return Err(err.into());
+                }
             }
-
-            // Safety: same as above — just compiled with this engine.
-            unsafe { Component::deserialize(&self.engine, &compiled)? }
         };
 
         let mut map = self
