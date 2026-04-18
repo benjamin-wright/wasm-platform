@@ -133,15 +133,8 @@ func configFromEnv() controller.Config {
 		pgCredNS = podNS
 	}
 
-	redisSecretNS := os.Getenv("REDIS_SECRET_NAMESPACE")
-	if redisSecretNS == "" {
-		redisSecretNS = podNS
-	}
-
 	return controller.Config{
 		PostgresDatabaseName:        os.Getenv("POSTGRES_DATABASE_NAME"),
 		PostgresCredentialNamespace: pgCredNS,
-		RedisSecretName:             os.Getenv("REDIS_SECRET_NAME"),
-		RedisSecretNamespace:        redisSecretNS,
 	}
 }

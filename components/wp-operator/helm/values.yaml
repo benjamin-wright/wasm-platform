@@ -23,9 +23,3 @@ databases:
   # postgresDatabaseName is the name of the PostgresDatabase CR that
   # PostgresCredential CRs will reference.
   postgresDatabaseName: ""
-  # redisSecretName is the name of the Secret holding Red credentials for the
-  # wp-operator user provisioned by the wp-databases chart.
-  redisSecretName: "wp-operator-redis-credentials"
-  # redisSecretNamespace overrides the namespace for the Redis Secret.
-  # Defaults to the operator's own namespace (POD_NAMESPACE) when empty.
-  redisSecretNamespace: ""

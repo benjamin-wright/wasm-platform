@@ -5,13 +5,12 @@ use crate::runtime::{HostState, message_bindings};
 impl message_bindings::framework::runtime::kv::Host for HostState {
     fn get(
         &mut self,
-        store: String,
         key: String,
     ) -> Result<Option<Vec<u8>>, String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),
@@ -23,14 +22,13 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
 
     fn set(
         &mut self,
-        store: String,
         key: String,
         value: Vec<u8>,
     ) -> Result<(), String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),
@@ -42,13 +40,12 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
 
     fn delete(
         &mut self,
-        store: String,
         key: String,
     ) -> Result<bool, String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),
@@ -60,13 +57,12 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
 
     fn get_int(
         &mut self,
-        store: String,
         key: String,
     ) -> Result<Option<i64>, String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),
@@ -78,14 +74,13 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
 
     fn set_int(
         &mut self,
-        store: String,
         key: String,
         value: i64,
     ) -> Result<(), String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),
@@ -97,13 +92,12 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
 
     fn incr(
         &mut self,
-        store: String,
         key: String,
     ) -> Result<i64, String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),
@@ -116,13 +110,12 @@ impl message_bindings::framework::runtime::kv::Host for HostState {
 
     fn decr(
         &mut self,
-        store: String,
         key: String,
     ) -> Result<i64, String> {
         let Some(ref client) = self.redis_client else {
             return Err("KV host function unavailable: REDIS_URL not configured".to_string());
         };
-        let full_key = format!("{}/{}/{}", self.kv_prefix, store, key);
+        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
         let mut conn = match client.get_connection() {
             Ok(c) => c,
             Err(e) => return Err(format!("Redis connection failed: {e}")),

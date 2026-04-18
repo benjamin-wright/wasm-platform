@@ -46,12 +46,6 @@ type Config struct {
 	// PostgresCredentialNamespace is the namespace in which PostgresCredential
 	// CRs and their resulting Secrets are created. Defaults to POD_NAMESPACE.
 	PostgresCredentialNamespace string
-	// RedisSecretName is the name of the Secret holding Redis credentials for
-	// the wp-operator user provisioned by the wp-databases chart.
-	RedisSecretName string
-	// RedisSecretNamespace is the namespace containing the Redis Secret.
-	// Defaults to POD_NAMESPACE.
-	RedisSecretNamespace string
 }
 
 // ApplicationReconciler reconciles Application resources.
@@ -243,14 +237,6 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		cfg.Sql = sqlCfg
 	}
 
-	if app.Spec.KeyValue != "" {
-		kvCfg, err := r.reconcileKVBinding(ctx, app)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		cfg.KeyValue = kvCfg
-	}
-
 	if r.Store.Set(key, cfg) {
 		r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
 	}
@@ -324,31 +310,6 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 		DatabaseName:  app.Spec.SQL,
 		ConnectionUrl: connURL,
 	}, false, nil
-}
-
-// reconcileKVBinding reads the wp-operator Redis credentials Secret provisioned
-// by the wp-databases chart and returns a KeyValueConfig.
-func (r *ApplicationReconciler) reconcileKVBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) (*configsync.KeyValueConfig, error) {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: r.Config.RedisSecretNamespace,
-		Name:      r.Config.RedisSecretName,
-	}, &secret); err != nil {
-		return nil, fmt.Errorf("getting Redis credentials Secret %q: %w", r.Config.RedisSecretName, err)
-	}
-
-	username := string(secret.Data["REDIS_USERNAME"])
-	password := string(secret.Data["REDIS_PASSWORD"])
-	host := string(secret.Data["REDIS_HOST"])
-	port := string(secret.Data["REDIS_PORT"])
-	connURL := fmt.Sprintf("redis://%s:%s@%s:%s", username, password, host, port)
-
-	return &configsync.KeyValueConfig{
-		// Prefix namespaces keys as <namespace>/<spec.keyValue>/ to prevent
-		// conflicts between applications in different namespaces.
-		Prefix:        fmt.Sprintf("%s/%s/", app.Namespace, app.Spec.KeyValue),
-		ConnectionUrl: connURL,
-	}, nil
 }
 
 // SetupWithManager registers the ApplicationReconciler with the controller manager.

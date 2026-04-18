@@ -11,7 +11,7 @@ impl Guest for HttpHandler {
     fn on_request(_request: HttpRequest) -> Result<HttpResponse, String> {
         log::emit(log::Level::Info, "handling request");
 
-        let requests = kv::incr("counters", "requests")?;
+        let requests = kv::incr("requests")?;
 
         let body = format!("counter-app: requests={}", requests);
         Ok(HttpResponse {

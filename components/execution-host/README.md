@@ -29,7 +29,7 @@ Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURR
 ## Data Isolation
 
 - **PostgreSQL** — per-app connection pools keyed by `(database_name, username)`, lazily initialized. Connection strings are built from the shared `PG_HOST`/`PG_PORT` combined with per-app credentials from `SqlConfig` in the config stream.
-- **Redis** — single multiplexed connection to the shared instance. Keys are transparently prefixed with `<namespace>/<spec.keyValue>/`. Apps sharing a `spec.keyValue` within the same namespace intentionally share key-space.
+- **Redis** — single multiplexed connection to the shared instance. Keys are transparently prefixed with `<namespace>/<app>/` (derived automatically from the application identity — no CRD field required). The `store` parameter has been dropped from the `kv` WIT interface; apps that need sub-namespacing can prefix their own keys.
 - **NATS** — each app is bound to its own subject. The `messaging` host function prefixes the caller-supplied topic with `fn.` and publishes to that subject; modules can send to any platform topic, not only their own.
 
 ## Logging

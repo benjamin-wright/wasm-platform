@@ -121,13 +121,6 @@ type ApplicationSpec struct {
 	// +optional
 	SQL string `json:"sql,omitempty"`
 
-	// KeyValue is the key prefix for all functions' key-value namespace.
-	// Keys written by functions are namespaced by <namespace>/<prefix>/ to prevent conflicts.
-	// No external provisioning required — isolation is enforced by the execution host at runtime.
-	// Omit to disable KV access.
-	// +optional
-	KeyValue string `json:"keyValue,omitempty"`
-
 	// Metrics is the list of user-defined Prometheus metrics declared by this Application.
 	// Names must be unique within the Application and cluster-wide; the operator enforces
 	// cluster-wide uniqueness at reconcile time (oldest Application wins).

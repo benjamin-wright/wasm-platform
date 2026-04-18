@@ -26,7 +26,6 @@ pub struct FunctionEntry {
     /// Application-level shared config.
     pub env: HashMap<String, String>,
     pub sql: Option<configsync::SqlConfig>,
-    pub key_value: Option<configsync::KeyValueConfig>,
     /// User-defined Prometheus metrics declared by the application.
     pub metrics: Vec<configsync::MetricDefinition>,
 }
@@ -252,7 +251,6 @@ fn function_entry_from(
         http_config: fn_cfg.http_config.clone(),
         env: app.env.clone(),
         sql: app.sql.clone(),
-        key_value: app.key_value.clone(),
         metrics: app.metrics.clone(),
     }
 }

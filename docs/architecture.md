@@ -68,10 +68,10 @@ Three shared backing stores, all provisioned by the **[db-operator](https://gith
 | Store | Isolation Model |
 |---|---|
 | **PostgreSQL** | Per-app logical database + dedicated user, created by the wp-operator. |
-| **Redis** | Single shared instance. Per-app key-prefix isolation (`<namespace>/<spec.keyValue>/`). |
+| **Redis** | Single shared instance. Per-app key-prefix isolation (`<namespace>/<app>/`), assigned automatically — no CRD field required. |
 | **NATS** | Single shared instance. Per-app subject isolation (operator-assigned prefixed topics). |
 
-**Connection model:** execution hosts are configured once with shared infrastructure coordinates (`PG_HOST`/`PG_PORT`, `REDIS_URL` env vars). The `ConfigSync` service carries only the per-app delta: database name, username, and password for PostgreSQL; key prefix for Redis. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **single multiplexed connection** — isolation is purely by key prefix.
+**Connection model:** execution hosts are configured once with shared infrastructure coordinates (`PG_HOST`/`PG_PORT`, `REDIS_URL` env vars). The `ConfigSync` service carries only the per-app delta: database name, username, and password for PostgreSQL. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **single multiplexed connection** — isolation is purely by key prefix, automatically derived from `(namespace, app)`.
 
 The host functions translate WIT `sql.query` / `kv.get` calls into actual client calls, keeping WASM modules ignorant of the backing store.
 
@@ -130,7 +130,7 @@ Scaling targets concurrent invocations (not CPU/memory). A single execution host
 │  └─────────────────────┘      │  │  Per-app DB + user            │ │ │
 │                                │  ├──────────────────────────────┤ │ │
 │  ┌─────────────────────┐      │  │  Redis (single shared)       │ │ │
-│  │  Trigger Layer       │      │  │  Key-prefix isolation        │ │ │
+│  │  Trigger Layer       │      │  │  Auto <ns>/<app>/ prefix     │ │ │
 │  │  • Cron scheduler    │      │  ├──────────────────────────────┤ │ │
 │  └─────────────────────┘      │  │  NATS (single shared)        │ │ │
 │                                │  │  Subject-prefix isolation    │ │ │

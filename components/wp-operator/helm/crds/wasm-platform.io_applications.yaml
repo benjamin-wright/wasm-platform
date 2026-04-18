@@ -129,13 +129,6 @@ spec:
                   type: object
                 minItems: 1
                 type: array
-              keyValue:
-                description: |-
-                  KeyValue is the key prefix for all functions' key-value namespace.
-                  Keys written by functions are namespaced by <namespace>/<prefix>/ to prevent conflicts.
-                  No external provisioning required — isolation is enforced by the execution host at runtime.
-                  Omit to disable KV access.
-                type: string
               metrics:
                 description: |-
                   Metrics is the list of user-defined Prometheus metrics declared by this Application.

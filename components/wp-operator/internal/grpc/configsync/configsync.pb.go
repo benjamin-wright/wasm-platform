@@ -519,7 +519,7 @@ func (x *AppUpdate) GetDelete() bool {
 }
 
 // ApplicationConfig carries all per-application configuration pushed to
-// execution hosts.  Application-level fields (env, sql, key_value) are shared
+// execution hosts.  Application-level fields (env, sql) are shared
 // across all functions in the application.  Per-function configuration lives in
 // the functions list.
 type ApplicationConfig struct {
@@ -529,7 +529,6 @@ type ApplicationConfig struct {
 	Functions     []*FunctionConfig      `protobuf:"bytes,3,rep,name=functions,proto3" json:"functions,omitempty"`
 	Env           map[string]string      `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Sql           *SqlConfig             `protobuf:"bytes,5,opt,name=sql,proto3,oneof" json:"sql,omitempty"`
-	KeyValue      *KeyValueConfig        `protobuf:"bytes,6,opt,name=key_value,json=keyValue,proto3,oneof" json:"key_value,omitempty"`
 	Metrics       []*MetricDefinition    `protobuf:"bytes,7,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -596,13 +595,6 @@ func (x *ApplicationConfig) GetEnv() map[string]string {
 func (x *ApplicationConfig) GetSql() *SqlConfig {
 	if x != nil {
 		return x.Sql
-	}
-	return nil
-}
-
-func (x *ApplicationConfig) GetKeyValue() *KeyValueConfig {
-	if x != nil {
-		return x.KeyValue
 	}
 	return nil
 }
@@ -745,58 +737,6 @@ func (x *SqlConfig) GetConnectionUrl() string {
 	return ""
 }
 
-type KeyValueConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Prefix        string                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
-	ConnectionUrl string                 `protobuf:"bytes,2,opt,name=connection_url,json=connectionUrl,proto3" json:"connection_url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *KeyValueConfig) Reset() {
-	*x = KeyValueConfig{}
-	mi := &file_configsync_v1_configsync_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *KeyValueConfig) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*KeyValueConfig) ProtoMessage() {}
-
-func (x *KeyValueConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_configsync_v1_configsync_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use KeyValueConfig.ProtoReflect.Descriptor instead.
-func (*KeyValueConfig) Descriptor() ([]byte, []int) {
-	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *KeyValueConfig) GetPrefix() string {
-	if x != nil {
-		return x.Prefix
-	}
-	return ""
-}
-
-func (x *KeyValueConfig) GetConnectionUrl() string {
-	if x != nil {
-		return x.ConnectionUrl
-	}
-	return ""
-}
-
 type HttpConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
@@ -807,7 +747,7 @@ type HttpConfig struct {
 
 func (x *HttpConfig) Reset() {
 	*x = HttpConfig{}
-	mi := &file_configsync_v1_configsync_proto_msgTypes[11]
+	mi := &file_configsync_v1_configsync_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -819,7 +759,7 @@ func (x *HttpConfig) String() string {
 func (*HttpConfig) ProtoMessage() {}
 
 func (x *HttpConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_configsync_v1_configsync_proto_msgTypes[11]
+	mi := &file_configsync_v1_configsync_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -832,7 +772,7 @@ func (x *HttpConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HttpConfig.ProtoReflect.Descriptor instead.
 func (*HttpConfig) Descriptor() ([]byte, []int) {
-	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{11}
+	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *HttpConfig) GetPath() string {
@@ -863,7 +803,7 @@ type MetricDefinition struct {
 
 func (x *MetricDefinition) Reset() {
 	*x = MetricDefinition{}
-	mi := &file_configsync_v1_configsync_proto_msgTypes[12]
+	mi := &file_configsync_v1_configsync_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -875,7 +815,7 @@ func (x *MetricDefinition) String() string {
 func (*MetricDefinition) ProtoMessage() {}
 
 func (x *MetricDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_configsync_v1_configsync_proto_msgTypes[12]
+	mi := &file_configsync_v1_configsync_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -888,7 +828,7 @@ func (x *MetricDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricDefinition.ProtoReflect.Descriptor instead.
 func (*MetricDefinition) Descriptor() ([]byte, []int) {
-	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{12}
+	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MetricDefinition) GetName() string {
@@ -945,21 +885,18 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\tAppUpdate\x12?\n" +
 	"\n" +
 	"app_config\x18\x01 \x01(\v2 .configsync.v1.ApplicationConfigR\tappConfig\x12\x16\n" +
-	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xba\x03\n" +
+	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xeb\x02\n" +
 	"\x11ApplicationConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12;\n" +
 	"\tfunctions\x18\x03 \x03(\v2\x1d.configsync.v1.FunctionConfigR\tfunctions\x12;\n" +
 	"\x03env\x18\x04 \x03(\v2).configsync.v1.ApplicationConfig.EnvEntryR\x03env\x12/\n" +
-	"\x03sql\x18\x05 \x01(\v2\x18.configsync.v1.SqlConfigH\x00R\x03sql\x88\x01\x01\x12?\n" +
-	"\tkey_value\x18\x06 \x01(\v2\x1d.configsync.v1.KeyValueConfigH\x01R\bkeyValue\x88\x01\x01\x129\n" +
+	"\x03sql\x18\x05 \x01(\v2\x18.configsync.v1.SqlConfigH\x00R\x03sql\x88\x01\x01\x129\n" +
 	"\ametrics\x18\a \x03(\v2\x1f.configsync.v1.MetricDefinitionR\ametrics\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
-	"\x04_sqlB\f\n" +
-	"\n" +
-	"_key_value\"\xf2\x01\n" +
+	"\x04_sql\"\xf2\x01\n" +
 	"\x0eFunctionConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -973,9 +910,6 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\f_http_config\"W\n" +
 	"\tSqlConfig\x12#\n" +
 	"\rdatabase_name\x18\x01 \x01(\tR\fdatabaseName\x12%\n" +
-	"\x0econnection_url\x18\x02 \x01(\tR\rconnectionUrl\"O\n" +
-	"\x0eKeyValueConfig\x12\x16\n" +
-	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12%\n" +
 	"\x0econnection_url\x18\x02 \x01(\tR\rconnectionUrl\":\n" +
 	"\n" +
 	"HttpConfig\x12\x12\n" +
@@ -1011,7 +945,7 @@ func file_configsync_v1_configsync_proto_rawDescGZIP() []byte {
 }
 
 var file_configsync_v1_configsync_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_configsync_v1_configsync_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_configsync_v1_configsync_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_configsync_v1_configsync_proto_goTypes = []any{
 	(WorldType)(0),                   // 0: configsync.v1.WorldType
 	(MetricType)(0),                  // 1: configsync.v1.MetricType
@@ -1025,10 +959,9 @@ var file_configsync_v1_configsync_proto_goTypes = []any{
 	(*ApplicationConfig)(nil),        // 9: configsync.v1.ApplicationConfig
 	(*FunctionConfig)(nil),           // 10: configsync.v1.FunctionConfig
 	(*SqlConfig)(nil),                // 11: configsync.v1.SqlConfig
-	(*KeyValueConfig)(nil),           // 12: configsync.v1.KeyValueConfig
-	(*HttpConfig)(nil),               // 13: configsync.v1.HttpConfig
-	(*MetricDefinition)(nil),         // 14: configsync.v1.MetricDefinition
-	nil,                              // 15: configsync.v1.ApplicationConfig.EnvEntry
+	(*HttpConfig)(nil),               // 12: configsync.v1.HttpConfig
+	(*MetricDefinition)(nil),         // 13: configsync.v1.MetricDefinition
+	nil,                              // 14: configsync.v1.ApplicationConfig.EnvEntry
 }
 var file_configsync_v1_configsync_proto_depIdxs = []int32{
 	4,  // 0: configsync.v1.FullConfigResponse.config:type_name -> configsync.v1.FullConfig
@@ -1037,22 +970,21 @@ var file_configsync_v1_configsync_proto_depIdxs = []int32{
 	8,  // 3: configsync.v1.IncrementalConfig.updates:type_name -> configsync.v1.AppUpdate
 	9,  // 4: configsync.v1.AppUpdate.app_config:type_name -> configsync.v1.ApplicationConfig
 	10, // 5: configsync.v1.ApplicationConfig.functions:type_name -> configsync.v1.FunctionConfig
-	15, // 6: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
+	14, // 6: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
 	11, // 7: configsync.v1.ApplicationConfig.sql:type_name -> configsync.v1.SqlConfig
-	12, // 8: configsync.v1.ApplicationConfig.key_value:type_name -> configsync.v1.KeyValueConfig
-	14, // 9: configsync.v1.ApplicationConfig.metrics:type_name -> configsync.v1.MetricDefinition
-	0,  // 10: configsync.v1.FunctionConfig.world_type:type_name -> configsync.v1.WorldType
-	13, // 11: configsync.v1.FunctionConfig.http_config:type_name -> configsync.v1.HttpConfig
-	1,  // 12: configsync.v1.MetricDefinition.type:type_name -> configsync.v1.MetricType
-	2,  // 13: configsync.v1.ConfigSync.RequestFullConfig:input_type -> configsync.v1.FullConfigRequest
-	6,  // 14: configsync.v1.ConfigSync.PushIncrementalUpdate:input_type -> configsync.v1.IncrementalUpdateAck
-	3,  // 15: configsync.v1.ConfigSync.RequestFullConfig:output_type -> configsync.v1.FullConfigResponse
-	5,  // 16: configsync.v1.ConfigSync.PushIncrementalUpdate:output_type -> configsync.v1.IncrementalUpdateRequest
-	15, // [15:17] is the sub-list for method output_type
-	13, // [13:15] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	13, // 8: configsync.v1.ApplicationConfig.metrics:type_name -> configsync.v1.MetricDefinition
+	0,  // 9: configsync.v1.FunctionConfig.world_type:type_name -> configsync.v1.WorldType
+	12, // 10: configsync.v1.FunctionConfig.http_config:type_name -> configsync.v1.HttpConfig
+	1,  // 11: configsync.v1.MetricDefinition.type:type_name -> configsync.v1.MetricType
+	2,  // 12: configsync.v1.ConfigSync.RequestFullConfig:input_type -> configsync.v1.FullConfigRequest
+	6,  // 13: configsync.v1.ConfigSync.PushIncrementalUpdate:input_type -> configsync.v1.IncrementalUpdateAck
+	3,  // 14: configsync.v1.ConfigSync.RequestFullConfig:output_type -> configsync.v1.FullConfigResponse
+	5,  // 15: configsync.v1.ConfigSync.PushIncrementalUpdate:output_type -> configsync.v1.IncrementalUpdateRequest
+	14, // [14:16] is the sub-list for method output_type
+	12, // [12:14] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_configsync_v1_configsync_proto_init() }
@@ -1069,7 +1001,7 @@ func file_configsync_v1_configsync_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configsync_v1_configsync_proto_rawDesc), len(file_configsync_v1_configsync_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   14,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

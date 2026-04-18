@@ -11,7 +11,7 @@ impl Guest for MessageHandler {
     fn on_message(_payload: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
         log::emit(log::Level::Info, "handling message");
 
-        kv::incr("counters", "messages")?;
+        kv::incr("messages")?;;
         Ok(None)
     }
 }

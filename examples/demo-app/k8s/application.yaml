@@ -4,7 +4,6 @@ metadata:
   name: demo-app
   namespace: examples
 spec:
-  keyValue: demo-app
   metrics:
     - name: demo_requests_total
       type: counter

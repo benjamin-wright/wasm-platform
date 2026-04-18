@@ -64,7 +64,7 @@ enum WorldType {
 }
 
 // ApplicationConfig carries all per-application configuration pushed to
-// execution hosts.  Application-level fields (env, sql, key_value) are shared
+// execution hosts.  Application-level fields (env, sql) are shared
 // across all functions in the application.  Per-function configuration lives in
 // the functions list.
 message ApplicationConfig {
@@ -73,7 +73,6 @@ message ApplicationConfig {
   repeated FunctionConfig functions = 3;
   map<string, string> env = 4;
   optional SqlConfig sql = 5;
-  optional KeyValueConfig key_value = 6;
   repeated MetricDefinition metrics = 7;
 }
 
@@ -90,11 +89,6 @@ message FunctionConfig {
 
 message SqlConfig {
   string database_name = 1;
-  string connection_url = 2;
-}
-
-message KeyValueConfig {
-  string prefix = 1;
   string connection_url = 2;
 }
 

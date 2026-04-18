@@ -14,8 +14,8 @@ impl Guest for HttpHandler {
         // Publish an event so the message-handler function can track activity.
         messaging::send("demo-app.events", &b"tick".to_vec())?;
 
-        let requests = kv::incr("counters", "requests")?;
-        let messages = kv::get_int("counters", "messages")?.unwrap_or(0);
+        let requests = kv::incr("requests")?;
+        let messages = kv::get_int("messages")?.unwrap_or(0);
 
         metrics::counter_increment(
             "demo_requests_total",

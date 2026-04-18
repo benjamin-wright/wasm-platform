@@ -4,7 +4,7 @@ A Kubernetes operator that watches `Application` CRDs and reconciles platform re
 
 ## Application CRD
 
-Each `Application` declares one or more deployable WASM functions and their shared runtime requirements.  Functions are listed under `spec.functions`; each function has its own module reference and trigger (exactly one of `trigger.http` or `trigger.topic`).  Application-level fields (`spec.env`, `spec.sql`, `spec.keyValue`) are shared across all functions.
+Each `Application` declares one or more deployable WASM functions and their shared runtime requirements.  Functions are listed under `spec.functions`; each function has its own module reference and trigger (exactly one of `trigger.http` or `trigger.topic`).  Application-level fields (`spec.env`, `spec.sql`) are shared across all functions.  KV access is available to every application automatically, with no opt-in field required.
 
 ### Examples
 
@@ -18,7 +18,6 @@ spec:
   env:
     LOG_LEVEL: info
   sql: orders
-  keyValue: sessions
   functions:
     - name: handler
       module: oci://registry.example.com/my-app@sha256:<digest>
@@ -69,7 +68,6 @@ spec:
 | `spec.functions` | []FunctionSpec | yes (min 1) | List of functions in this application. |
 | `spec.env` | map[string]string | no | Environment variables injected into all functions. |
 | `spec.sql` | string | no | Logical database name. The operator creates a dedicated PG database + user and passes credentials to execution hosts via ConfigSync. |
-| `spec.keyValue` | string | no | Key-prefix namespace in the shared Redis instance. Execution hosts prepend `<namespace>/<spec.keyValue>/` to all keys. |
 | `spec.metrics` | []MetricDefinition | no | User-defined Prometheus metrics (max 50). Each metric has a `name`, `type` (`counter`/`gauge`), and optional `labels` (max 10). Names must follow `[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$` and must not start with `__`. Labels must not include `app_name` or `app_namespace` (host-injected). |
 
 **Per-function (`spec.functions[]`):**
@@ -94,9 +92,8 @@ spec:
 
 1. For each message-triggered function, checks cluster-wide topic uniqueness.
 2. If `spec.sql` is set, creates the PG database and user if they don't exist.
-3. If `spec.keyValue` is set, records the prefix for inclusion in the app config.
-4. Pushes an incremental config update (with all functions) to all connected execution hosts via `PushIncrementalUpdate`.
-5. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
+3. Pushes an incremental config update (with all functions) to all connected execution hosts via `PushIncrementalUpdate`.
+4. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
 
 **On delete:**
 

@@ -6,8 +6,6 @@ wp-operator:
   databases:
     # Must match the PostgresDatabase CR name created by the wp-databases subchart.
     postgresDatabaseName: "wasm-platform-postgres"
-    # Secret names are fixed in wp-databases/values.yaml.
-    redisSecretName: "wp-operator-redis-credentials"
 
 execution-host:
   configSync:

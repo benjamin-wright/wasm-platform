@@ -31,7 +31,6 @@ mod http_bindings {
 pub(crate) struct HostState {
     wasi: WasiCtx,
     table: ResourceTable,
-    pub(crate) kv_prefix: String,
     pub(crate) redis_client: Option<redis::Client>,
     pub(crate) nats_client: Option<async_nats::Client>,
     pub(crate) app_name: String,
@@ -91,7 +90,6 @@ pub fn invoke_on_message(
     state: &RuntimeState,
     component: &Component,
     payload: &[u8],
-    kv_prefix: String,
     nats_client: Option<async_nats::Client>,
     app_name: String,
     app_namespace: String,
@@ -100,7 +98,6 @@ pub fn invoke_on_message(
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
-        kv_prefix,
         redis_client: state.redis_client.clone(),
         nats_client,
         app_name,
@@ -125,7 +122,6 @@ pub fn invoke_on_request(
     state: &RuntimeState,
     component: &Component,
     request: HttpRequestPayload,
-    kv_prefix: String,
     nats_client: Option<async_nats::Client>,
     app_name: String,
     app_namespace: String,
@@ -134,7 +130,6 @@ pub fn invoke_on_request(
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
-        kv_prefix,
         redis_client: state.redis_client.clone(),
         nats_client,
         app_name: app_name.clone(),

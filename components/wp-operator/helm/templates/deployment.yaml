@@ -37,12 +37,6 @@ spec:
               value: {{ .Values.grpc.port | quote }}
             - name: POSTGRES_DATABASE_NAME
               value: {{ .Values.databases.postgresDatabaseName | quote }}
-            - name: REDIS_SECRET_NAME
-              value: {{ .Values.databases.redisSecretName | quote }}
-            {{- if .Values.databases.redisSecretNamespace }}
-            - name: REDIS_SECRET_NAMESPACE
-              value: {{ .Values.databases.redisSecretNamespace | quote }}
-            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080

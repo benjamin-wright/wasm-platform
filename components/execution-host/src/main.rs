@@ -211,11 +211,6 @@ async fn process_nats_messages(
         // Snapshot the current client.  If NATS is mid-reconnect the snapshot
         // is None; replies will be silently dropped and the caller will time out.
         let client_snapshot = client_rx.borrow().clone();
-        let kv_prefix = fn_entry
-            .key_value
-            .as_ref()
-            .map(|kv| kv.prefix.clone())
-            .unwrap_or_default();
         let app_name = fn_entry.app_name.clone();
         let app_namespace = fn_entry.app_namespace.clone();
         let function_name = fn_entry.function_name.clone();
@@ -238,7 +233,7 @@ async fn process_nats_messages(
             let result = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, kv_prefix, nats_for_invoke, app_name, app_namespace, function_name)
+                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name)
                     })
                     .await
                 }
@@ -248,7 +243,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, kv_prefix, nats_for_invoke, app_name, app_namespace, function_name)?;
+                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
