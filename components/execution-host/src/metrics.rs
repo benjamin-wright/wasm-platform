@@ -53,49 +53,49 @@ impl MetricsRegistry {
 
         let compilations_total = CounterVec::new(
             Opts::new(
-                "wasm_module_compilations_total",
+                "wasm_host_module_compilations_total",
                 "AOT compilations triggered on config arrival",
             ),
             &["app_name", "app_namespace", "result"],
         )?;
         let events_received_total = CounterVec::new(
             Opts::new(
-                "wasm_events_received_total",
+                "wasm_host_events_received_total",
                 "Invocation requests received before dispatch",
             ),
             &["app_name", "app_namespace", "trigger"],
         )?;
         let messages_sent_total = CounterVec::new(
             Opts::new(
-                "wasm_messages_sent_total",
+                "wasm_host_messages_sent_total",
                 "messaging.send host function calls",
             ),
             &["app_name", "app_namespace"],
         )?;
         let kv_reads_total = CounterVec::new(
             Opts::new(
-                "wasm_kv_reads_total",
+                "wasm_host_kv_reads_total",
                 "kv.get, kv.get-int, kv.incr, and kv.decr host function calls",
             ),
             &["app_name", "app_namespace"],
         )?;
         let kv_writes_total = CounterVec::new(
             Opts::new(
-                "wasm_kv_writes_total",
+                "wasm_host_kv_writes_total",
                 "kv.set, kv.set-int, kv.delete, kv.incr, and kv.decr host function calls",
             ),
             &["app_name", "app_namespace"],
         )?;
         let http_requests_received_total = CounterVec::new(
             Opts::new(
-                "wasm_http_requests_received_total",
+                "wasm_host_http_requests_received_total",
                 "HTTP invocations completed; status is the guest response code",
             ),
             &["app_name", "app_namespace", "status"],
         )?;
         let dropped_metric_calls_total = CounterVec::new(
             Opts::new(
-                "wasm_dropped_metric_calls_total",
+                "wasm_host_dropped_metric_calls_total",
                 "Guest metric calls dropped due to schema violations",
             ),
             &["app_name", "app_namespace", "reason"],
@@ -207,7 +207,7 @@ impl MetricsRegistry {
     /// Increment a user-defined counter.
     ///
     /// Returns a `(reason, metric_name)` error tuple on unknown metric or label
-    /// mismatch so that the caller can increment `wasm_dropped_metric_calls_total`.
+    /// mismatch so that the caller can increment `wasm_host_dropped_metric_calls_total`.
     pub fn counter_increment(
         &self,
         name: &str,

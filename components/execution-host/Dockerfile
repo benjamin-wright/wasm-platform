@@ -21,7 +21,6 @@ COPY --from=workspace lib/ ./lib/
 COPY . ./components/execution-host/
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=execution-host-target,target=/build/target \
     cargo build --release --bin execution-host && \
     cp target/release/execution-host /build/execution-host
 

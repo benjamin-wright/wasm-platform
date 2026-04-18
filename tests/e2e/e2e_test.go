@@ -226,7 +226,7 @@ const metricsURL = "http://localhost:9090/metrics"
 
 // TestMetrics invokes the demo-app endpoint then scrapes the execution-host
 // /metrics endpoint and asserts that both the user-defined counter
-// (demo_requests_total) and the platform counter (wasm_events_received_total)
+// (demo_requests_total) and the platform counter (wasm_host_events_received_total)
 // are non-zero.
 func TestMetrics(t *testing.T) {
 	g := NewWithT(t)
@@ -241,9 +241,9 @@ func TestMetrics(t *testing.T) {
 		"demo_requests_total should be non-zero after invoking demo-app")
 
 	g.Eventually(func() (float64, error) {
-		return scrapeMetricSum(metricsURL, "wasm_events_received_total")
+		return scrapeMetricSum(metricsURL, "wasm_host_events_received_total")
 	}, routeTimeout, pollInterval).Should(BeNumerically(">", 0),
-		"wasm_events_received_total should be non-zero after invoking demo-app")
+		"wasm_host_events_received_total should be non-zero after invoking demo-app")
 }
 
 // scrapeMetricSum fetches the Prometheus text output at url and returns the sum

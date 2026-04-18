@@ -127,7 +127,11 @@ async fn main() -> Result<()> {
         .route("/metrics", get(metrics_handler))
         .with_state(metrics_registry.clone());
     let metrics_listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
-    tokio::spawn(axum::serve(metrics_listener, metrics_app));
+    tokio::spawn(async {
+        if let Err(e) = axum::serve(metrics_listener, metrics_app).await {
+            tracing::error!("metrics server error: {e}");
+        }
+    });
 
     tokio::select! {
         result = health_server => {

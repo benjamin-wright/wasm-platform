@@ -61,15 +61,15 @@ Two classes of metrics are served:
 
 | Metric | Type | Labels |
 |---|---|---|
-| `wasm_module_compilations_total` | Counter | `app_name`, `app_namespace`, `result` (`ok`/`err`) |
-| `wasm_events_received_total` | Counter | `app_name`, `app_namespace`, `trigger` (`http`/`topic`) |
-| `wasm_messages_sent_total` | Counter | `app_name`, `app_namespace` |
-| `wasm_kv_reads_total` | Counter | `app_name`, `app_namespace` |
-| `wasm_kv_writes_total` | Counter | `app_name`, `app_namespace` |
-| `wasm_http_requests_received_total` | Counter | `app_name`, `app_namespace`, `status` |
-| `wasm_dropped_metric_calls_total` | Counter | `app_name`, `app_namespace`, `reason` (`unknown_metric`/`wrong_labels`) |
+| `wasm_host_module_compilations_total` | Counter | `app_name`, `app_namespace`, `result` (`ok`/`err`) |
+| `wasm_host_events_received_total` | Counter | `app_name`, `app_namespace`, `trigger` (`http`/`topic`) |
+| `wasm_host_messages_sent_total` | Counter | `app_name`, `app_namespace` |
+| `wasm_host_kv_reads_total` | Counter | `app_name`, `app_namespace` |
+| `wasm_host_kv_writes_total` | Counter | `app_name`, `app_namespace` |
+| `wasm_host_http_requests_received_total` | Counter | `app_name`, `app_namespace`, `status` |
+| `wasm_host_dropped_metric_calls_total` | Counter | `app_name`, `app_namespace`, `reason` (`unknown_metric`/`wrong_labels`) |
 
-Invalid guest metric calls (unknown name or mismatched label keys) are silently dropped and logged at error level; `wasm_dropped_metric_calls_total` is incremented with the appropriate `reason`.
+Invalid guest metric calls (unknown name or mismatched label keys) are silently dropped and logged at error level; `wasm_host_dropped_metric_calls_total` is incremented with the appropriate `reason`.
 
 ## Graceful Shutdown
 

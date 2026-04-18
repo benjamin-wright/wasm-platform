@@ -20,7 +20,6 @@ COPY --from=workspace lib/ ./lib/
 COPY . ./components/gateway/
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=gateway-target,target=/build/target \
     cargo build --release --bin gateway && \
     cp target/release/gateway /build/gateway
 

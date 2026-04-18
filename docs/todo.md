@@ -10,69 +10,63 @@ Each phase is independently launchable in its own agent session. The permanent r
 
 ---
 
-### Phase 8.6: Host Metrics Implementation
+### Phase 9.1: KV Implicit Isolation (Drop `keyValue` field and `store` parameter)
 
-Wire the `metrics` WIT host interface, pre-register user-defined metrics on config arrival, instrument the execution host with platform-level metrics, and expose `/metrics` on a dedicated port.
+Make the KV host functions implicitly available to every Application with isolation derived from `(namespace, app)` rather than a user-supplied prefix. Simultaneously drop the `store` parameter from the `kv` WIT interface — once the prefix is automatic, `store` is a redundant guest-controlled sub-namespace that the app can implement itself by prefixing its keys.
 
-#### Design
+**Why:** the current `spec.keyValue: string` field looks meaningful but enforces nothing — two apps in the same namespace can silently share a prefix and corrupt each other's data. Replacing it with an automatic `<namespace>/<app>/` prefix is both safer and removes a CRD field, an operator reconcile branch, a proto message, and a per-function config field. Apps that don't use KV are unaffected; apps that do get the same surface minus the noise. KV requires no provisioning (the execution host already holds a multiplexed Redis connection), so there is no reason to make it opt-in.
 
-Two classes of metrics are exposed on `/metrics` (port 9090):
+**Pre-1.0:** there is no production data and no migration concern. Existing keys under the old prefix scheme can be abandoned.
 
-- **User-defined** — registered from `spec.metrics` on config arrival using the `prometheus` crate (`CounterVec`/`GaugeVec`). Guests mutate them via the `metrics` WIT interface (`counter-increment`, `gauge-set`). The host injects `app_name` and `app_namespace` labels on every series; guests supply any additional labels declared in the spec.
-- **Platform** — fixed metrics emitted by the host itself, independent of any Application spec. Labelled with `app_name` and `app_namespace` where per-app attribution is meaningful.
+#### Context for implementing agents
 
-**Invalid calls** (unknown metric name or mismatched label keys) are silently dropped from the guest's perspective, but the host logs an error with the app, function, metric name, and supplied labels, and increments `wasm_dropped_metric_calls_total`.
+The relevant files (read these before changing anything):
 
-**WIT interface addition** (`framework/runtime.wit`):
+- WIT contract — [framework/runtime.wit](../framework/runtime.wit) (the `kv` interface and both worlds import it).
+- CRD types — [components/wp-operator/api/v1alpha1/application_types.go](../components/wp-operator/api/v1alpha1/application_types.go) (`ApplicationSpec.KeyValue`).
+- Generated CRD manifests — [helm/wasm-platform/](../helm/wasm-platform/) and any `config/crd` output of `make manifests`.
+- Operator reconciler — [components/wp-operator/internal/controller/application_controller.go](../components/wp-operator/internal/controller/application_controller.go) (`reconcileKVBinding`, the `if app.Spec.KeyValue != ""` branch, `RedisSecretName`/`RedisSecretNamespace` config knobs).
+- ConfigSync proto — [proto/configsync/](../proto/configsync/) (the `KeyValueConfig` message and `ApplicationConfig.key_value` field). Regenerate Go bindings under [components/wp-operator/internal/grpc/configsync/](../components/wp-operator/internal/grpc/configsync/) and Rust bindings under [components/execution-host/](../components/execution-host/) (look for `build.rs` / `tonic-build`).
+- Execution host config registry — [components/execution-host/src/config.rs](../components/execution-host/src/config.rs) (`FunctionEntry.key_value`).
+- Execution host runtime — [components/execution-host/src/runtime.rs](../components/execution-host/src/runtime.rs) (`HostState.kv_prefix`; `app_name` and `app_namespace` already exist on `HostState`).
+- KV host functions — [components/execution-host/src/host_kv.rs](../components/execution-host/src/host_kv.rs) (currently formats `"{kv_prefix}/{store}/{key}"`).
+- Helm chart for the operator — Redis Secret RBAC and env wiring; the operator no longer needs to read any Redis Secret. The execution host's `REDIS_URL` env stays exactly as it is.
+- Demo app manifest — [examples/demo-app/k8s/application.yaml](../examples/demo-app/k8s/application.yaml) (`spec.keyValue: demo-app`).
+- Architecture doc — [docs/architecture.md](../docs/architecture.md) (Data Layer table row for Redis, and the "Connection model" paragraph mentioning the per-app key-prefix delta).
+- Component READMEs — [components/wp-operator/README.md](../components/wp-operator/README.md), [components/execution-host/README.md](../components/execution-host/README.md).
+- Demo app guest code — [examples/demo-app/](../examples/demo-app/) (any guest call sites that pass a `store` argument to `kv.get`/`kv.set`/etc., e.g. `demo-app-http`, `demo-app-messages`).
+- e2e tests — [tests/e2e/](../tests/e2e/) and the hello-world fixture (HTTP + KV counter).
 
-```wit
-interface metrics {
-    counter-increment: func(name: string, labels: list<tuple<string, string>>) -> result<_, string>;
-    gauge-set: func(name: string, value: f64, labels: list<tuple<string, string>>) -> result<_, string>;
-}
-```
+**New isolation scheme:** `format!("{namespace}/{app}/{key}")`. Note this is one segment shorter than today (today: `<ns>/<spec.keyValue>/<store>/<key>`).
 
-Both worlds (`message-application`, `http-application`) import `metrics`.
-
-**Platform metrics:**
-
-| Metric | Type | Labels | Description |
-|---|---|---|---|
-| `wasm_module_compilations_total` | Counter | `app_name`, `app_namespace`, `result` (`ok`/`err`) | AOT compilations triggered on config arrival. |
-| `wasm_events_received_total` | Counter | `app_name`, `app_namespace`, `trigger` (`http`/`topic`) | Invocation requests received (before dispatch). |
-| `wasm_messages_sent_total` | Counter | `app_name`, `app_namespace` | `messaging.send` host function calls. |
-| `wasm_kv_reads_total` | Counter | `app_name`, `app_namespace` | `kv.get` host function calls. |
-| `wasm_kv_writes_total` | Counter | `app_name`, `app_namespace` | `kv.set` / `kv.delete` host function calls. |
-| `wasm_http_requests_received_total` | Counter | `app_name`, `app_namespace`, `status` (HTTP status code) | HTTP invocations completed; status is the guest's response code. |
-| `wasm_dropped_metric_calls_total` | Counter | `app_name`, `app_namespace`, `reason` (`unknown_metric`/`wrong_labels`) | Guest metric calls dropped due to schema violations. |
+**Failure mode preserved:** when `REDIS_URL` is not configured on the execution host, KV calls return `Err("KV host function unavailable: REDIS_URL not configured")`. Apps that never call KV are unaffected. Do not silently no-op.
 
 #### Tasks
 
-- [x] Implement `buildMetricDefs` in the operator and remove the `TODO(phase-8.5)` comment so `cfg.Metrics` is populated in `ApplicationConfig`.
-- [x] Add the `metrics` interface (`counter-increment`, `gauge-set`) to `framework/runtime.wit`; import it in both worlds.
-- [x] Add `prometheus` crate to `execution-host`. Create a `MetricsRegistry` that holds a shared Prometheus registry and owns all `CounterVec`/`GaugeVec` handles.
-- [x] Expose `/metrics` on port 9090 (separate from the health port 3000); add the port to the Helm chart service and deployment.
-- [x] Add a Tilt port-forward for port 9090 on the `execution-host` resource so e2e tests can reach `/metrics` from the host machine.
-- [x] On config arrival, pre-register user-defined `CounterVec`/`GaugeVec` from `MetricDefinition`; inject `app_name` and `app_namespace` as additional label dimensions.
-- [x] Implement `counter-increment` WIT host function — validate name and label keys against the registered schema; on mismatch, log error and increment `wasm_dropped_metric_calls_total` with the appropriate `reason`.
-- [x] Implement `gauge-set` WIT host function — same validation and drop semantics as `counter-increment`.
-- [x] Register and increment `wasm_module_compilations_total` on each AOT compilation attempt.
-- [x] Register and increment `wasm_events_received_total` on each invocation dispatch (HTTP and topic triggers).
-- [x] Register and increment `wasm_messages_sent_total` on each `messaging.send` host function call.
-- [x] Register and increment `wasm_kv_reads_total` and `wasm_kv_writes_total` on the corresponding KV host function calls.
-- [x] Register and increment `wasm_http_requests_received_total` (labelled by guest response status) on each completed HTTP invocation.
-- [x] Update `demo-app` http-handler to call `counter-increment` for the existing `demo_requests_total` metric (already declared in `k8s/application.yaml`).
-- [x] Add an e2e test that invokes the demo-app endpoint then scrapes `localhost:9090/metrics` and asserts `demo_requests_total` and `wasm_events_received_total` have both advanced.
-- [x] Update `execution-host/README.md` to document the `/metrics` endpoint, port, and the two classes of metrics.
-- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
+Do these in order — step 1 breaks compilation and the type system guides the rest.
+
+- [ ] **WIT.** In `framework/runtime.wit`, remove the `store: string` parameter from every function in `interface kv` (`get`, `set`, `delete`, `get-int`, `set-int`, `incr`, `decr`). Both `message-application` and `http-application` worlds already import `kv` — no world changes needed.
+- [ ] **Execution host KV.** In `host_kv.rs`, drop the `store` parameter from every function and change the key construction to `format!("{}/{}/{}", self.app_namespace, self.app_name, key)`. Drop `HostState.kv_prefix` from `runtime.rs` (the field, all sites that set it, and any constructor argument). The `app_name` / `app_namespace` fields on `HostState` already provide what's needed.
+- [ ] **Execution host config.** In `config.rs`, remove `FunctionEntry.key_value` and any propagation of `KeyValueConfig`. Audit anywhere that destructures or populates this field.
+- [ ] **Proto.** In `proto/configsync/`, delete the `KeyValueConfig` message and the `key_value` field on `ApplicationConfig`. Regenerate Go and Rust bindings via the existing `make` target (check `Makefile` for the proto-gen target — do not hand-edit `*.pb.go` files).
+- [ ] **Operator.** In `application_controller.go`, delete `reconcileKVBinding`, the `if app.Spec.KeyValue != ""` branch in `Reconcile`, the `RedisSecretName` / `RedisSecretNamespace` fields on the controller's `Config` struct, and any wiring that reads them (likely in the operator's `main.go` and Helm values).
+- [ ] **CRD.** In `application_types.go`, remove the `KeyValue string` field. Run `make manifests` (or equivalent) to regenerate CRD YAML; do not hand-edit generated CRD manifests.
+- [ ] **Helm.** In the operator's Helm chart under [helm/wasm-platform/](../helm/wasm-platform/), remove the Redis Secret reference / RBAC for the operator (the operator no longer reads a Redis Secret). Leave the execution host's `REDIS_URL` env wiring untouched.
+- [ ] **Demo app manifest.** In `examples/demo-app/k8s/application.yaml`, remove the `keyValue: demo-app` line.
+- [ ] **Demo app guest code.** Update any `kv.*` call sites in [examples/demo-app/](../examples/demo-app/) and [examples/counter-app/](../examples/counter-app/) to drop the `store` argument. Regenerate WIT bindings for each guest as appropriate.
+- [ ] **Tests.** Delete operator unit tests for `reconcileKVBinding`. Update host KV unit tests to assert the prefix is derived from injected `(namespace, app)` and not from any config field. Update guest-side tests to match the new WIT signature.
+- [ ] **Architecture doc.** In `docs/architecture.md`, update the Data Layer table row for Redis to: "Single shared instance. Per-app key-prefix isolation (`<namespace>/<app>/`), assigned automatically — no CRD field required." In the "Connection model" paragraph, remove the clause about Redis carrying a per-app key prefix in the config delta.
+- [ ] **Component READMEs.** Update [components/wp-operator/README.md](../components/wp-operator/README.md) and [components/execution-host/README.md](../components/execution-host/README.md) — remove KV-binding sections from the operator README; update the execution-host README to describe automatic `<namespace>/<app>/` prefixing and the dropped `store` parameter.
+- [ ] **WIT signature in docs.** If any doc embeds the `kv` interface signature, update it.
+- [ ] **e2e.** Run the hello-world fixture and the `e2e-tests` resource (via the Tilt MCP server). The hello-world KV counter should still work after the contract change.
 
 #### Verification
 
-New e2e test passes: guest-incremented `demo_requests_total` and platform `wasm_events_received_total` are visible and non-zero at `/metrics`. `e2e-tests` resource passes.
+hello-world e2e fixture passes (HTTP + KV counter). `e2e-tests` resource passes. The Application CRD no longer has a `keyValue` field. The `ApplicationConfig` proto no longer has a `key_value` field. The `kv` WIT interface no longer has a `store` parameter. The operator does not read any Redis Secret.
 
 ---
 
-### Phase 9.1: SQL Host Function (No Migrations)
+### Phase 9.2: SQL Host Function (No Migrations)
 
 Implement the `sql` WIT interface host functions backed by a per-app PostgreSQL connection pool, without any migrations machinery.
 
@@ -89,7 +83,7 @@ New e2e test passes. `e2e-tests` resource passes. hello-world e2e test is unaffe
 
 ---
 
-### Phase 9.2: Migrations Job Lifecycle
+### Phase 9.3: Migrations Job Lifecycle
 
 Add migrations support to the operator: create a Job on Application create/upgrade, gate activation on Job success, and surface failure in Application status.
 
