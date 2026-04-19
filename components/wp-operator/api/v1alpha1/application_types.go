@@ -205,6 +205,17 @@ type ApplicationStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// SQLDatabaseName is the derived PostgreSQL database name for this Application.
+	// Populated only when spec.sql is set.
+	// +optional
+	SQLDatabaseName string `json:"sqlDatabaseName,omitempty"`
+
+	// SQLUsernames is the list of derived PostgreSQL usernames provisioned for this
+	// Application, one per entry in spec.sql.users (or a single 'app' user when
+	// spec.sql.users is absent). Populated only when spec.sql is set.
+	// +optional
+	SQLUsernames []string `json:"sqlUsernames,omitempty"`
 }
 
 // Application is the primary resource for wasm-platform.

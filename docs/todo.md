@@ -259,25 +259,27 @@ binding, row deserialisation, and the pool lifecycle.
 - [x] **Operator — derivation utility**: implement and unit-test the PG identifier
   derivation algorithm (database name and username, with hash-truncation) as a shared
   helper in the controller package.
-- [ ] **Operator — `reconcileSQLBinding`**: use the derivation utility; create one
+- [x] **Operator — `reconcileSQLBinding`**: use the derivation utility; create one
   `PostgresCredential` CR per user (including the synthetic `app` user for `spec.sql: {}`);
   inject `sql_username` into `FunctionConfig` for implicitly-bound functions; wait for all
   credentials to reach `Ready`; assemble `connection_url` from the db-operator Secret;
   populate `ApplicationConfig.sql_users`; guard against empty `PostgresDatabaseName` and
   missing `PostgresDatabase` CR.
-- [ ] **Operator — delete path**: delete all associated `PostgresCredential` CRs on
+- [x] **Operator — delete path**: delete all associated `PostgresCredential` CRs on
   Application deletion.
-- [ ] **Operator — status**: surface derived database name and per-user PG usernames in
+- [x] **Operator — status**: surface derived database name and per-user PG usernames in
   Application status.
-- [ ] **Execution host — `host_sql.rs`**: implement the `sql` WIT trait for `HostState`.
+- [x] **Execution host — `host_sql.rs`**: implement the `sql` WIT trait for `HostState`.
   `query` binds params and deserialises rows per tables above; returns `Err` for unmapped
   column types. `execute` returns row count. Both return `Err` if `HostState.sql_pool`
   is `None`.
-- [ ] **Execution host — pool map**: add `SqlPoolMap` and `PG_POOL_MAX_CONNECTIONS` env
+- [x] **Execution host — pool map**: add `SqlPoolMap` and `PG_POOL_MAX_CONNECTIONS` env
   var to `RuntimeState`; create pools eagerly on config arrival; evict and close on
   delete; resolve and pass `Option<PgPool>` into `HostState` per invocation.
-- [ ] **Execution host — linker**: register `sql::add_to_linker` for both
-  `message_bindings` and `http_bindings` in `RuntimeState::new`.
+- [x] **Execution host — linker**: register `sql::add_to_linker` once via
+  `message_bindings` in `RuntimeState::new` (the wasmtime Linker keys on WIT interface
+  name, so a single registration covers both `message-application` and `http-application`
+  worlds — same pattern as `kv`/`log`/`messaging`/`metrics`).
 - [ ] **`sql-hello` example**: implement module, Application CR, and seeding Job.
 - [ ] **e2e test**: seeding Job runs first; assert GET `/sql-hello` returns expected rows;
   hello-world test is unaffected.
@@ -622,3 +624,9 @@ Remove the uniqueness requirement per topic. Each individual function will use a
 ### Things to consider
 
 - call-response behaviour (can secondary subscribers just not respond?)
+
+---
+
+## Future Work: Operator-owned databases
+- wp-operator to create NATs and Redis crds
+- wp-operator to create a postgres crd per namespace that needs it

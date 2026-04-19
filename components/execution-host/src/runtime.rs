@@ -1,11 +1,14 @@
+use std::sync::Arc;
+
 use anyhow::Result;
-use wasmtime::{
-    Engine, Store,
+use wasmtime::
+    {Engine, Store,
     component::{Component, Linker, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::metrics::MetricsRegistry;
+use crate::sql_pool::SqlPoolMap;
 
 pub use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 
@@ -33,6 +36,7 @@ pub(crate) struct HostState {
     table: ResourceTable,
     pub(crate) redis_client: Option<redis::Client>,
     pub(crate) nats_client: Option<async_nats::Client>,
+    pub(crate) sql_pool: Option<sqlx::postgres::PgPool>,
     pub(crate) app_name: String,
     pub(crate) app_namespace: String,
     pub(crate) function_name: String,
@@ -57,11 +61,17 @@ pub struct RuntimeState {
     pub engine: Engine,
     linker: Linker<HostState>,
     pub redis_client: Option<redis::Client>,
+    pub sql_pools: Arc<SqlPoolMap>,
     pub metrics_registry: MetricsRegistry,
 }
 
 impl RuntimeState {
-    pub fn new(engine: Engine, redis_client: Option<redis::Client>, metrics_registry: MetricsRegistry) -> Result<Self> {
+    pub fn new(
+        engine: Engine,
+        redis_client: Option<redis::Client>,
+        metrics_registry: MetricsRegistry,
+        sql_pools: Arc<SqlPoolMap>,
+    ) -> Result<Self> {
         let mut linker: Linker<HostState> = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
         message_bindings::framework::runtime::kv::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
@@ -80,7 +90,11 @@ impl RuntimeState {
             &mut linker,
             |h: &mut HostState| h,
         )?;
-        Ok(Self { engine, linker, redis_client, metrics_registry })
+        message_bindings::framework::runtime::sql::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
+            &mut linker,
+            |h: &mut HostState| h,
+        )?;
+        Ok(Self { engine, linker, redis_client, sql_pools, metrics_registry })
     }
 }
 
@@ -94,12 +108,17 @@ pub fn invoke_on_message(
     app_name: String,
     app_namespace: String,
     function_name: String,
+    sql_username: Option<String>,
 ) -> Result<Option<Vec<u8>>> {
+    let sql_pool = sql_username
+        .as_deref()
+        .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
         redis_client: state.redis_client.clone(),
         nats_client,
+        sql_pool,
         app_name,
         app_namespace,
         function_name,
@@ -126,12 +145,17 @@ pub fn invoke_on_request(
     app_name: String,
     app_namespace: String,
     function_name: String,
+    sql_username: Option<String>,
 ) -> Result<HttpResponsePayload> {
+    let sql_pool = sql_username
+        .as_deref()
+        .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
         redis_client: state.redis_client.clone(),
         nats_client,
+        sql_pool,
         app_name: app_name.clone(),
         app_namespace: app_namespace.clone(),
         function_name,

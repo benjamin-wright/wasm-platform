@@ -10,6 +10,13 @@ const pgMaxIdentifierLen = 63
 const pgTruncPrefixLen = 47
 const pgTruncHashLen = 15
 
+// k8sMaxNameLen is the maximum length of a Kubernetes resource name.
+const k8sMaxNameLen = 253
+
+// k8sTruncSuffixReserve is the number of characters reserved for suffixes
+// appended to Kubernetes credential names (e.g. "-pg-creds").
+const k8sTruncSuffixReserve = 15
+
 // ValidatePGInputs returns an error if namespace or appName contains "--".
 // Double-hyphen sequences would produce "____" after sanitisation, which
 // collides with the "__" component separator used by PGDatabaseName and
@@ -64,4 +71,20 @@ func PGDatabaseName(namespace, appName string) string {
 func PGUsername(namespace, appName, userName string) string {
 	full := "wasm_" + pgSanitise(namespace) + "__" + pgSanitise(appName) + "__" + pgSanitise(userName)
 	return pgIdentifier(full)
+}
+
+// K8sCredentialName derives a Kubernetes resource name for a PostgresCredential
+// owned by a given Application user.
+// Format: wasm-<namespace>-<app_name>-<user_name>-pg
+// If the result (before the "-pg" suffix) would exceed 238 characters once the
+// reserved suffix room is accounted for, the base is truncated with a hash and
+// the "-pg" suffix is re-appended.
+func K8sCredentialName(namespace, appName, userName string) string {
+	base := "wasm-" + namespace + "-" + appName + "-" + userName
+	maxBase := k8sMaxNameLen - k8sTruncSuffixReserve
+	if len(base) > maxBase {
+		h := sha256.Sum256([]byte(base))
+		base = base[:maxBase-16] + "-" + fmt.Sprintf("%x", h)[:15]
+	}
+	return base + "-pg"
 }

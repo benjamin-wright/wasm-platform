@@ -33,13 +33,16 @@ pub struct FunctionEntry {
 }
 
 /// The result of applying a config update.
-///
-/// Load tuples: `(namespace, app_name, function_name, module_ref)` — modules to load.
-/// Evict tuples: `(namespace, app_name, function_name)` — modules to remove.
-pub type ConfigDiff = (
-    Vec<(String, String, String, String)>,
-    Vec<(String, String, String)>,
-);
+pub struct ConfigDiff {
+    /// Modules to load: `(namespace, app_name, function_name, module_ref)`.
+    pub modules_to_load: Vec<(String, String, String, String)>,
+    /// Modules to evict: `(namespace, app_name, function_name)`.
+    pub modules_to_evict: Vec<(String, String, String)>,
+    /// SQL pools to create eagerly: `(namespace, app_name, username, connection_url)`.
+    pub pools_to_create: Vec<(String, String, String, String)>,
+    /// Applications whose SQL pools should all be evicted: `(namespace, app_name)`.
+    pub pools_to_evict_apps: Vec<(String, String)>,
+}
 
 /// Shared, thread-safe registry of all known function entries, keyed by NATS topic.
 ///
@@ -57,7 +60,7 @@ impl AppRegistry {
     }
 
     /// Replace the entire registry with the contents of a full-config snapshot.
-    /// Returns `(to_load, to_evict)` describing the changes.
+    /// Returns a `ConfigDiff` describing module and pool changes.
     pub fn apply_full_config(&self, full: FullConfig) -> Result<ConfigDiff> {
         let mut map = self
             .inner
@@ -65,6 +68,7 @@ impl AppRegistry {
             .map_err(|_| anyhow::anyhow!("AppRegistry lock poisoned"))?;
 
         let mut incoming: HashMap<String, FunctionEntry> = HashMap::new();
+        let mut pools_to_create: Vec<(String, String, String, String)> = Vec::new();
         for app in &full.applications {
             let metric_count = app.metrics.len();
             if metric_count > 0 {
@@ -81,18 +85,33 @@ impl AppRegistry {
                     incoming.insert(topic.clone(), entry);
                 }
             }
+            for user in &app.sql_users {
+                pools_to_create.push((
+                    app.namespace.clone(),
+                    app.name.clone(),
+                    user.username.clone(),
+                    user.connection_url.clone(),
+                ));
+            }
         }
 
-        let evicted: Vec<(String, String, String)> = map
+        let modules_to_evict: Vec<(String, String, String)> = map
             .iter()
             .filter(|(topic, _)| !incoming.contains_key(topic.as_str()))
             .map(|(_, e)| (e.app_namespace.clone(), e.app_name.clone(), e.function_name.clone()))
             .collect();
 
+        let mut pools_to_evict_apps: Vec<(String, String)> = modules_to_evict
+            .iter()
+            .map(|(ns, app, _)| (ns.clone(), app.clone()))
+            .collect();
+        pools_to_evict_apps.sort_unstable();
+        pools_to_evict_apps.dedup();
+
         map.clear();
-        let mut to_load = Vec::with_capacity(incoming.len());
+        let mut modules_to_load = Vec::with_capacity(incoming.len());
         for (topic, entry) in incoming {
-            to_load.push((
+            modules_to_load.push((
                 entry.app_namespace.clone(),
                 entry.app_name.clone(),
                 entry.function_name.clone(),
@@ -101,11 +120,11 @@ impl AppRegistry {
             map.insert(topic, entry);
         }
 
-        Ok((to_load, evicted))
+        Ok(ConfigDiff { modules_to_load, modules_to_evict, pools_to_create, pools_to_evict_apps })
     }
 
     /// Apply a list of incremental updates: upsert or delete each application's functions.
-    /// Returns `(to_load, to_evict)` describing the changes.
+    /// Returns a `ConfigDiff` describing module and pool changes.
     ///
     /// On upsert, all existing entries for the application are replaced with the new
     /// function list.  This handles both additions and removals of individual functions.
@@ -115,8 +134,10 @@ impl AppRegistry {
             .write()
             .map_err(|_| anyhow::anyhow!("AppRegistry lock poisoned"))?;
 
-        let mut to_load: Vec<(String, String, String, String)> = Vec::new();
-        let mut to_evict: Vec<(String, String, String)> = Vec::new();
+        let mut modules_to_load: Vec<(String, String, String, String)> = Vec::new();
+        let mut modules_to_evict: Vec<(String, String, String)> = Vec::new();
+        let mut pools_to_create: Vec<(String, String, String, String)> = Vec::new();
+        let mut pools_to_evict_apps: Vec<(String, String)> = Vec::new();
 
         for update in updates {
             let Some(app) = update.app_config else {
@@ -136,9 +157,10 @@ impl AppRegistry {
                     .collect();
                 for topic in removed {
                     if let Some(old) = map.remove(&topic) {
-                        to_evict.push((old.app_namespace, old.app_name, old.function_name));
+                        modules_to_evict.push((old.app_namespace, old.app_name, old.function_name));
                     }
                 }
+                pools_to_evict_apps.push((app.namespace.clone(), app.name.clone()));
             } else {
                 let metric_count = app.metrics.len();
                 if metric_count > 0 {
@@ -158,7 +180,7 @@ impl AppRegistry {
                     .collect();
                 for topic in old_topics {
                     if let Some(old) = map.remove(&topic) {
-                        to_evict.push((old.app_namespace, old.app_name, old.function_name));
+                        modules_to_evict.push((old.app_namespace, old.app_name, old.function_name));
                     }
                 }
 
@@ -168,7 +190,7 @@ impl AppRegistry {
                             if (old.app_namespace.as_str(), old.app_name.as_str())
                                 != (app.namespace.as_str(), app.name.as_str())
                             {
-                                to_evict.push((
+                                modules_to_evict.push((
                                     old.app_namespace.clone(),
                                     old.app_name.clone(),
                                     old.function_name.clone(),
@@ -181,7 +203,7 @@ impl AppRegistry {
                 for fn_cfg in &app.functions {
                     if let Some(topic) = &fn_cfg.topic {
                         let entry = function_entry_from(&app, fn_cfg);
-                        to_load.push((
+                        modules_to_load.push((
                             entry.app_namespace.clone(),
                             entry.app_name.clone(),
                             entry.function_name.clone(),
@@ -190,10 +212,22 @@ impl AppRegistry {
                         map.insert(topic.clone(), entry);
                     }
                 }
+
+                // Evict old pools for this app first (handles credential rotation),
+                // then schedule creation of all pools from the updated sql_users.
+                pools_to_evict_apps.push((app.namespace.clone(), app.name.clone()));
+                for user in &app.sql_users {
+                    pools_to_create.push((
+                        app.namespace.clone(),
+                        app.name.clone(),
+                        user.username.clone(),
+                        user.connection_url.clone(),
+                    ));
+                }
             }
         }
 
-        Ok((to_load, to_evict))
+        Ok(ConfigDiff { modules_to_load, modules_to_evict, pools_to_create, pools_to_evict_apps })
     }
 
     /// Returns the NATS topic for every function currently in the registry.

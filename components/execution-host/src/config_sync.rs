@@ -1,7 +1,9 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::sql_pool::SqlPoolMap;
 use crate::{
     config::{
         AppRegistry,
@@ -23,10 +25,11 @@ pub async fn run_config_sync_loop(
     metrics: MetricsRegistry,
     topics_tx: tokio::sync::watch::Sender<Vec<String>>,
     synced_tx: tokio::sync::watch::Sender<bool>,
+    sql_pools: Arc<SqlPoolMap>,
 ) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_config_sync(&addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx).await {
+        match run_config_sync(&addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx, &sql_pools).await {
             Ok(()) => {
                 tracing::warn!("config sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
@@ -51,8 +54,9 @@ async fn run_config_sync(
     metrics: &MetricsRegistry,
     topics_tx: &tokio::sync::watch::Sender<Vec<String>>,
     synced_tx: &tokio::sync::watch::Sender<bool>,
+    sql_pools: &Arc<SqlPoolMap>,
 ) -> Result<()> {
-    fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules).await?;
+    fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules, sql_pools).await?;
     if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
         tracing::warn!("failed to sync user metrics after full config: {e:#}");
     }
@@ -101,14 +105,15 @@ async fn run_config_sync(
         if let Some(incremental) = request.incremental_config {
             let version = incremental.version.clone();
             let update_count = incremental.updates.len();
-            let (to_load, to_evict) = registry.apply_incremental(incremental.updates)?;
+            let diff = registry.apply_incremental(incremental.updates)?;
             if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
                 tracing::warn!("failed to sync user metrics after incremental config: {e:#}");
             }
             topics_tx.send(registry.topics()?).ok();
             tracing::debug!(version, update_count, "incremental config applied");
 
-            apply_module_changes(modules, to_load, to_evict).await;
+            apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await;
+            apply_pool_changes(sql_pools, diff.pools_to_create, diff.pools_to_evict_apps).await;
 
             let ack = IncrementalUpdateAck {
                 host_id: host_id.to_string(),
@@ -132,6 +137,7 @@ async fn fetch_full_config(
     host_id: String,
     registry: &AppRegistry,
     modules: &ModuleRegistry,
+    sql_pools: &Arc<SqlPoolMap>,
 ) -> Result<()> {
     tracing::info!(%addr, "connecting to operator for full config");
     let mut client = ConfigSyncClient::connect(addr).await?;
@@ -144,13 +150,32 @@ async fn fetch_full_config(
         .into_inner();
     if let Some(full) = response.config {
         let app_count = full.applications.len();
-        let (to_load, to_evict) = registry.apply_full_config(full)?;
+        let diff = registry.apply_full_config(full)?;
         tracing::info!(app_count, "full config applied");
-        apply_module_changes(modules, to_load, to_evict).await;
+        apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await;
+        apply_pool_changes(sql_pools, diff.pools_to_create, diff.pools_to_evict_apps).await;
     } else {
         tracing::warn!("operator returned empty full config response");
     }
     Ok(())
+}
+
+// Evicts stale pools synchronously, then spawns background tasks for each pool
+// to create — matching the module loading pattern.
+async fn apply_pool_changes(
+    pools: &Arc<SqlPoolMap>,
+    to_create: Vec<(String, String, String, String)>,
+    to_evict_apps: Vec<(String, String)>,
+) {
+    for (ns, app) in to_evict_apps {
+        pools.evict_app(&ns, &app).await;
+    }
+    for (ns, app, username, url) in to_create {
+        let p = Arc::clone(pools);
+        tokio::spawn(async move {
+            p.ensure(ns, app, username, url).await;
+        });
+    }
 }
 
 // Spawns module load/evict tasks for all changes from a config update.

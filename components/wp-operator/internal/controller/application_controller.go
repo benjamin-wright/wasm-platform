@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -105,18 +106,20 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
 	if app.Spec.SQL != nil {
-		credName := postgresCredentialName(app)
-		var cred dboperator.PostgresCredential
-		err := r.Get(ctx, types.NamespacedName{
-			Namespace: r.Config.PostgresCredentialNamespace,
-			Name:      credName,
-		}, &cred)
-		if err == nil {
-			if delErr := r.Delete(ctx, &cred); delErr != nil && !apierrors.IsNotFound(delErr) {
-				return ctrl.Result{}, fmt.Errorf("deleting PostgresCredential: %w", delErr)
+		for _, userName := range sqlUsersForApp(app.Spec.SQL) {
+			credName := K8sCredentialName(app.Namespace, app.Name, userName)
+			var cred dboperator.PostgresCredential
+			err := r.Get(ctx, types.NamespacedName{
+				Namespace: r.Config.PostgresCredentialNamespace,
+				Name:      credName,
+			}, &cred)
+			if err == nil {
+				if delErr := r.Delete(ctx, &cred); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return ctrl.Result{}, fmt.Errorf("deleting PostgresCredential %q: %w", credName, delErr)
+				}
+			} else if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("getting PostgresCredential %q for deletion: %w", credName, err)
 			}
-		} else if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("getting PostgresCredential for deletion: %w", err)
 		}
 	}
 
@@ -150,6 +153,25 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			r.setReadyCondition(app, metav1.ConditionFalse, "InvalidIdentifier", msg)
 			_ = r.Status().Update(ctx, app)
 			return ctrl.Result{}, nil
+		}
+		if r.Config.PostgresDatabaseName == "" {
+			msg := "spec.sql is set but PostgresDatabaseName is not configured"
+			r.setReadyCondition(app, metav1.ConditionFalse, "DatabaseConfigMissing", msg)
+			_ = r.Status().Update(ctx, app)
+			return ctrl.Result{}, nil
+		}
+		var pgdb dboperator.PostgresDatabase
+		if err := r.Get(ctx, types.NamespacedName{
+			Namespace: r.Config.PostgresCredentialNamespace,
+			Name:      r.Config.PostgresDatabaseName,
+		}, &pgdb); err != nil {
+			if apierrors.IsNotFound(err) {
+				msg := fmt.Sprintf("PostgresDatabase %q not found", r.Config.PostgresDatabaseName)
+				r.setReadyCondition(app, metav1.ConditionFalse, "DatabaseNotFound", msg)
+				_ = r.Status().Update(ctx, app)
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("getting PostgresDatabase %q: %w", r.Config.PostgresDatabaseName, err)
 		}
 	}
 	for i := range app.Spec.Functions {
@@ -223,6 +245,11 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		} else {
 			fnCfg.WorldType = configsync.WorldType_WORLD_TYPE_MESSAGE
 		}
+		if app.Spec.SQL != nil {
+			if pgUsername := sqlUsernameForFunction(app, fn); pgUsername != "" {
+				fnCfg.SqlUsername = &pgUsername
+			}
+		}
 		functions = append(functions, fnCfg)
 	}
 
@@ -240,10 +267,18 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			return ctrl.Result{}, err
 		}
 		if requeue {
-			// db-operator hasn't finished provisioning the Secret yet.
+			// db-operator hasn't finished provisioning the Secrets yet.
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		cfg.SqlUsers = sqlUsers
+
+		app.Status.SQLDatabaseName = PGDatabaseName(app.Namespace, app.Name)
+		userNames := sqlUsersForApp(app.Spec.SQL)
+		pgUsernames := make([]string, len(userNames))
+		for i, u := range userNames {
+			pgUsernames[i] = PGUsername(app.Namespace, app.Name, u)
+		}
+		app.Status.SQLUsernames = pgUsernames
 	}
 
 	if r.Store.Set(key, cfg) {
@@ -278,53 +313,159 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-// reconcileSQLBinding ensures a PostgresCredential CR exists for the app and
-// returns the resolved SqlUserConfig slice once the db-operator has populated its Secret.
-// Returns (nil, true, nil) when the Secret is not yet available; the caller
-// should requeue.
+// reconcileSQLBinding ensures one PostgresCredential CR exists per SQL user
+// (or the implicit 'app' user) and returns resolved SqlUserConfig entries once
+// all db-operator Secrets are available.
+// Returns (nil, true, nil) when any credential or Secret is not yet ready.
 func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) ([]*configsync.SqlUserConfig, bool, error) {
-	credName := postgresCredentialName(app)
 	credNS := r.Config.PostgresCredentialNamespace
-	secretName := postgresCredentialSecretName(app)
+	dbName := PGDatabaseName(app.Namespace, app.Name)
+	userNames := sqlUsersForApp(app.Spec.SQL)
+	userPermissions := sqlPermissionsForApp(app.Spec.SQL)
 
-	var cred dboperator.PostgresCredential
-	err := r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: credName}, &cred)
-	if apierrors.IsNotFound(err) {
-		desired := buildPostgresCredential(credName, credNS, secretName, app, r.Config.PostgresDatabaseName)
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return nil, false, fmt.Errorf("creating PostgresCredential: %w", createErr)
+	var sqlUsers []*configsync.SqlUserConfig
+
+	for _, userName := range userNames {
+		pgUsername := PGUsername(app.Namespace, app.Name, userName)
+		credName := K8sCredentialName(app.Namespace, app.Name, userName)
+		secretName := credName + "-creds"
+
+		var cred dboperator.PostgresCredential
+		err := r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: credName}, &cred)
+		if apierrors.IsNotFound(err) {
+			desired := buildPostgresCredentialForUser(
+				credName, credNS, secretName,
+				pgUsername, dbName,
+				userPermissions[userName],
+				r.Config.PostgresDatabaseName,
+			)
+			if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+				return nil, false, fmt.Errorf("creating PostgresCredential %q: %w", credName, createErr)
+			}
+			return nil, true, nil
 		}
-		return nil, true, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("getting PostgresCredential: %w", err)
+		if err != nil {
+			return nil, false, fmt.Errorf("getting PostgresCredential %q: %w", credName, err)
+		}
+
+		if cred.Status.Phase != dboperator.CredentialPhaseReady {
+			return nil, true, nil
+		}
+
+		var secret corev1.Secret
+		err = r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: secretName}, &secret)
+		if apierrors.IsNotFound(err) {
+			return nil, true, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("getting Secret %q: %w", secretName, err)
+		}
+
+		pgUser := string(secret.Data["PGUSER"])
+		pgPass := string(secret.Data["PGPASSWORD"])
+		pgHost := string(secret.Data["PGHOST"])
+		pgPort := string(secret.Data["PGPORT"])
+
+		connURL := &url.URL{
+			Scheme: "postgres",
+			User:   url.UserPassword(pgUser, pgPass),
+			Host:   pgHost + ":" + pgPort,
+			Path:   "/" + dbName,
+		}
+
+		sqlUsers = append(sqlUsers, &configsync.SqlUserConfig{
+			Username:      pgUsername,
+			ConnectionUrl: connURL.String(),
+		})
 	}
 
-	var secret corev1.Secret
-	err = r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: secretName}, &secret)
-	if apierrors.IsNotFound(err) {
-		return nil, true, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("getting postgres credential Secret %q: %w", secretName, err)
-	}
-
-	user := string(secret.Data["PGUSER"])
-	password := string(secret.Data["PGPASSWORD"])
-	host := string(secret.Data["PGHOST"])
-	port := string(secret.Data["PGPORT"])
-	// TODO(Phase 9.2 operator task): derive database name via PG identifier algorithm.
-	connURL := fmt.Sprintf("postgres://%s:%s@%s:%s", user, password, host, port)
-
-	return []*configsync.SqlUserConfig{
-		{
-			Username:      user,
-			ConnectionUrl: connURL,
-		},
-	}, false, nil
+	return sqlUsers, false, nil
 }
 
-// SetupWithManager registers the ApplicationReconciler with the controller manager.
+// ── SQL helpers ───────────────────────────────────────────────────────────────
+
+// sqlUsernameForFunction resolves the derived PG username for a function based on
+// spec.sql. Implicit mode (spec.sql.users absent/empty): all functions are bound to the
+// 'app' user. Explicit mode: only functions with sqlUser set get a username; functions
+// without sqlUser return "" (no SQL access).
+func sqlUsernameForFunction(app *wasmplatformv1alpha1.Application, fn *wasmplatformv1alpha1.FunctionSpec) string {
+	if len(app.Spec.SQL.Users) == 0 {
+		return PGUsername(app.Namespace, app.Name, "app")
+	}
+	if fn.SQLUser != nil {
+		return PGUsername(app.Namespace, app.Name, *fn.SQLUser)
+	}
+	return ""
+}
+
+// sqlUsersForApp returns the list of logical SQL user names for an Application.
+// When spec.sql.users is absent or empty, a single implicit 'app' user is returned.
+func sqlUsersForApp(sql *wasmplatformv1alpha1.SQLSpec) []string {
+	if len(sql.Users) == 0 {
+		return []string{"app"}
+	}
+	names := make([]string, len(sql.Users))
+	for i, u := range sql.Users {
+		names[i] = u.Name
+	}
+	return names
+}
+
+// sqlPermissionsForApp returns a map from user name to the DatabasePermissionEntry
+// that should be used in the PostgresCredential spec.
+// Absent or empty spec.sql.users → all users get ALL on the app's database.
+func sqlPermissionsForApp(sql *wasmplatformv1alpha1.SQLSpec) map[string][]wasmplatformv1alpha1.SQLTablePermission {
+	out := make(map[string][]wasmplatformv1alpha1.SQLTablePermission)
+	if len(sql.Users) == 0 {
+		// Implicit 'app' user: ALL on all tables (empty Tables slice → all).
+		out["app"] = []wasmplatformv1alpha1.SQLTablePermission{
+			{Grant: []wasmplatformv1alpha1.SQLGrant{wasmplatformv1alpha1.SQLGrantAll}},
+		}
+		return out
+	}
+	for _, u := range sql.Users {
+		perms := u.Permissions
+		if len(perms) == 0 {
+			perms = []wasmplatformv1alpha1.SQLTablePermission{
+				{Grant: []wasmplatformv1alpha1.SQLGrant{wasmplatformv1alpha1.SQLGrantAll}},
+			}
+		}
+		out[u.Name] = perms
+	}
+	return out
+}
+
+// buildPostgresCredentialForUser constructs a PostgresCredential for a single
+// Application SQL user.
+func buildPostgresCredentialForUser(
+	name, namespace, secretName, pgUsername, dbName string,
+	tablePerms []wasmplatformv1alpha1.SQLTablePermission,
+	pgdbRef string,
+) *dboperator.PostgresCredential {
+	perms := make([]dboperator.DatabasePermission, 0)
+	for _, tp := range tablePerms {
+		for _, g := range tp.Grant {
+			perms = append(perms, dboperator.DatabasePermission(g))
+		}
+	}
+	return &dboperator.PostgresCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: dboperator.PostgresCredentialSpec{
+			DatabaseRef: pgdbRef,
+			Username:    pgUsername,
+			SecretName:  secretName,
+			Permissions: []dboperator.DatabasePermissionEntry{
+				{
+					Databases:   []string{dbName},
+					Permissions: perms,
+				},
+			},
+		},
+	}
+}
 func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),

@@ -4,12 +4,14 @@ mod host_kv;
 mod host_log;
 mod host_messaging;
 mod host_metrics;
+mod host_sql;
 mod metrics;
 mod module_cache;
 mod modules;
 mod nats;
 mod oci;
 mod runtime;
+mod sql_pool;
 
 use anyhow::Result;
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
@@ -19,6 +21,7 @@ use modules::ModuleRegistry;
 use platform_common::health::{self, ReadyState};
 use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 use runtime::{RuntimeState, invoke_on_message, invoke_on_request};
+use sql_pool::SqlPoolMap;
 use std::{path::PathBuf, sync::Arc};
 use wasmtime::Engine;
 
@@ -50,7 +53,13 @@ async fn main() -> Result<()> {
 
     let metrics_registry = MetricsRegistry::new()?;
 
-    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone())?);
+    let pg_pool_max: u32 = std::env::var("PG_POOL_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    let sql_pools = SqlPoolMap::new(pg_pool_max);
+
+    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone(), Arc::clone(&sql_pools))?);
 
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
@@ -102,6 +111,7 @@ async fn main() -> Result<()> {
         metrics_registry.clone(),
         topics_tx,
         synced_tx,
+        sql_pools,
     ));
     tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx, shutdown_tx.subscribe()));
 
@@ -215,6 +225,7 @@ async fn process_nats_messages(
         let app_namespace = fn_entry.app_namespace.clone();
         let function_name = fn_entry.function_name.clone();
         let world_type = fn_entry.world_type;
+        let sql_username = fn_entry.sql_username.clone();
         let nats_for_invoke = client_snapshot.clone();
 
         let trigger = match world_type {
@@ -233,7 +244,7 @@ async fn process_nats_messages(
             let result = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name)
+                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username)
                     })
                     .await
                 }
@@ -243,7 +254,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name)?;
+                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name, sql_username)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
