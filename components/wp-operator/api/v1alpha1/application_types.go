@@ -84,6 +84,62 @@ type FunctionTrigger struct {
 	Topic string `json:"topic,omitempty"`
 }
 
+// SQLGrant is a PostgreSQL table-level privilege.
+// +kubebuilder:validation:Enum=SELECT;INSERT;UPDATE;DELETE;TRUNCATE;REFERENCES;TRIGGER;ALL
+type SQLGrant string
+
+const (
+	SQLGrantSelect     SQLGrant = "SELECT"
+	SQLGrantInsert     SQLGrant = "INSERT"
+	SQLGrantUpdate     SQLGrant = "UPDATE"
+	SQLGrantDelete     SQLGrant = "DELETE"
+	SQLGrantTruncate   SQLGrant = "TRUNCATE"
+	SQLGrantReferences SQLGrant = "REFERENCES"
+	SQLGrantTrigger    SQLGrant = "TRIGGER"
+	SQLGrantAll        SQLGrant = "ALL"
+)
+
+// SQLTablePermission maps a set of PostgreSQL privileges to a list of tables.
+type SQLTablePermission struct {
+	// Tables is the list of table names to which the grants apply.
+	// If absent, grants apply to all tables.
+	// +optional
+	Tables []string `json:"tables,omitempty"`
+
+	// Grant is the list of PostgreSQL privileges to grant on the specified tables.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Grant []SQLGrant `json:"grant"`
+}
+
+// SQLUserSpec declares a named database user and its table-level permissions.
+//
+// +kubebuilder:validation:XValidation:rule="self.name != 'migrations'",message="'migrations' is a reserved SQL user name"
+type SQLUserSpec struct {
+	// Name is the logical user identifier. Used to derive the PG username and referenced
+	// by function sqlUser fields. The name 'migrations' is reserved.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Permissions is the list of table-level grants for this user.
+	// If absent, ALL is granted on all tables.
+	// +optional
+	Permissions []SQLTablePermission `json:"permissions,omitempty"`
+}
+
+// SQLSpec configures SQL database access for an Application.
+// An empty struct (sql: {}) enables SQL with a single implicit 'app' user granted ALL
+// on all tables. Functions are implicitly bound to the 'app' user when users is absent.
+type SQLSpec struct {
+	// Users is the list of named database users to provision.
+	// If absent or empty, a single user named 'app' is provisioned with ALL on all tables
+	// and all functions are implicitly bound to that user.
+	// If non-empty, only the listed users are provisioned; functions must opt in via sqlUser.
+	// +optional
+	Users []SQLUserSpec `json:"users,omitempty"`
+}
+
 // FunctionSpec declares a single deployable function within an Application.
 type FunctionSpec struct {
 	// Name is the identifier for this function, unique within the Application.
@@ -100,9 +156,20 @@ type FunctionSpec struct {
 	// Trigger defines the event source for this function.
 	// +kubebuilder:validation:Required
 	Trigger FunctionTrigger `json:"trigger"`
+
+	// SQLUser is the name of the SQL user (from spec.sql.users) this function uses.
+	// When spec.sql is set and spec.sql.users is absent or empty, functions implicitly use
+	// the 'app' user and this field is ignored.
+	// When spec.sql.users is non-empty, a function with this field set is granted access
+	// under the named user; a function without this field has no SQL access.
+	// When spec.sql is absent, this field has no effect.
+	// +optional
+	SQLUser *string `json:"sqlUser,omitempty"`
 }
 
 // ApplicationSpec defines the desired state of an Application.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.sql) || !has(self.sql.users) || self.sql.users.size() == 0 || self.functions.all(f, !has(f.sqlUser) || self.sql.users.exists(u, u.name == f.sqlUser))",message="each function's sqlUser must reference a user name defined in spec.sql.users"
 type ApplicationSpec struct {
 	// Functions is the list of deployable functions in this Application.
 	// Each function has its own module and trigger.
@@ -115,11 +182,13 @@ type ApplicationSpec struct {
 	// +optional
 	Env map[string]string `json:"env,omitempty"`
 
-	// SQL is the logical database name exposed to all functions via the sql host import.
-	// Must correspond to a provisioned database managed by the db-operator.
-	// Omit to disable SQL access.
+	// SQL configures optional SQL database access for this Application.
+	// When absent, no SQL access is provisioned.
+	// When present as an empty struct (sql: {}), a single 'app' user is provisioned
+	// with ALL on all tables, and all functions are implicitly bound to it.
+	// When spec.sql.users is non-empty, only the listed users are provisioned.
 	// +optional
-	SQL string `json:"sql,omitempty"`
+	SQL *SQLSpec `json:"sql,omitempty"`
 
 	// Metrics is the list of user-defined Prometheus metrics declared by this Application.
 	// Names must be unique within the Application and cluster-wide; the operator enforces

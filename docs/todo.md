@@ -246,17 +246,17 @@ binding, row deserialisation, and the pool lifecycle.
   execution-host.
 - [x] **Cargo**: add `sqlx` (features: `postgres`, `runtime-tokio-rustls`) and `dashmap`
   to `components/execution-host/Cargo.toml`.
-- [ ] **CRD**: replace `spec.sql string` with `spec.sql *SQLSpec` (optional struct with
+- [x] **CRD**: replace `spec.sql string` with `spec.sql *SQLSpec` (optional struct with
   optional `users` list); add `sqlUser *string` to `FunctionSpec`. Add CEL rules:
   (a) `migrations` reserved in `spec.sql.users[*].name`; (b) when `spec.sql.users` is
   non-empty, each function's `sqlUser` must be a defined user name or absent. Run
   `make generate` in `components/wp-operator/`.
-- [ ] **Proto**: remove `SqlConfig`; add `SqlUserConfig` (username + connection_url) and
+- [x] **Proto**: remove `SqlConfig`; add `SqlUserConfig` (username + connection_url) and
   `repeated sql_users` (field 5) to `ApplicationConfig`; add `optional sql_username`
   (field 6) to `FunctionConfig`. Regenerate stubs.
-- [ ] **Operator — RBAC**: add `get;list;watch` on `postgresdatabases` to the RBAC rules
+- [x] **Operator — RBAC**: add `get;list;watch` on `postgresdatabases` to the RBAC rules
   and Helm chart.
-- [ ] **Operator — derivation utility**: implement and unit-test the PG identifier
+- [x] **Operator — derivation utility**: implement and unit-test the PG identifier
   derivation algorithm (database name and username, with hash-truncation) as a shared
   helper in the controller package.
 - [ ] **Operator — `reconcileSQLBinding`**: use the derivation utility; create one

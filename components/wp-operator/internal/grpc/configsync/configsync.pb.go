@@ -519,7 +519,7 @@ func (x *AppUpdate) GetDelete() bool {
 }
 
 // ApplicationConfig carries all per-application configuration pushed to
-// execution hosts.  Application-level fields (env, sql) are shared
+// execution hosts.  Application-level fields (env, sql_users) are shared
 // across all functions in the application.  Per-function configuration lives in
 // the functions list.
 type ApplicationConfig struct {
@@ -528,7 +528,7 @@ type ApplicationConfig struct {
 	Namespace     string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Functions     []*FunctionConfig      `protobuf:"bytes,3,rep,name=functions,proto3" json:"functions,omitempty"`
 	Env           map[string]string      `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Sql           *SqlConfig             `protobuf:"bytes,5,opt,name=sql,proto3,oneof" json:"sql,omitempty"`
+	SqlUsers      []*SqlUserConfig       `protobuf:"bytes,5,rep,name=sql_users,json=sqlUsers,proto3" json:"sql_users,omitempty"`
 	Metrics       []*MetricDefinition    `protobuf:"bytes,7,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -592,9 +592,9 @@ func (x *ApplicationConfig) GetEnv() map[string]string {
 	return nil
 }
 
-func (x *ApplicationConfig) GetSql() *SqlConfig {
+func (x *ApplicationConfig) GetSqlUsers() []*SqlUserConfig {
 	if x != nil {
-		return x.Sql
+		return x.SqlUsers
 	}
 	return nil
 }
@@ -615,7 +615,10 @@ type FunctionConfig struct {
 	// topic is set for message-application functions.
 	Topic *string `protobuf:"bytes,4,opt,name=topic,proto3,oneof" json:"topic,omitempty"`
 	// http_config is set for http-application functions.
-	HttpConfig    *HttpConfig `protobuf:"bytes,5,opt,name=http_config,json=httpConfig,proto3,oneof" json:"http_config,omitempty"`
+	HttpConfig *HttpConfig `protobuf:"bytes,5,opt,name=http_config,json=httpConfig,proto3,oneof" json:"http_config,omitempty"`
+	// sql_username references an entry in ApplicationConfig.sql_users.
+	// Absent when the function has no SQL access.
+	SqlUsername   *string `protobuf:"bytes,6,opt,name=sql_username,json=sqlUsername,proto3,oneof" json:"sql_username,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -685,28 +688,39 @@ func (x *FunctionConfig) GetHttpConfig() *HttpConfig {
 	return nil
 }
 
-type SqlConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DatabaseName  string                 `protobuf:"bytes,1,opt,name=database_name,json=databaseName,proto3" json:"database_name,omitempty"`
-	ConnectionUrl string                 `protobuf:"bytes,2,opt,name=connection_url,json=connectionUrl,proto3" json:"connection_url,omitempty"`
+func (x *FunctionConfig) GetSqlUsername() string {
+	if x != nil && x.SqlUsername != nil {
+		return *x.SqlUsername
+	}
+	return ""
+}
+
+// SqlUserConfig carries the derived PG username and full connection URL for a
+// single provisioned database user.  Passwords are encapsulated in the URL.
+type SqlUserConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// username is the derived PG username (≤63 chars), used as the pool map key.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// connection_url is the full postgres://user:pass@host:port/dbname URL.
+	ConnectionUrl string `protobuf:"bytes,2,opt,name=connection_url,json=connectionUrl,proto3" json:"connection_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SqlConfig) Reset() {
-	*x = SqlConfig{}
+func (x *SqlUserConfig) Reset() {
+	*x = SqlUserConfig{}
 	mi := &file_configsync_v1_configsync_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SqlConfig) String() string {
+func (x *SqlUserConfig) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SqlConfig) ProtoMessage() {}
+func (*SqlUserConfig) ProtoMessage() {}
 
-func (x *SqlConfig) ProtoReflect() protoreflect.Message {
+func (x *SqlUserConfig) ProtoReflect() protoreflect.Message {
 	mi := &file_configsync_v1_configsync_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -718,19 +732,19 @@ func (x *SqlConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SqlConfig.ProtoReflect.Descriptor instead.
-func (*SqlConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use SqlUserConfig.ProtoReflect.Descriptor instead.
+func (*SqlUserConfig) Descriptor() ([]byte, []int) {
 	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *SqlConfig) GetDatabaseName() string {
+func (x *SqlUserConfig) GetUsername() string {
 	if x != nil {
-		return x.DatabaseName
+		return x.Username
 	}
 	return ""
 }
 
-func (x *SqlConfig) GetConnectionUrl() string {
+func (x *SqlUserConfig) GetConnectionUrl() string {
 	if x != nil {
 		return x.ConnectionUrl
 	}
@@ -885,18 +899,17 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\tAppUpdate\x12?\n" +
 	"\n" +
 	"app_config\x18\x01 \x01(\v2 .configsync.v1.ApplicationConfigR\tappConfig\x12\x16\n" +
-	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xeb\x02\n" +
+	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xed\x02\n" +
 	"\x11ApplicationConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12;\n" +
 	"\tfunctions\x18\x03 \x03(\v2\x1d.configsync.v1.FunctionConfigR\tfunctions\x12;\n" +
-	"\x03env\x18\x04 \x03(\v2).configsync.v1.ApplicationConfig.EnvEntryR\x03env\x12/\n" +
-	"\x03sql\x18\x05 \x01(\v2\x18.configsync.v1.SqlConfigH\x00R\x03sql\x88\x01\x01\x129\n" +
+	"\x03env\x18\x04 \x03(\v2).configsync.v1.ApplicationConfig.EnvEntryR\x03env\x129\n" +
+	"\tsql_users\x18\x05 \x03(\v2\x1c.configsync.v1.SqlUserConfigR\bsqlUsers\x129\n" +
 	"\ametrics\x18\a \x03(\v2\x1f.configsync.v1.MetricDefinitionR\ametrics\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
-	"\x04_sql\"\xf2\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xab\x02\n" +
 	"\x0eFunctionConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -905,11 +918,13 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"world_type\x18\x03 \x01(\x0e2\x18.configsync.v1.WorldTypeR\tworldType\x12\x19\n" +
 	"\x05topic\x18\x04 \x01(\tH\x00R\x05topic\x88\x01\x01\x12?\n" +
 	"\vhttp_config\x18\x05 \x01(\v2\x19.configsync.v1.HttpConfigH\x01R\n" +
-	"httpConfig\x88\x01\x01B\b\n" +
+	"httpConfig\x88\x01\x01\x12&\n" +
+	"\fsql_username\x18\x06 \x01(\tH\x02R\vsqlUsername\x88\x01\x01B\b\n" +
 	"\x06_topicB\x0e\n" +
-	"\f_http_config\"W\n" +
-	"\tSqlConfig\x12#\n" +
-	"\rdatabase_name\x18\x01 \x01(\tR\fdatabaseName\x12%\n" +
+	"\f_http_configB\x0f\n" +
+	"\r_sql_username\"R\n" +
+	"\rSqlUserConfig\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12%\n" +
 	"\x0econnection_url\x18\x02 \x01(\tR\rconnectionUrl\":\n" +
 	"\n" +
 	"HttpConfig\x12\x12\n" +
@@ -958,7 +973,7 @@ var file_configsync_v1_configsync_proto_goTypes = []any{
 	(*AppUpdate)(nil),                // 8: configsync.v1.AppUpdate
 	(*ApplicationConfig)(nil),        // 9: configsync.v1.ApplicationConfig
 	(*FunctionConfig)(nil),           // 10: configsync.v1.FunctionConfig
-	(*SqlConfig)(nil),                // 11: configsync.v1.SqlConfig
+	(*SqlUserConfig)(nil),            // 11: configsync.v1.SqlUserConfig
 	(*HttpConfig)(nil),               // 12: configsync.v1.HttpConfig
 	(*MetricDefinition)(nil),         // 13: configsync.v1.MetricDefinition
 	nil,                              // 14: configsync.v1.ApplicationConfig.EnvEntry
@@ -971,7 +986,7 @@ var file_configsync_v1_configsync_proto_depIdxs = []int32{
 	9,  // 4: configsync.v1.AppUpdate.app_config:type_name -> configsync.v1.ApplicationConfig
 	10, // 5: configsync.v1.ApplicationConfig.functions:type_name -> configsync.v1.FunctionConfig
 	14, // 6: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
-	11, // 7: configsync.v1.ApplicationConfig.sql:type_name -> configsync.v1.SqlConfig
+	11, // 7: configsync.v1.ApplicationConfig.sql_users:type_name -> configsync.v1.SqlUserConfig
 	13, // 8: configsync.v1.ApplicationConfig.metrics:type_name -> configsync.v1.MetricDefinition
 	0,  // 9: configsync.v1.FunctionConfig.world_type:type_name -> configsync.v1.WorldType
 	12, // 10: configsync.v1.FunctionConfig.http_config:type_name -> configsync.v1.HttpConfig
@@ -993,7 +1008,6 @@ func file_configsync_v1_configsync_proto_init() {
 		return
 	}
 	file_configsync_v1_configsync_proto_msgTypes[0].OneofWrappers = []any{}
-	file_configsync_v1_configsync_proto_msgTypes[7].OneofWrappers = []any{}
 	file_configsync_v1_configsync_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

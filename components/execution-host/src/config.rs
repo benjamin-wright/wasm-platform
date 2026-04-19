@@ -25,7 +25,9 @@ pub struct FunctionEntry {
     pub http_config: Option<configsync::HttpConfig>,
     /// Application-level shared config.
     pub env: HashMap<String, String>,
-    pub sql: Option<configsync::SqlConfig>,
+    /// The derived PG username this function uses, or None if the function has no SQL access.
+    /// At invocation time, the pool map is looked up by (namespace, app_name, sql_username).
+    pub sql_username: Option<String>,
     /// User-defined Prometheus metrics declared by the application.
     pub metrics: Vec<configsync::MetricDefinition>,
 }
@@ -250,7 +252,7 @@ fn function_entry_from(
         world_type,
         http_config: fn_cfg.http_config.clone(),
         env: app.env.clone(),
-        sql: app.sql.clone(),
+        sql_username: fn_cfg.sql_username.clone(),
         metrics: app.metrics.clone(),
     }
 }

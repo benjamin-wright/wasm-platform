@@ -74,6 +74,15 @@ spec:
                         within the Application.
                       minLength: 1
                       type: string
+                    sqlUser:
+                      description: |-
+                        SQLUser is the name of the SQL user (from spec.sql.users) this function uses.
+                        When spec.sql is set and spec.sql.users is absent or empty, functions implicitly use
+                        the 'app' user and this field is ignored.
+                        When spec.sql.users is non-empty, a function with this field set is granted access
+                        under the named user; a function without this field has no SQL access.
+                        When spec.sql is absent, this field has no effect.
+                      type: string
                     trigger:
                       description: Trigger defines the event source for this function.
                       properties:
@@ -176,13 +185,82 @@ spec:
                 type: array
               sql:
                 description: |-
-                  SQL is the logical database name exposed to all functions via the sql host import.
-                  Must correspond to a provisioned database managed by the db-operator.
-                  Omit to disable SQL access.
-                type: string
+                  SQL configures optional SQL database access for this Application.
+                  When absent, no SQL access is provisioned.
+                  When present as an empty struct (sql: {}), a single 'app' user is provisioned
+                  with ALL on all tables, and all functions are implicitly bound to it.
+                  When spec.sql.users is non-empty, only the listed users are provisioned.
+                properties:
+                  users:
+                    description: |-
+                      Users is the list of named database users to provision.
+                      If absent or empty, a single user named 'app' is provisioned with ALL on all tables
+                      and all functions are implicitly bound to that user.
+                      If non-empty, only the listed users are provisioned; functions must opt in via sqlUser.
+                    items:
+                      description: SQLUserSpec declares a named database user and
+                        its table-level permissions.
+                      properties:
+                        name:
+                          description: |-
+                            Name is the logical user identifier. Used to derive the PG username and referenced
+                            by function sqlUser fields. The name 'migrations' is reserved.
+                          minLength: 1
+                          type: string
+                        permissions:
+                          description: |-
+                            Permissions is the list of table-level grants for this user.
+                            If absent, ALL is granted on all tables.
+                          items:
+                            description: SQLTablePermission maps a set of PostgreSQL
+                              privileges to a list of tables.
+                            properties:
+                              grant:
+                                description: Grant is the list of PostgreSQL privileges
+                                  to grant on the specified tables.
+                                items:
+                                  description: SQLGrant is a PostgreSQL table-level
+                                    privilege.
+                                  enum:
+                                  - SELECT
+                                  - INSERT
+                                  - UPDATE
+                                  - DELETE
+                                  - TRUNCATE
+                                  - REFERENCES
+                                  - TRIGGER
+                                  - ALL
+                                  type: string
+                                minItems: 1
+                                type: array
+                              tables:
+                                description: |-
+                                  Tables is the list of table names to which the grants apply.
+                                  If absent, grants apply to all tables.
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - grant
+                            type: object
+                          type: array
+                      required:
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: '''migrations'' is a reserved SQL user name'
+                        rule: self.name != 'migrations'
+                    type: array
+                type: object
             required:
             - functions
             type: object
+            x-kubernetes-validations:
+            - message: each function's sqlUser must reference a user name defined
+                in spec.sql.users
+              rule: '!has(self.sql) || !has(self.sql.users) || self.sql.users.size()
+                == 0 || self.functions.all(f, !has(f.sqlUser) || self.sql.users.exists(u,
+                u.name == f.sqlUser))'
           status:
             description: ApplicationStatus defines the observed state of an Application.
             properties:

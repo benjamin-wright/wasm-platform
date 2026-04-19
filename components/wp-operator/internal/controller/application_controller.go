@@ -56,6 +56,7 @@ type Config struct {
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgrescredentials,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresdatabases,verbs=get;list;watch
 type ApplicationReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
@@ -103,7 +104,7 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
-	if app.Spec.SQL != "" {
+	if app.Spec.SQL != nil {
 		credName := postgresCredentialName(app)
 		var cred dboperator.PostgresCredential
 		err := r.Get(ctx, types.NamespacedName{
@@ -143,6 +144,14 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
+	if app.Spec.SQL != nil {
+		if err := ValidatePGInputs(app.Namespace, app.Name); err != nil {
+			msg := fmt.Sprintf("cannot derive PG identifiers: %s", err)
+			r.setReadyCondition(app, metav1.ConditionFalse, "InvalidIdentifier", msg)
+			_ = r.Status().Update(ctx, app)
+			return ctrl.Result{}, nil
+		}
+	}
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
 		if fn.Trigger.Topic == "" {
@@ -225,8 +234,8 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	}
 	cfg.Metrics = buildMetricDefs(app.Spec.Metrics)
 
-	if app.Spec.SQL != "" {
-		sqlCfg, requeue, err := r.reconcileSQLBinding(ctx, app)
+	if app.Spec.SQL != nil {
+		sqlUsers, requeue, err := r.reconcileSQLBinding(ctx, app)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -234,7 +243,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			// db-operator hasn't finished provisioning the Secret yet.
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
-		cfg.Sql = sqlCfg
+		cfg.SqlUsers = sqlUsers
 	}
 
 	if r.Store.Set(key, cfg) {
@@ -270,10 +279,10 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 }
 
 // reconcileSQLBinding ensures a PostgresCredential CR exists for the app and
-// returns the resolved SqlConfig once the db-operator has populated its Secret.
+// returns the resolved SqlUserConfig slice once the db-operator has populated its Secret.
 // Returns (nil, true, nil) when the Secret is not yet available; the caller
 // should requeue.
-func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) (*configsync.SqlConfig, bool, error) {
+func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) ([]*configsync.SqlUserConfig, bool, error) {
 	credName := postgresCredentialName(app)
 	credNS := r.Config.PostgresCredentialNamespace
 	secretName := postgresCredentialSecretName(app)
@@ -304,11 +313,14 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 	password := string(secret.Data["PGPASSWORD"])
 	host := string(secret.Data["PGHOST"])
 	port := string(secret.Data["PGPORT"])
-	connURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s", user, password, host, port, app.Spec.SQL)
+	// TODO(Phase 9.2 operator task): derive database name via PG identifier algorithm.
+	connURL := fmt.Sprintf("postgres://%s:%s@%s:%s", user, password, host, port)
 
-	return &configsync.SqlConfig{
-		DatabaseName:  app.Spec.SQL,
-		ConnectionUrl: connURL,
+	return []*configsync.SqlUserConfig{
+		{
+			Username:      user,
+			ConnectionUrl: connURL,
+		},
 	}, false, nil
 }
 
@@ -442,12 +454,8 @@ func buildPostgresCredential(name, namespace, secretName string, app *wasmplatfo
 			DatabaseRef: pgdbName,
 			Username:    username,
 			SecretName:  secretName,
-			Permissions: []dboperator.DatabasePermissionEntry{
-				{
-					Databases:   []string{app.Spec.SQL},
-					Permissions: []dboperator.DatabasePermission{dboperator.PermissionSelect, dboperator.PermissionInsert, dboperator.PermissionUpdate, dboperator.PermissionDelete},
-				},
-			},
+			// TODO(Phase 9.2 operator task): populate per-user credentials via PG identifier algorithm.
+			Permissions: []dboperator.DatabasePermissionEntry{},
 		},
 	}
 }

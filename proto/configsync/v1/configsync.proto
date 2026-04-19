@@ -64,7 +64,7 @@ enum WorldType {
 }
 
 // ApplicationConfig carries all per-application configuration pushed to
-// execution hosts.  Application-level fields (env, sql) are shared
+// execution hosts.  Application-level fields (env, sql_users) are shared
 // across all functions in the application.  Per-function configuration lives in
 // the functions list.
 message ApplicationConfig {
@@ -72,7 +72,7 @@ message ApplicationConfig {
   string namespace = 2;
   repeated FunctionConfig functions = 3;
   map<string, string> env = 4;
-  optional SqlConfig sql = 5;
+  repeated SqlUserConfig sql_users = 5;
   repeated MetricDefinition metrics = 7;
 }
 
@@ -85,10 +85,17 @@ message FunctionConfig {
   optional string topic = 4;
   // http_config is set for http-application functions.
   optional HttpConfig http_config = 5;
+  // sql_username references an entry in ApplicationConfig.sql_users.
+  // Absent when the function has no SQL access.
+  optional string sql_username = 6;
 }
 
-message SqlConfig {
-  string database_name = 1;
+// SqlUserConfig carries the derived PG username and full connection URL for a
+// single provisioned database user.  Passwords are encapsulated in the URL.
+message SqlUserConfig {
+  // username is the derived PG username (≤63 chars), used as the pool map key.
+  string username = 1;
+  // connection_url is the full postgres://user:pass@host:port/dbname URL.
   string connection_url = 2;
 }
 

@@ -222,8 +222,15 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
-			Module: "oci://example.com/my-app@sha256:aaaa",
-			Topic:  "itest.create",
+			Functions: []wasmplatformv1alpha1.FunctionSpec{
+				{
+					Name:   "handler",
+					Module: "oci://example.com/my-app@sha256:aaaa",
+					Trigger: wasmplatformv1alpha1.FunctionTrigger{
+						Topic: "itest.create",
+					},
+				},
+			},
 		},
 	}
 	g.Expect(c.Create(context.Background(), app)).To(Succeed())
@@ -232,8 +239,8 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 	})
 
 	update := cc.WaitForUpsert(t, ns, "my-app")
-	g.Expect(update.GetTopic()).To(Equal("fn.itest.create"))
-	g.Expect(update.GetModuleRef()).To(Equal("oci://example.com/my-app@sha256:aaaa"))
+	g.Expect(update.GetFunctions()[0].GetTopic()).To(Equal("fn.itest.create"))
+	g.Expect(update.GetFunctions()[0].GetModuleRef()).To(Equal("oci://example.com/my-app@sha256:aaaa"))
 }
 
 // TestApplicationUpdate_BroadcastsUpsert verifies that updating an Application
@@ -247,8 +254,15 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
-			Module: "oci://example.com/my-app@sha256:bbbb",
-			Topic:  "itest.v1",
+			Functions: []wasmplatformv1alpha1.FunctionSpec{
+				{
+					Name:   "handler",
+					Module: "oci://example.com/my-app@sha256:bbbb",
+					Trigger: wasmplatformv1alpha1.FunctionTrigger{
+						Topic: "itest.v1",
+					},
+				},
+			},
 		},
 	}
 	g.Expect(c.Create(context.Background(), app)).To(Succeed())
@@ -262,11 +276,11 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 	// Fetch the latest resource version before applying the update.
 	var fresh wasmplatformv1alpha1.Application
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "my-app"}, &fresh)).To(Succeed())
-	fresh.Spec.Topic = "itest.v2"
+	fresh.Spec.Functions[0].Trigger.Topic = "itest.v2"
 	g.Expect(c.Update(context.Background(), &fresh)).To(Succeed())
 
 	update := cc.WaitForUpsert(t, ns, "my-app")
-	g.Expect(update.GetTopic()).To(Equal("fn.itest.v2"))
+	g.Expect(update.GetFunctions()[0].GetTopic()).To(Equal("fn.itest.v2"))
 }
 
 // TestApplicationDelete_BroadcastsDelete verifies that deleting an Application
@@ -280,8 +294,15 @@ func TestApplicationDelete_BroadcastsDelete(t *testing.T) {
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
-			Module: "oci://example.com/my-app@sha256:cccc",
-			Topic:  "itest.delete",
+			Functions: []wasmplatformv1alpha1.FunctionSpec{
+				{
+					Name:   "handler",
+					Module: "oci://example.com/my-app@sha256:cccc",
+					Trigger: wasmplatformv1alpha1.FunctionTrigger{
+						Topic: "itest.delete",
+					},
+				},
+			},
 		},
 	}
 	g.Expect(c.Create(context.Background(), app)).To(Succeed())
@@ -338,8 +359,15 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 	owner := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "owner-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
-			Module: "oci://example.com/owner@sha256:1111",
-			Topic:  sharedTopic,
+			Functions: []wasmplatformv1alpha1.FunctionSpec{
+				{
+					Name:   "handler",
+					Module: "oci://example.com/owner@sha256:1111",
+					Trigger: wasmplatformv1alpha1.FunctionTrigger{
+						Topic: sharedTopic,
+					},
+				},
+			},
 		},
 	}
 	g.Expect(c.Create(context.Background(), owner)).To(Succeed())
@@ -361,8 +389,15 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 	blocked := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "blocked-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
-			Module: "oci://example.com/blocked@sha256:2222",
-			Topic:  sharedTopic,
+			Functions: []wasmplatformv1alpha1.FunctionSpec{
+				{
+					Name:   "handler",
+					Module: "oci://example.com/blocked@sha256:2222",
+					Trigger: wasmplatformv1alpha1.FunctionTrigger{
+						Topic: sharedTopic,
+					},
+				},
+			},
 		},
 	}
 
@@ -382,5 +417,5 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 
 	// An upsert for the formerly-blocked app must be broadcast.
 	update := cc.WaitForUpsert(t, ns, "blocked-app")
-	g.Expect(update.GetTopic()).To(Equal("fn." + sharedTopic))
+	g.Expect(update.GetFunctions()[0].GetTopic()).To(Equal("fn." + sharedTopic))
 }
