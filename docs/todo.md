@@ -241,10 +241,10 @@ binding, row deserialisation, and the pool lifecycle.
 
 #### Tasks
 
-- [ ] **WIT**: remove `db: string` from `sql.query` / `sql.execute`; add `boolean(bool)`
+- [x] **WIT**: remove `db: string` from `sql.query` / `sql.execute`; add `boolean(bool)`
   to the `param` variant in `framework/runtime.wit`. Update all `bindgen!` call sites in
   execution-host.
-- [ ] **Cargo**: add `sqlx` (features: `postgres`, `runtime-tokio-rustls`) and `dashmap`
+- [x] **Cargo**: add `sqlx` (features: `postgres`, `runtime-tokio-rustls`) and `dashmap`
   to `components/execution-host/Cargo.toml`.
 - [ ] **CRD**: replace `spec.sql string` with `spec.sql *SQLSpec` (optional struct with
   optional `users` list); add `sqlUser *string` to `FunctionSpec`. Add CEL rules:
@@ -612,3 +612,13 @@ Assign a unique correlation ID to each inbound request at the gateway and propag
 - [ ] Generate a correlation ID at the gateway (UUID or similar) and attach it to the NATS message headers.
 - [ ] Extract and attach the correlation ID as a `tracing` span field in the execution host.
 - [ ] Include the correlation ID in guest log forwarding so application logs are correlated with platform logs.
+
+---
+
+## Future Work: Multi-Subscriber Topics
+
+Remove the uniqueness requirement per topic. Each individual function will use a combination of its namespace, app name and function name as the ID of its consumer group, to support mutliple subscribers to the same messages. This will allow e.g. functional subscription to a message queue, but also logging / stats gathering / etc.
+
+### Things to consider
+
+- call-response behaviour (can secondary subscribers just not respond?)

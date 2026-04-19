@@ -8,6 +8,7 @@ interface log {
 interface sql {
     variant param {
         null,
+        boolean(bool),
         integer(s64),
         real(f64),
         text(string),
@@ -15,8 +16,8 @@ interface sql {
     }
 
     record row { columns: list<string>, values: list<param> }
-    query: func(db: string, sql: string, params: list<param>) -> result<list<row>, string>;
-    execute: func(db: string, sql: string, params: list<param>) -> result<u64, string>;
+    query:   func(sql: string, params: list<param>) -> result<list<row>, string>;
+    execute: func(sql: string, params: list<param>) -> result<u64, string>;
 }
 
 interface kv {

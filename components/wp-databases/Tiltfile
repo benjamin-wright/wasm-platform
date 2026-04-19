@@ -6,7 +6,7 @@ def db_operator(namespace):
     helm_resource(
         'db-operator',
         namespace=namespace,
-        chart='oci://docker.io/benwright/db-operator-chart:v1.0.8',
+        chart='oci://docker.io/benwright/db-operator-chart:v1.0.9',
         labels=['platform'],
         flags=[
             '--set=image.repository=docker.io/benwright/db-operator',
