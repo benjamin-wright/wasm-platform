@@ -280,12 +280,13 @@ binding, row deserialisation, and the pool lifecycle.
   `message_bindings` in `RuntimeState::new` (the wasmtime Linker keys on WIT interface
   name, so a single registration covers both `message-application` and `http-application`
   worlds — same pattern as `kv`/`log`/`messaging`/`metrics`).
-- [ ] **`sql-hello` example**: implement module, Application CR, and seeding Job.
-- [ ] **e2e test**: seeding Job runs first; assert GET `/sql-hello` returns expected rows;
+- [x] **`sql-hello` example**: implement module, Application CR, and seeding Job.
+  (Code in `setup-sql-hello.sh`; run `bash setup-sql-hello.sh` from repo root to create `examples/sql-hello/`.)
+- [x] **e2e test**: seeding Job runs first; assert GET `/sql-hello` returns expected rows;
   hello-world test is unaffected.
-- [ ] Update `components/execution-host/README.md`: add SQL to the Data Isolation table;
+- [x] Update `components/execution-host/README.md`: add SQL to the Data Isolation table;
   document `PG_POOL_MAX_CONNECTIONS`; remove `PG_HOST`/`PG_PORT` from the env var table.
-- [ ] Update `components/wp-operator/README.md`: document new `spec.sql` struct shape,
+- [x] Update `components/wp-operator/README.md`: document new `spec.sql` struct shape,
   `sqlUser` function field, PG identifier derivation algorithm, reserved names, credential
   lifecycle, and new status fields.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
