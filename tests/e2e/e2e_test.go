@@ -17,16 +17,23 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	for _, app := range []string{"demo-app", "counter-app"} {
-		cmd := exec.Command("kubectl", "wait", "application", app,
-			"-n", "examples",
+	type appRef struct {
+		name, namespace string
+	}
+	for _, app := range []appRef{
+		{"demo-app", "examples"},
+		{"counter-app", "examples"},
+		{"sql-hello", "default"},
+	} {
+		cmd := exec.Command("kubectl", "wait", "application", app.name,
+			"-n", app.namespace,
 			"--for=condition=Ready",
 			"--timeout=120s",
 		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app, err)
+			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app.name, err)
 			os.Exit(1)
 		}
 	}
@@ -36,6 +43,7 @@ func TestMain(m *testing.M) {
 const (
 	baseURL       = "http://localhost/hello"
 	counterAppURL = "http://localhost/counter"
+	sqlHelloURL   = "http://localhost/sql-hello"
 	routeTimeout  = 60 * time.Second
 	pollInterval  = 1 * time.Second
 )
@@ -283,4 +291,44 @@ func scrapeMetricSum(url, name string) (float64, error) {
 		total += v
 	}
 	return total, nil
+}
+
+// TestSQLHello verifies that the sql-hello Application correctly queries the
+// seeded greetings table and returns only active rows as JSON.
+// The seed job inserts: Alice (active=true), Bob (active=true), Carol (active=false).
+// The module queries WHERE active=$1 with boolean(true), so only Alice and Bob are returned.
+func TestSQLHello(t *testing.T) {
+	g := NewWithT(t)
+
+	// Poll until the sql-hello endpoint is serving and returns a non-empty body.
+	var body string
+	g.Eventually(func() (string, error) {
+		resp, err := http.Get(sqlHelloURL)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+		}
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("reading body: %w", err)
+		}
+		s := string(b)
+		if s == "" || s == "[]" {
+			return "", fmt.Errorf("empty response body")
+		}
+		body = s
+		return s, nil
+	}, routeTimeout, pollInterval).ShouldNot(BeEmpty(),
+		"sql-hello should serve a non-empty JSON response at %s within %s", sqlHelloURL, routeTimeout)
+
+	// Active rows (Alice, Bob) must appear; inactive row (Carol) must not.
+	g.Expect(body).To(ContainSubstring(`"name":"Alice"`),
+		"expected Alice (active=true) in sql-hello response")
+	g.Expect(body).To(ContainSubstring(`"name":"Bob"`),
+		"expected Bob (active=true) in sql-hello response")
+	g.Expect(body).NotTo(ContainSubstring(`"name":"Carol"`),
+		"expected Carol (active=false) to be excluded from sql-hello response")
 }
