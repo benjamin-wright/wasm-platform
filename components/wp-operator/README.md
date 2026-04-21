@@ -100,6 +100,57 @@ spec:
 - `migrations` is reserved in `spec.sql.users[*].name`.
 - When `spec.sql.users` is non-empty, each function's `sqlUser` must name a defined user or be absent.
 
+## Application Authoring
+
+### Database Migrations
+
+Applications can include versioned SQL schema migrations. The operator runs a Kubernetes Job from a migrations image before activating any functions, ensuring the schema is correct before traffic is served. See Phase 9.3c for the `spec.sql.migrations` field; this section covers how to package and build a migrations image.
+
+**File naming convention**
+
+Migration files are paired by ID. Both files must exist for every migration:
+
+```
+migrations/
+  001-create-greetings-apply.sql
+  001-create-greetings-rollback.sql
+  002-add-active-column-apply.sql
+  002-add-active-column-rollback.sql
+```
+
+> **Footgun — never edit an applied file.** The runner tracks a content hash of every file it has applied. Editing or deleting an applied file is a hard error; the runner will refuse to run until the file is restored. Only ever add new migration files.
+
+For the full file-format contract (ID format, hash tracking, advisory lock behaviour) see the [db-operator migrations spec](../../db-operator/cmd/db-migrations/spec.md).
+
+**Building a migrations image**
+
+Create one `Dockerfile` per repository (a monorepo pattern), parameterised by `APP` build-arg:
+
+```dockerfile
+ARG DB_MIGRATIONS_VERSION=v1.0.10
+FROM docker.io/benwright/db-migrations:${DB_MIGRATIONS_VERSION}
+ARG APP
+COPY ${APP}/migrations/ /migrations/
+```
+
+Build per app:
+
+```sh
+docker build --build-arg APP=sql-hello \
+  -f migrations.Dockerfile \
+  -t registry.example.com/sql-hello-migrations:v1 .
+```
+
+A worked example lives in [`examples/sql-hello/migrations.Dockerfile`](../../examples/sql-hello/migrations.Dockerfile) and [`examples/sql-hello/migrations/`](../../examples/sql-hello/migrations/).
+
+**Immutable tags required**
+
+> **Warning:** `spec.sql.migrations` accepts any OCI reference, but mutable tags (`:latest`, branch tags) cause silent schema skew across replicas and mask changes from the operator. Always use an immutable tag or digest (`@sha256:…`). This is not enforced by CEL — it is a deployment discipline requirement.
+
+**Rollback**
+
+Rollback is not yet wired through the platform. If a migration fails, the Application is held at `Ready: False, reason: MigrationFailed`. To recover, fix the migrations image, push it under a new immutable tag, and update `spec.sql.migrations` to trigger a new Job. If a schema rollback is needed, add forward-correcting SQL rather than editing existing migration files.
+
 ## PostgreSQL Identifier Derivation
 
 The operator derives deterministic PostgreSQL identifiers from the Application's namespace and name. Both the operator and execution host use the same algorithm so the correct pool is looked up at invocation time.

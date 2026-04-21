@@ -133,6 +133,16 @@ type SQLUserSpec struct {
 // An empty struct (sql: {}) enables SQL with a single implicit 'app' user granted ALL
 // on all tables. Functions are implicitly bound to the 'app' user when users is absent.
 type SQLSpec struct {
+	// Migrations is an OCI reference to a migrations image built from the db-operator
+	// base image. When set, the operator provisions an implicit 'migrations' database owner
+	// user, runs the referenced image as a Kubernetes Job before activating any functions,
+	// and holds the Application at Ready: False, reason: MigrationsRunning until the Job
+	// succeeds. On Job failure the Application is held at Ready: False, reason: MigrationFailed
+	// and no automatic requeue is performed — bump the ref to trigger a new Job.
+	// Use an immutable tag or digest (@sha256:…); mutable tags may cause silent schema skew.
+	// +optional
+	Migrations *string `json:"migrations,omitempty"`
+
 	// Users is the list of named database users to provision.
 	// If absent or empty, a single user named 'app' is provisioned with ALL on all tables
 	// and all functions are implicitly bound to that user.

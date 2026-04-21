@@ -193,6 +193,16 @@ spec:
                   with ALL on all tables, and all functions are implicitly bound to it.
                   When spec.sql.users is non-empty, only the listed users are provisioned.
                 properties:
+                  migrations:
+                    description: |-
+                      Migrations is an OCI reference to a migrations image built from the db-operator
+                      base image. When set, the operator provisions an implicit 'migrations' database owner
+                      user, runs the referenced image as a Kubernetes Job before activating any functions,
+                      and holds the Application at Ready: False, reason: MigrationsRunning until the Job
+                      succeeds. On Job failure the Application is held at Ready: False, reason: MigrationFailed
+                      and no automatic requeue is performed — bump the ref to trigger a new Job.
+                      Use an immutable tag or digest (@sha256:…); mutable tags may cause silent schema skew.
+                    type: string
                   users:
                     description: |-
                       Users is the list of named database users to provision.

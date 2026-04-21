@@ -434,14 +434,14 @@ the operator. Document **immutable tags or digests required**; do not enforce in
 
 #### Tasks
 
-- [ ] Add the *Database migrations* section to
+- [x] Add the *Database migrations* section to
   [components/wp-operator/README.md](components/wp-operator/README.md) per the design
   above.
-- [ ] Add `examples/sql-hello/migrations/` with at least one apply/rollback pair that
+- [x] Add `examples/sql-hello/migrations/` with at least one apply/rollback pair that
   matches the schema used by the existing 9.2 seeding Job.
-- [ ] Add `examples/sql-hello/migrations.Dockerfile` demonstrating the parameterised
+- [x] Add `examples/sql-hello/migrations.Dockerfile` demonstrating the parameterised
   monorepo pattern. Build target wired into the example's Tiltfile.
-- [ ] Cross-reference the db-operator
+- [x] Cross-reference the db-operator
   [cmd/db-migrations/spec.md](../db-operator/cmd/db-migrations/spec.md) from the new
   README section so authors can find the file-format contract upstream.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.

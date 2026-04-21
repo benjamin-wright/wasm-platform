@@ -11,15 +11,8 @@ impl Guest for SqlHelloSetup {
     fn on_request(_request: HttpRequest) -> Result<HttpResponse, String> {
         log::emit(log::Level::Info, "sql-hello: setup");
 
-        sql::execute(
-            "CREATE TABLE IF NOT EXISTS greetings (\
-                id     serial PRIMARY KEY,\
-                name   text   NOT NULL UNIQUE,\
-                active bool   NOT NULL DEFAULT true\
-            )",
-            &[],
-        )?;
-
+        // The greetings table is created by the migrations Job before this function
+        // is activated. This handler only seeds/refreshes the rows.
         sql::execute(
             "INSERT INTO greetings (name, active) VALUES \
                 ('Alice', true), ('Bob', true), ('Carol', false) \
