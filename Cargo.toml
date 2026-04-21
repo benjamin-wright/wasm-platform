@@ -7,6 +7,8 @@ members = [
     "examples/demo-app/http-handler",
     "examples/demo-app/message-handler",
     "examples/counter-app/http-handler",
-    "examples/sql-hello/http-handler",
     "lib/platform-common",
+]
+exclude = [
+    "examples/sql-hello",
 ]

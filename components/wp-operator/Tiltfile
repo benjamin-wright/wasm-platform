@@ -27,6 +27,9 @@ def wp_operator(namespace):
         labels = ['platform'],
         namespace=namespace,
         port_forwards = ['50051:50051'],
+        flags = [
+            '--set=databases.postgresDatabaseName=wp-databases-postgres',
+        ],
     )
 
     local_resource(

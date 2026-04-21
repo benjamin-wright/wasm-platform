@@ -1,15 +1,15 @@
 wit_bindgen::generate!({
     world: "http-application",
-    path: "../../../framework/runtime.wit",
+    path: "../../../../framework/runtime.wit",
 });
 
 use framework::runtime::{log, sql};
 
-struct SqlHelloHandler;
+struct SqlHelloQuery;
 
-impl Guest for SqlHelloHandler {
+impl Guest for SqlHelloQuery {
     fn on_request(_request: HttpRequest) -> Result<HttpResponse, String> {
-        log::emit(log::Level::Info, "handling sql-hello request");
+        log::emit(log::Level::Info, "sql-hello: query");
 
         let rows = sql::query(
             "SELECT id, name FROM greetings WHERE active = $1",
@@ -41,4 +41,4 @@ impl Guest for SqlHelloHandler {
     }
 }
 
-export!(SqlHelloHandler);
+export!(SqlHelloQuery);

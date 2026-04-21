@@ -1,41 +1,51 @@
 # sql-hello
 
-A single-function WebAssembly application demonstrating PostgreSQL access via the `sql` WIT interface. The function queries an existing `greetings` table and returns active rows as JSON.
+A three-function WebAssembly application demonstrating PostgreSQL access via the `sql` WIT interface, using named SQL users with distinct grant sets to verify permission enforcement.
 
 ---
 
-## Function
+## Functions
 
-### http-handler
+Each function is a separate compiled module. The Application CR declares two named SQL users (`writer` with ALL on greetings, `reader` with SELECT only) to exercise the named-user code path end-to-end.
 
-Implements the `http-application` world. On each `GET /sql-hello` request it:
+### setup
 
-1. Calls `sql::query("SELECT id, name FROM greetings WHERE active = $1", [boolean(true)])`.
-2. Returns a JSON array of `{"id": N, "name": "..."}` objects for each active row.
+`POST /sql-hello/setup` — bound to the `writer` SQL user.
+
+1. `CREATE TABLE IF NOT EXISTS greetings (id serial PRIMARY KEY, name text NOT NULL UNIQUE, active bool NOT NULL DEFAULT true)`.
+2. `INSERT INTO greetings (name, active) VALUES ('Alice', true), ('Bob', true), ('Carol', false) ON CONFLICT (name) DO UPDATE SET active = EXCLUDED.active`.
+
+Returns HTTP 200 on success. Idempotent.
+
+### query
+
+`GET /sql-hello` — bound to the `reader` SQL user.
+
+Calls `sql::query("SELECT id, name FROM greetings WHERE active = $1", [boolean(true)])` and returns a JSON array of active rows.
 
 | Export | Example response |
 |---|---|
 | `on-request` | `[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]` |
 
-The Application CR uses `spec.sql: {}` (implicit `app` user, ALL on all tables). No `sqlUser` field is required on the function.
+### insert-test
+
+`POST /sql-hello/insert` — bound to the `reader` SQL user.
+
+Attempts `INSERT INTO greetings (name, active) VALUES ('TestUser', true)`. PostgreSQL rejects this with a permission-denied error; the handler maps that to HTTP 403. Any other error returns HTTP 500.
 
 ---
 
-## Database schema
+## Structure
 
-Seeded by `k8s/seed-job.yaml`, deployed to the `wasm-platform` namespace using the PG credentials from the `wasm-default-sql-hello-app-pg-creds` Secret:
+The three functions live in a sub-workspace under `examples/sql-hello/`. A shared `Cargo.toml` at the workspace root pins the `wit-bindgen` version; each crate inherits it via `wit-bindgen = { workspace = true }`.
 
-```sql
-CREATE TABLE IF NOT EXISTS greetings (
-  id     serial PRIMARY KEY,
-  name   text   NOT NULL UNIQUE,
-  active bool   NOT NULL DEFAULT true
-);
-INSERT INTO greetings (name, active) VALUES
-  ('Alice', true),
-  ('Bob',   true),
-  ('Carol', false)
-ON CONFLICT (name) DO UPDATE SET active = EXCLUDED.active;
+```
+examples/sql-hello/
+  Cargo.toml          ← virtual workspace
+  fns/
+    setup/            ← sql-hello-setup crate
+    query/            ← sql-hello-query crate
+    insert-test/      ← sql-hello-insert-test crate
 ```
 
 ---
@@ -43,20 +53,33 @@ ON CONFLICT (name) DO UPDATE SET active = EXCLUDED.active;
 ## Build
 
 ```bash
-cargo build \
-  --manifest-path examples/sql-hello/http-handler/Cargo.toml \
+cargo build --manifest-path examples/sql-hello/fns/setup/Cargo.toml \
+  --target wasm32-wasip2 --release
+cargo build --manifest-path examples/sql-hello/fns/query/Cargo.toml \
+  --target wasm32-wasip2 --release
+cargo build --manifest-path examples/sql-hello/fns/insert-test/Cargo.toml \
   --target wasm32-wasip2 --release
 ```
 
-Output: `target/wasm32-wasip2/release/sql_hello_http_handler.wasm`
+Outputs:
+- `target/wasm32-wasip2/release/sql_hello_setup.wasm`
+- `target/wasm32-wasip2/release/sql_hello_query.wasm`
+- `target/wasm32-wasip2/release/sql_hello_insert_test.wasm`
 
 ---
 
 ## OCI Packaging
 
 ```bash
-oras push wasm-platform-registry.localhost:5001/sql-hello-http:dev \
-  target/wasm32-wasip2/release/sql_hello_http_handler.wasm \
-  --artifact-type application/vnd.wasm.content.layer.v1+wasm \
-  --plain-http
+oras push wasm-platform-registry.localhost:5001/sql-hello-setup:dev \
+  target/wasm32-wasip2/release/sql_hello_setup.wasm \
+  --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http
+
+oras push wasm-platform-registry.localhost:5001/sql-hello-query:dev \
+  target/wasm32-wasip2/release/sql_hello_query.wasm \
+  --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http
+
+oras push wasm-platform-registry.localhost:5001/sql-hello-insert-test:dev \
+  target/wasm32-wasip2/release/sql_hello_insert_test.wasm \
+  --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http
 ```

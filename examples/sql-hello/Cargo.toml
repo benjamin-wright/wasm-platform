@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "fns/setup",
+    "fns/query",
+    "fns/insert-test",
+]
+
+[workspace.dependencies]
+wit-bindgen = "0.36"
