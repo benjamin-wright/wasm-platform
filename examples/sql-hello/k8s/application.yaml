@@ -1,0 +1,16 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: sql-hello
+  namespace: default
+spec:
+  sql: {}   # implicit 'app' user, ALL on all tables
+  functions:
+    - name: handler
+      module: sql-hello-http
+      # sqlUser omitted — implicit 'app' binding under spec.sql: {}
+      trigger:
+        http:
+          path: /sql-hello
+          methods:
+            - GET

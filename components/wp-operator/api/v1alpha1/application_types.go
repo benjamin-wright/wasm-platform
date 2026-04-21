@@ -120,6 +120,7 @@ type SQLUserSpec struct {
 	// by function sqlUser fields. The name 'migrations' is reserved.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 
 	// Permissions is the list of table-level grants for this user.
@@ -137,6 +138,7 @@ type SQLSpec struct {
 	// and all functions are implicitly bound to that user.
 	// If non-empty, only the listed users are provisioned; functions must opt in via sqlUser.
 	// +optional
+	// +kubebuilder:validation:MaxItems=20
 	Users []SQLUserSpec `json:"users,omitempty"`
 }
 
@@ -164,6 +166,7 @@ type FunctionSpec struct {
 	// under the named user; a function without this field has no SQL access.
 	// When spec.sql is absent, this field has no effect.
 	// +optional
+	// +kubebuilder:validation:MaxLength=63
 	SQLUser *string `json:"sqlUser,omitempty"`
 }
 
@@ -175,6 +178,7 @@ type ApplicationSpec struct {
 	// Each function has its own module and trigger.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
 	Functions []FunctionSpec `json:"functions"`
 
 	// Env is an optional map of environment variables injected into all functions'

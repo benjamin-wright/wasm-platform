@@ -239,6 +239,75 @@ before the Application is deployed. The test GETs `/sql-hello` and asserts the r
 contains the expected rows. The e2e test is the primary coverage vehicle for SQL param
 binding, row deserialisation, and the pool lifecycle.
 
+**`sql-hello` redesign (pending — current implementation incomplete)**
+
+The seed-Job approach was found to be fragile due to a secret naming mismatch and was
+abandoned mid-phase. The agreed replacement uses three HTTP handler functions in the same
+Application, removing any external seeding dependency.
+
+*Motivation:* A Job is a second external system that must agree on naming conventions
+with the operator. An HTTP handler is self-contained inside the Application boundary and
+uses only the pool the execution host provides — no external coordination needed. Using
+named users (`writer` and `reader`) also tests the named-user path properly: multiple
+`PostgresCredential` CRs, per-function pool lookup by `sql_username`, and grant
+enforcement are all the distinguishing behaviours of Phase 9.2. The current `spec.sql: {}`
+implicit `app` user path tests almost nothing distinctive.
+
+*Constraint:* `migrations` is reserved in `spec.sql.users[*].name` by the Phase 9.2 CEL
+rule. The DDL user must use a different name (e.g. `writer`).
+
+*Application CR shape:*
+```yaml
+spec:
+  sql:
+    users:
+      - name: writer
+        permissions:
+          - tables: [greetings]
+            grant: [ALL]
+      - name: reader
+        permissions:
+          - tables: [greetings]
+            grant: [SELECT]
+  functions:
+    - name: setup
+      module: sql-hello-http
+      sqlUser: writer
+      trigger:
+        http: { path: /sql-hello/setup, methods: [POST] }
+    - name: query
+      module: sql-hello-http
+      sqlUser: reader
+      trigger:
+        http: { path: /sql-hello, methods: [GET] }
+    - name: insert-test
+      module: sql-hello-http
+      sqlUser: reader
+      trigger:
+        http: { path: /sql-hello/insert, methods: [POST] }
+```
+
+*Function behaviour:*
+- `setup` (`writer`): `CREATE TABLE IF NOT EXISTS greetings …` + `INSERT … ON CONFLICT DO
+  UPDATE`. Idempotent. Returns 200 on success.
+- `query` (`reader`): `SELECT id, name FROM greetings WHERE active = $1` with
+  `[boolean(true)]`. Returns JSON array of active rows.
+- `insert-test` (`reader`): attempts `INSERT INTO greetings …`. PostgreSQL will return a
+  permission-denied error; the handler maps that to HTTP 403. Any other error returns 500.
+
+*E2e test flow:*
+1. `POST /sql-hello/setup` — wait for 200.
+2. `GET /sql-hello` — assert Alice and Bob present, Carol absent.
+3. `POST /sql-hello/insert` — assert 403 (permission denied enforced by PostgreSQL).
+`TestMain` waits only on the `sql-hello` Application Ready condition; no seed Job.
+
+*`spec.sql: {}` (implicit `app` user) coverage:* This path is no longer exercised by the
+e2e test. Confirm it is covered by operator unit tests before closing the phase.
+
+*Delete existing files* before implementing the redesign:
+- `examples/sql-hello/k8s/seed-job.yaml` — replaced by the `setup` handler.
+- The `sql-hello-seed` Tiltfile resource block.
+
 #### Tasks
 
 - [x] **WIT**: remove `db: string` from `sql.query` / `sql.execute`; add `boolean(bool)`

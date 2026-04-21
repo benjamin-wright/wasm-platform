@@ -82,6 +82,7 @@ spec:
                         When spec.sql.users is non-empty, a function with this field set is granted access
                         under the named user; a function without this field has no SQL access.
                         When spec.sql is absent, this field has no effect.
+                      maxLength: 63
                       type: string
                     trigger:
                       description: Trigger defines the event source for this function.
@@ -136,6 +137,7 @@ spec:
                   - name
                   - trigger
                   type: object
+                maxItems: 50
                 minItems: 1
                 type: array
               metrics:
@@ -205,6 +207,7 @@ spec:
                           description: |-
                             Name is the logical user identifier. Used to derive the PG username and referenced
                             by function sqlUser fields. The name 'migrations' is reserved.
+                          maxLength: 63
                           minLength: 1
                           type: string
                         permissions:
@@ -250,6 +253,7 @@ spec:
                       x-kubernetes-validations:
                       - message: '''migrations'' is a reserved SQL user name'
                         rule: self.name != 'migrations'
+                    maxItems: 20
                     type: array
                 type: object
             required:

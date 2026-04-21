@@ -1,0 +1,39 @@
+def sql_hello(namespace, resource_deps=[]):
+    k8s_kind('Application',
+             image_json_path = '{.spec.functions[*].module}',
+             pod_readiness = 'ignore')
+
+    custom_build(
+        'sql-hello-http',
+        command = (
+            'cargo build --manifest-path examples/sql-hello/http-handler/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --locked &&' +
+            ' oras push $EXPECTED_REF' +
+            ' target/wasm32-wasip2/release/sql_hello_http_handler.wasm' +
+            ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/sql-hello/http-handler/src',
+            'examples/sql-hello/http-handler/Cargo.toml',
+            'Cargo.toml',
+            'Cargo.lock',
+            'framework/runtime.wit',
+        ],
+        skips_local_docker = True,
+    )
+
+    k8s_yaml('examples/sql-hello/k8s/application.yaml')
+    k8s_yaml('examples/sql-hello/k8s/seed-job.yaml')
+
+    k8s_resource(
+        'sql-hello',
+        resource_deps = ['module-cache', 'wp-operator'] + resource_deps,
+        labels = ['example'],
+    )
+
+    k8s_resource(
+        'sql-hello-seed',
+        resource_deps = ['sql-hello'],
+        labels = ['example'],
+    )
