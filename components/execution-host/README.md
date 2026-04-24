@@ -28,7 +28,7 @@ Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURR
 
 ## Data Isolation
 
-- **PostgreSQL** — per-app connection pools keyed by `(database_name, username)`, lazily initialized. Connection strings are built from the shared `PG_HOST`/`PG_PORT` combined with per-app credentials from `SqlConfig` in the config stream.
+- **PostgreSQL** — per-app, per-user connection pools keyed by `(namespace, app_name, username)`, created eagerly on config arrival. The operator assembles full connection URLs (with embedded credentials) and delivers them via the config stream; the host never reads PostgreSQL credentials separately. Each invocation receives the pool for its function's assigned SQL user, or `None` if the function has no SQL access — SQL calls return `Err` in that case.
 - **Redis** — single multiplexed connection to the shared instance. Keys are transparently prefixed with `<namespace>/<app>/` (derived automatically from the application identity — no CRD field required). The `store` parameter has been dropped from the `kv` WIT interface; apps that need sub-namespacing can prefix their own keys.
 - **NATS** — each app is bound to its own subject. The `messaging` host function prefixes the caller-supplied topic with `fn.` and publishes to that subject; modules can send to any platform topic, not only their own.
 
@@ -43,9 +43,8 @@ Guest modules emit log entries via the `log` WIT interface (`log::emit(level, me
 | `CONFIG_SYNC_ADDR` | gRPC address of the wp-operator (required). |
 | `MODULE_CACHE_ADDR` | HTTP address of the module cache (required). |
 | `NATS_CREDENTIALS_PATH` | Directory containing NATS credential files (required). |
-| `PG_HOST` | Shared PostgreSQL hostname. |
-| `PG_PORT` | Shared PostgreSQL port. |
 | `REDIS_URL` | Shared Redis URL (e.g. `redis://redis:6379`). |
+| `PG_POOL_MAX_CONNECTIONS` | Maximum connections per per-user PostgreSQL pool (default `5`). |
 | `MAX_CONCURRENT_INVOCATIONS` | Concurrency limit per host (default `64`). |
 | `HOSTNAME` | Used as `host_id` in gRPC (injected by downward API). |
 

@@ -1,0 +1,42 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: sql-hello
+  namespace: default
+spec:
+  sql:
+    migrations: sql-hello-migrations
+    users:
+      - name: writer
+        permissions:
+          - tables: [greetings]
+            grant: [ALL]
+      - name: reader
+        permissions:
+          - tables: [greetings]
+            grant: [SELECT]
+  functions:
+    - name: setup
+      module: sql-hello-setup
+      sqlUser: writer
+      trigger:
+        http:
+          path: /sql-hello/setup
+          methods:
+            - POST
+    - name: query
+      module: sql-hello-query
+      sqlUser: reader
+      trigger:
+        http:
+          path: /sql-hello
+          methods:
+            - GET
+    - name: insert-test
+      module: sql-hello-insert-test
+      sqlUser: reader
+      trigger:
+        http:
+          path: /sql-hello/insert
+          methods:
+            - POST

@@ -239,6 +239,75 @@ before the Application is deployed. The test GETs `/sql-hello` and asserts the r
 contains the expected rows. The e2e test is the primary coverage vehicle for SQL param
 binding, row deserialisation, and the pool lifecycle.
 
+**`sql-hello` redesign (pending — current implementation incomplete)**
+
+The seed-Job approach was found to be fragile due to a secret naming mismatch and was
+abandoned mid-phase. The agreed replacement uses three HTTP handler functions in the same
+Application, removing any external seeding dependency.
+
+*Motivation:* A Job is a second external system that must agree on naming conventions
+with the operator. An HTTP handler is self-contained inside the Application boundary and
+uses only the pool the execution host provides — no external coordination needed. Using
+named users (`writer` and `reader`) also tests the named-user path properly: multiple
+`PostgresCredential` CRs, per-function pool lookup by `sql_username`, and grant
+enforcement are all the distinguishing behaviours of Phase 9.2. The current `spec.sql: {}`
+implicit `app` user path tests almost nothing distinctive.
+
+*Constraint:* `migrations` is reserved in `spec.sql.users[*].name` by the Phase 9.2 CEL
+rule. The DDL user must use a different name (e.g. `writer`).
+
+*Application CR shape:*
+```yaml
+spec:
+  sql:
+    users:
+      - name: writer
+        permissions:
+          - tables: [greetings]
+            grant: [ALL]
+      - name: reader
+        permissions:
+          - tables: [greetings]
+            grant: [SELECT]
+  functions:
+    - name: setup
+      module: sql-hello-http
+      sqlUser: writer
+      trigger:
+        http: { path: /sql-hello/setup, methods: [POST] }
+    - name: query
+      module: sql-hello-http
+      sqlUser: reader
+      trigger:
+        http: { path: /sql-hello, methods: [GET] }
+    - name: insert-test
+      module: sql-hello-http
+      sqlUser: reader
+      trigger:
+        http: { path: /sql-hello/insert, methods: [POST] }
+```
+
+*Function behaviour:*
+- `setup` (`writer`): `CREATE TABLE IF NOT EXISTS greetings …` + `INSERT … ON CONFLICT DO
+  UPDATE`. Idempotent. Returns 200 on success.
+- `query` (`reader`): `SELECT id, name FROM greetings WHERE active = $1` with
+  `[boolean(true)]`. Returns JSON array of active rows.
+- `insert-test` (`reader`): attempts `INSERT INTO greetings …`. PostgreSQL will return a
+  permission-denied error; the handler maps that to HTTP 403. Any other error returns 500.
+
+*E2e test flow:*
+1. `POST /sql-hello/setup` — wait for 200.
+2. `GET /sql-hello` — assert Alice and Bob present, Carol absent.
+3. `POST /sql-hello/insert` — assert 403 (permission denied enforced by PostgreSQL).
+`TestMain` waits only on the `sql-hello` Application Ready condition; no seed Job.
+
+*`spec.sql: {}` (implicit `app` user) coverage:* This path is no longer exercised by the
+e2e test. Confirm it is covered by operator unit tests before closing the phase.
+
+*Delete existing files* before implementing the redesign:
+- `examples/sql-hello/k8s/seed-job.yaml` — replaced by the `setup` handler.
+- The `sql-hello-seed` Tiltfile resource block.
+
 #### Tasks
 
 - [x] **WIT**: remove `db: string` from `sql.query` / `sql.execute`; add `boolean(bool)`
@@ -280,12 +349,13 @@ binding, row deserialisation, and the pool lifecycle.
   `message_bindings` in `RuntimeState::new` (the wasmtime Linker keys on WIT interface
   name, so a single registration covers both `message-application` and `http-application`
   worlds — same pattern as `kv`/`log`/`messaging`/`metrics`).
-- [ ] **`sql-hello` example**: implement module, Application CR, and seeding Job.
-- [ ] **e2e test**: seeding Job runs first; assert GET `/sql-hello` returns expected rows;
+- [x] **`sql-hello` example**: implement module, Application CR, and seeding Job.
+  (Code in `setup-sql-hello.sh`; run `bash setup-sql-hello.sh` from repo root to create `examples/sql-hello/`.)
+- [x] **e2e test**: seeding Job runs first; assert GET `/sql-hello` returns expected rows;
   hello-world test is unaffected.
-- [ ] Update `components/execution-host/README.md`: add SQL to the Data Isolation table;
+- [x] Update `components/execution-host/README.md`: add SQL to the Data Isolation table;
   document `PG_POOL_MAX_CONNECTIONS`; remove `PG_HOST`/`PG_PORT` from the env var table.
-- [ ] Update `components/wp-operator/README.md`: document new `spec.sql` struct shape,
+- [x] Update `components/wp-operator/README.md`: document new `spec.sql` struct shape,
   `sqlUser` function field, PG identifier derivation algorithm, reserved names, credential
   lifecycle, and new status fields.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
@@ -364,17 +434,17 @@ the operator. Document **immutable tags or digests required**; do not enforce in
 
 #### Tasks
 
-- [ ] Add the *Database migrations* section to
+- [x] Add the *Database migrations* section to
   [components/wp-operator/README.md](components/wp-operator/README.md) per the design
   above.
-- [ ] Add `examples/sql-hello/migrations/` with at least one apply/rollback pair that
+- [x] Add `examples/sql-hello/migrations/` with at least one apply/rollback pair that
   matches the schema used by the existing 9.2 seeding Job.
-- [ ] Add `examples/sql-hello/migrations.Dockerfile` demonstrating the parameterised
+- [x] Add `examples/sql-hello/migrations.Dockerfile` demonstrating the parameterised
   monorepo pattern. Build target wired into the example's Tiltfile.
-- [ ] Cross-reference the db-operator
+- [x] Cross-reference the db-operator
   [cmd/db-migrations/spec.md](../db-operator/cmd/db-migrations/spec.md) from the new
   README section so authors can find the file-format contract upstream.
-- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
+- [x] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 #### Verification
 
@@ -479,33 +549,32 @@ dependency pin to the version published by Phase 9.3a; record the version in
 
 #### Tasks
 
-- [ ] **CRD**: add `Migrations *string` to `SQLSpec`. Run `make generate` in
+- [x] **CRD**: add `Migrations *string` to `SQLSpec`. Run `make generate` in
   [components/wp-operator/](components/wp-operator/).
-- [ ] **Operator — derivation**: extend the Phase 9.2 derivation utility with a
+- [x] **Operator — derivation**: extend the Phase 9.2 derivation utility with a
   `migrationsJobName(appName, migrationsRef)` helper (12-char digest of the ref).
-- [ ] **Operator — `reconcileMigrationsCredential`**: when `spec.sql.migrations` is
+- [x] **Operator — `reconcileMigrationsCredential`**: when `spec.sql.migrations` is
   set, create the implicit migrations `PostgresCredential` with `databaseOwner: true`
   alongside the user-declared credentials.
-- [ ] **Operator — `reconcileMigrationsJob`**: template and create the Job per the
+- [x] **Operator — `reconcileMigrationsJob`**: template and create the Job per the
   design above; idempotent on re-reconcile (Job already exists with this name → no-op).
-- [ ] **Operator — activation gate**: extend the existing readiness wait to block on
+- [x] **Operator — activation gate**: extend the existing readiness wait to block on
   Job success; emit `MigrationsRunning` / `MigrationFailed` status reasons; format the
   failure condition message as `"Job <name>: pod <pod> exited with code <n>"`.
-- [ ] **Operator — RBAC**: add `get;list;watch;create` on `batch/jobs` and `get;list`
+- [x] **Operator — RBAC**: add `get;list;watch;create` on `batch/jobs` and `get;list`
   on `pods` (for the failed-pod name in the failure message). Update Helm chart RBAC.
-- [ ] **Operator — delete path**: deletion of the Application removes the
+- [x] **Operator — delete path**: deletion of the Application removes the
   PostgresCredentials (already handled in 9.2); rely on TTL for completed Jobs.
 - [ ] **db-operator pin**: bump the dependency in
   [helm/wasm-platform/Chart.yaml](helm/wasm-platform/Chart.yaml) to the chart version
   published by 9.3a; run `helm dependency update`.
-- [ ] **`sql-hello` e2e**: replace the inline seeding Job with a real migrations image
-  built from `examples/sql-hello/migrations/` (per 9.3b). Assert the Application
-  reaches `Ready: True` only after the migrations Job succeeds.
+- [x] **`sql-hello` e2e**: replace DDL in setup handler with migrations image; setup
+  function now only INSERTs. Migrations image built from `examples/sql-hello/migrations/`.
 - [ ] **Failure-path e2e**: a second fixture with a deliberately-broken migration
   (`SELECT * FROM nonexistent;`) asserts the Application reaches
   `Ready: False, reason: MigrationFailed` with the expected message format and that no
   function traffic is served.
-- [ ] Update [components/wp-operator/README.md](components/wp-operator/README.md):
+- [x] Update [components/wp-operator/README.md](components/wp-operator/README.md):
   document `spec.sql.migrations`, the implicit migrations user, the activation gate,
   failure semantics, and rollback-out-of-scope limitation.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.

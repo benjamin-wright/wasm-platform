@@ -120,6 +120,7 @@ type SQLUserSpec struct {
 	// by function sqlUser fields. The name 'migrations' is reserved.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 
 	// Permissions is the list of table-level grants for this user.
@@ -132,11 +133,22 @@ type SQLUserSpec struct {
 // An empty struct (sql: {}) enables SQL with a single implicit 'app' user granted ALL
 // on all tables. Functions are implicitly bound to the 'app' user when users is absent.
 type SQLSpec struct {
+	// Migrations is an OCI reference to a migrations image built from the db-operator
+	// base image. When set, the operator provisions an implicit 'migrations' database owner
+	// user, runs the referenced image as a Kubernetes Job before activating any functions,
+	// and holds the Application at Ready: False, reason: MigrationsRunning until the Job
+	// succeeds. On Job failure the Application is held at Ready: False, reason: MigrationFailed
+	// and no automatic requeue is performed — bump the ref to trigger a new Job.
+	// Use an immutable tag or digest (@sha256:…); mutable tags may cause silent schema skew.
+	// +optional
+	Migrations *string `json:"migrations,omitempty"`
+
 	// Users is the list of named database users to provision.
 	// If absent or empty, a single user named 'app' is provisioned with ALL on all tables
 	// and all functions are implicitly bound to that user.
 	// If non-empty, only the listed users are provisioned; functions must opt in via sqlUser.
 	// +optional
+	// +kubebuilder:validation:MaxItems=20
 	Users []SQLUserSpec `json:"users,omitempty"`
 }
 
@@ -164,6 +176,7 @@ type FunctionSpec struct {
 	// under the named user; a function without this field has no SQL access.
 	// When spec.sql is absent, this field has no effect.
 	// +optional
+	// +kubebuilder:validation:MaxLength=63
 	SQLUser *string `json:"sqlUser,omitempty"`
 }
 
@@ -175,6 +188,7 @@ type ApplicationSpec struct {
 	// Each function has its own module and trigger.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
 	Functions []FunctionSpec `json:"functions"`
 
 	// Env is an optional map of environment variables injected into all functions'

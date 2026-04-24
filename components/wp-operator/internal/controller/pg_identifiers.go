@@ -88,3 +88,19 @@ func K8sCredentialName(namespace, appName, userName string) string {
 	}
 	return base + "-pg"
 }
+
+// MigrationsJobName derives the Kubernetes Job name for a migrations run.
+// Format: wasm-<namespace>-<app_name>-migrate-<digest12>
+// where digest12 is the first 12 hex characters of the SHA-256 of migrationsRef.
+// A re-deploy with the same ref produces the same name so the existing Job is
+// reused; bumping the ref produces a new name and a new Job.
+func MigrationsJobName(namespace, appName, migrationsRef string) string {
+	h := sha256.Sum256([]byte(migrationsRef))
+	digest12 := fmt.Sprintf("%x", h)[:12]
+	base := "wasm-" + namespace + "-" + appName + "-migrate-" + digest12
+	if len(base) > k8sMaxNameLen {
+		bh := sha256.Sum256([]byte(base))
+		base = base[:k8sMaxNameLen-16] + "-" + fmt.Sprintf("%x", bh)[:15]
+	}
+	return base
+}

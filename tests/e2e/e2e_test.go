@@ -17,16 +17,23 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	for _, app := range []string{"demo-app", "counter-app"} {
-		cmd := exec.Command("kubectl", "wait", "application", app,
-			"-n", "examples",
+	type appRef struct {
+		name, namespace string
+	}
+	for _, app := range []appRef{
+		{"demo-app", "examples"},
+		{"counter-app", "examples"},
+		{"sql-hello", "default"},
+	} {
+		cmd := exec.Command("kubectl", "wait", "application", app.name,
+			"-n", app.namespace,
 			"--for=condition=Ready",
 			"--timeout=120s",
 		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app, err)
+			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app.name, err)
 			os.Exit(1)
 		}
 	}
@@ -34,10 +41,13 @@ func TestMain(m *testing.M) {
 }
 
 const (
-	baseURL       = "http://localhost/hello"
-	counterAppURL = "http://localhost/counter"
-	routeTimeout  = 60 * time.Second
-	pollInterval  = 1 * time.Second
+	baseURL           = "http://localhost/hello"
+	counterAppURL     = "http://localhost/counter"
+	sqlHelloURL       = "http://localhost/sql-hello"
+	sqlHelloSetupURL  = "http://localhost/sql-hello/setup"
+	sqlHelloInsertURL = "http://localhost/sql-hello/insert"
+	routeTimeout      = 60 * time.Second
+	pollInterval      = 1 * time.Second
 )
 
 type counters struct {
@@ -283,4 +293,72 @@ func scrapeMetricSum(url, name string) (float64, error) {
 		total += v
 	}
 	return total, nil
+}
+
+// TestSQLHello exercises the sql-hello Application using its three HTTP
+// handler functions:
+//
+//  1. POST /sql-hello/setup  — seeds the greetings table (writer user).
+//  2. GET  /sql-hello        — queries active rows (reader user); asserts
+//     Alice and Bob are present and Carol is absent.
+//  3. POST /sql-hello/insert — attempts an INSERT with the reader user;
+//     expects HTTP 403 (permission denied enforced by PostgreSQL).
+//
+// No external seed Job is required. TestMain already waits for the
+// sql-hello Application to reach Ready before tests run.
+func TestSQLHello(t *testing.T) {
+	g := NewWithT(t)
+
+	// Step 1: seed the table via the setup handler (writer user).
+	g.Eventually(func() error {
+		resp, err := http.Post(sqlHelloSetupURL, "", nil)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("setup returned %d: %s", resp.StatusCode, b)
+		}
+		return nil
+	}, routeTimeout, pollInterval).Should(Succeed(),
+		"POST %s should return 200 within %s", sqlHelloSetupURL, routeTimeout)
+
+	// Step 2: query active rows; assert Alice and Bob present, Carol absent.
+	var body string
+	g.Eventually(func() (string, error) {
+		resp, err := http.Get(sqlHelloURL)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("query returned status %d", resp.StatusCode)
+		}
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("reading body: %w", err)
+		}
+		s := string(b)
+		if s == "" || s == "[]" {
+			return "", fmt.Errorf("empty response body")
+		}
+		body = s
+		return s, nil
+	}, routeTimeout, pollInterval).ShouldNot(BeEmpty(),
+		"GET %s should return a non-empty JSON response within %s", sqlHelloURL, routeTimeout)
+
+	g.Expect(body).To(ContainSubstring(`"name":"Alice"`),
+		"expected Alice (active=true) in sql-hello response")
+	g.Expect(body).To(ContainSubstring(`"name":"Bob"`),
+		"expected Bob (active=true) in sql-hello response")
+	g.Expect(body).NotTo(ContainSubstring(`"name":"Carol"`),
+		"expected Carol (active=false) to be excluded from sql-hello response")
+
+	// Step 3: reader user attempts INSERT — must be rejected with 403.
+	resp, err := http.Post(sqlHelloInsertURL, "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	g.Expect(resp.StatusCode).To(Equal(http.StatusForbidden),
+		"reader user INSERT should be rejected with 403 (permission denied)")
 }

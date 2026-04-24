@@ -9,3 +9,6 @@ members = [
     "examples/counter-app/http-handler",
     "lib/platform-common",
 ]
+exclude = [
+    "examples/sql-hello",
+]

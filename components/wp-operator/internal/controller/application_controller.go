@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -29,6 +30,10 @@ import (
 )
 
 const applicationFinalizer = "wasm-platform.io/application-protection"
+
+// migrationsUserName is the reserved SQL user name used for the implicit database-owner
+// credential created when spec.sql.migrations is set.
+const migrationsUserName = "migrations"
 
 // topicIndexField is the cache field index key for function topics within an Application.
 // Used by findTopicOwner and the topic-peer watch handler to avoid full-list scans.
@@ -58,6 +63,8 @@ type Config struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgrescredentials,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresdatabases,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 type ApplicationReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
@@ -119,6 +126,22 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 				}
 			} else if !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("getting PostgresCredential %q for deletion: %w", credName, err)
+			}
+		}
+
+		if app.Spec.SQL.Migrations != nil {
+			credName := K8sCredentialName(app.Namespace, app.Name, migrationsUserName)
+			var cred dboperator.PostgresCredential
+			err := r.Get(ctx, types.NamespacedName{
+				Namespace: r.Config.PostgresCredentialNamespace,
+				Name:      credName,
+			}, &cred)
+			if err == nil {
+				if delErr := r.Delete(ctx, &cred); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return ctrl.Result{}, fmt.Errorf("deleting migrations PostgresCredential %q: %w", credName, delErr)
+				}
+			} else if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("getting migrations PostgresCredential %q for deletion: %w", credName, err)
 			}
 		}
 	}
@@ -270,6 +293,34 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			// db-operator hasn't finished provisioning the Secrets yet.
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
+
+		if app.Spec.SQL.Migrations != nil {
+			migrReady, err := r.reconcileMigrationsCredential(ctx, app)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if !migrReady {
+				r.setReadyCondition(app, metav1.ConditionFalse, "MigrationsRunning", "Waiting for migrations database-owner credential to become ready.")
+				_ = r.Status().Update(ctx, app)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+
+			done, failMsg, err := r.reconcileMigrationsGate(ctx, app)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if failMsg != "" {
+				r.setReadyCondition(app, metav1.ConditionFalse, "MigrationFailed", failMsg)
+				_ = r.Status().Update(ctx, app)
+				return ctrl.Result{}, nil
+			}
+			if !done {
+				r.setReadyCondition(app, metav1.ConditionFalse, "MigrationsRunning", "Waiting for migrations Job to complete.")
+				_ = r.Status().Update(ctx, app)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+		}
+
 		cfg.SqlUsers = sqlUsers
 
 		app.Status.SQLDatabaseName = PGDatabaseName(app.Namespace, app.Name)
@@ -380,6 +431,139 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 	}
 
 	return sqlUsers, false, nil
+}
+
+// ── SQL helpers ───────────────────────────────────────────────────────────────
+
+// reconcileMigrationsCredential ensures the implicit 'migrations' PostgresCredential
+// exists and returns true once it reaches Ready phase. The credential is created with
+// DatabaseOwner: true so the migrations Job can run DDL.
+func (r *ApplicationReconciler) reconcileMigrationsCredential(ctx context.Context, app *wasmplatformv1alpha1.Application) (bool, error) {
+	credNS := r.Config.PostgresCredentialNamespace
+	dbName := PGDatabaseName(app.Namespace, app.Name)
+	credName := K8sCredentialName(app.Namespace, app.Name, migrationsUserName)
+	secretName := credName + "-creds"
+	pgUsername := PGUsername(app.Namespace, app.Name, migrationsUserName)
+
+	var cred dboperator.PostgresCredential
+	err := r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: credName}, &cred)
+	if apierrors.IsNotFound(err) {
+		desired := buildMigrationsCredential(credName, credNS, secretName, pgUsername, dbName, r.Config.PostgresDatabaseName)
+		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, fmt.Errorf("creating migrations PostgresCredential %q: %w", credName, createErr)
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting migrations PostgresCredential %q: %w", credName, err)
+	}
+	return cred.Status.Phase == dboperator.CredentialPhaseReady, nil
+}
+
+// reconcileMigrationsGate creates the migrations Job if it does not exist and
+// reports whether it has succeeded. Returns a non-empty failMsg if the Job has
+// permanently failed, in which case no requeue is emitted.
+func (r *ApplicationReconciler) reconcileMigrationsGate(ctx context.Context, app *wasmplatformv1alpha1.Application) (done bool, failMsg string, err error) {
+	migrRef := *app.Spec.SQL.Migrations
+	jobName := MigrationsJobName(app.Namespace, app.Name, migrRef)
+	jobNS := r.Config.PostgresCredentialNamespace
+	dbName := PGDatabaseName(app.Namespace, app.Name)
+	credName := K8sCredentialName(app.Namespace, app.Name, migrationsUserName)
+	secretName := credName + "-creds"
+
+	var job batchv1.Job
+	err = r.Get(ctx, types.NamespacedName{Namespace: jobNS, Name: jobName}, &job)
+	if apierrors.IsNotFound(err) {
+		ttl := int32(86400)
+		backoff := int32(3)
+		desired := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName,
+				Namespace: jobNS,
+			},
+			Spec: batchv1.JobSpec{
+				TTLSecondsAfterFinished: &ttl,
+				BackoffLimit:            &backoff,
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						Containers: []corev1.Container{
+							{
+								Name:  "migrate",
+								Image: migrRef,
+								EnvFrom: []corev1.EnvFromSource{
+									{
+										SecretRef: &corev1.SecretEnvSource{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: secretName,
+											},
+										},
+									},
+								},
+								Env: []corev1.EnvVar{
+									{Name: "PGDATABASE", Value: dbName},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, "", fmt.Errorf("creating migrations Job %q: %w", jobName, createErr)
+		}
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("getting migrations Job %q: %w", jobName, err)
+	}
+
+	if job.Status.Succeeded >= 1 {
+		return true, "", nil
+	}
+
+	if job.Status.Failed > 0 {
+		msg := fmt.Sprintf("Job %s failed", jobName)
+		var podList corev1.PodList
+		if listErr := r.List(ctx, &podList,
+			client.InNamespace(jobNS),
+			client.MatchingLabels{"job-name": jobName},
+		); listErr == nil {
+			for _, pod := range podList.Items {
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+						msg = fmt.Sprintf("Job %s: pod %s exited with code %d", jobName, pod.Name, cs.State.Terminated.ExitCode)
+					}
+				}
+			}
+		}
+		return false, msg, nil
+	}
+
+	return false, "", nil
+}
+
+// buildMigrationsCredential constructs a PostgresCredential for the implicit
+// migrations user. DatabaseOwner: true is set so the migrations Job can run DDL.
+func buildMigrationsCredential(name, namespace, secretName, pgUsername, dbName, pgdbRef string) *dboperator.PostgresCredential {
+	return &dboperator.PostgresCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: dboperator.PostgresCredentialSpec{
+			DatabaseRef:   pgdbRef,
+			Username:      pgUsername,
+			SecretName:    secretName,
+			DatabaseOwner: true,
+			Permissions: []dboperator.DatabasePermissionEntry{
+				{
+					Databases:   []string{dbName},
+					Permissions: []dboperator.DatabasePermission{dboperator.PermissionAll},
+				},
+			},
+		},
+	}
 }
 
 // ── SQL helpers ───────────────────────────────────────────────────────────────

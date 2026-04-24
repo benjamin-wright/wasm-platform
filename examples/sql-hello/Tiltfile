@@ -1,0 +1,70 @@
+def sql_hello(namespace, resource_deps=[]):
+    docker_build(
+        'sql-hello-migrations',
+        '.',
+        dockerfile = 'examples/sql-hello/migrations.Dockerfile',
+        build_args = {'APP': 'examples/sql-hello'},
+        only = ['examples/sql-hello/migrations/'],
+    )
+
+    custom_build(
+        'sql-hello-setup',
+        command = (
+            'cargo build --manifest-path examples/sql-hello/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --target-dir target --example setup &&' +
+            ' oras push $EXPECTED_REF' +
+            ' target/wasm32-wasip2/release/examples/setup.wasm' +
+            ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/sql-hello/examples/setup.rs',
+            'examples/sql-hello/Cargo.toml',
+            'framework/runtime.wit',
+        ],
+        skips_local_docker = True,
+    )
+
+    custom_build(
+        'sql-hello-query',
+        command = (
+            'cargo build --manifest-path examples/sql-hello/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --target-dir target --example query &&' +
+            ' oras push $EXPECTED_REF' +
+            ' target/wasm32-wasip2/release/examples/query.wasm' +
+            ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/sql-hello/examples/query.rs',
+            'examples/sql-hello/Cargo.toml',
+            'framework/runtime.wit',
+        ],
+        skips_local_docker = True,
+    )
+
+    custom_build(
+        'sql-hello-insert-test',
+        command = (
+            'cargo build --manifest-path examples/sql-hello/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --target-dir target --example insert-test &&' +
+            ' oras push $EXPECTED_REF' +
+            ' target/wasm32-wasip2/release/examples/insert_test.wasm' +
+            ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/sql-hello/examples/insert-test.rs',
+            'examples/sql-hello/Cargo.toml',
+            'framework/runtime.wit',
+        ],
+        skips_local_docker = True,
+    )
+
+    k8s_yaml('examples/sql-hello/k8s/application.yaml')
+
+    k8s_resource(
+        'sql-hello',
+        resource_deps = ['module-cache', 'wp-operator'] + resource_deps,
+        labels = ['example'],
+    )
