@@ -69,6 +69,7 @@ spec:
 | `spec.functions` | []FunctionSpec | yes (min 1) | List of functions in this application. |
 | `spec.env` | map[string]string | no | Environment variables injected into all functions. |
 | `spec.sql` | SQLSpec | no | SQL database access configuration. Absent means no SQL access. Present as `{}` provisions a single implicit `app` user with ALL privileges on all tables, and every function is implicitly bound to it. Present with `users` provisions exactly those users; functions must opt in via `sqlUser`. |
+| `spec.sql.migrations` | string | no | OCI reference to a migrations image. When set, the operator provisions an implicit `migrations` database-owner user, runs the image as a Kubernetes Job, and withholds function activation until the Job succeeds. See [Application Authoring — Database Migrations](#database-migrations). |
 | `spec.metrics` | []MetricDefinition | no | User-defined Prometheus metrics (max 50). Each metric has a `name`, `type` (`counter`/`gauge`), and optional `labels` (max 10). Names must follow `[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$` and must not start with `__`. Labels must not include `app_name` or `app_namespace` (host-injected). |
 
 **`spec.sql.users[]` (when explicit users are listed):**
@@ -178,7 +179,8 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
    b. Checks that `Config.PostgresDatabaseName` is configured and the named `PostgresDatabase` CR exists.
    c. Creates one `PostgresCredential` CR per SQL user (including the implicit `app` user when `spec.sql.users` is absent). Each credential targets the derived PG username, derived database name, and declared privileges.
    d. Waits until all credentials reach `Ready` phase and their Secrets are available. Returns `RequeueAfter: 5s` while any credential or Secret is pending.
-   e. Assembles per-user connection URLs from the db-operator Secrets (`PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT`) and the derived database name.
+   e. If `spec.sql.migrations` is set: creates the implicit `migrations` `PostgresCredential` (database owner, ALL privileges) and waits for it to reach `Ready`. Once ready, creates the migrations Job if it does not exist. Returns `RequeueAfter: 5s` while the Job is active. If the Job fails, sets `Ready: False, reason: MigrationFailed` and stops requeueing — bump `spec.sql.migrations` to a new ref to retry.
+   f. Assembles per-user connection URLs from the db-operator Secrets (`PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT`) and the derived database name.
 3. Pushes an incremental config update (with all functions) to all connected execution hosts via `PushIncrementalUpdate`.
 4. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
 
@@ -186,7 +188,7 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 
 1. Pushes a delete config update to execution hosts.
 2. Pushes route delete updates for all HTTP-triggered functions to gateways.
-3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs. The db-operator cleans up the PG users; the database itself persists until the `PostgresDatabase` CR is removed.
+3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs (including the implicit `migrations` credential when `spec.sql.migrations` was set). The db-operator cleans up the PG users; the database itself persists until the `PostgresDatabase` CR is removed. Completed migrations Jobs are cleaned up by their `TTLSecondsAfterFinished: 86400` setting.
 
 ## SQL Credential Lifecycle
 
@@ -197,7 +199,14 @@ For each SQL user (or the synthetic `app` user when `spec.sql: {}`):
 - **Namespace:** the operator's own namespace (`POD_NAMESPACE`).
 - **Privileges:** declared in `spec.sql.users[*].permissions`; defaults to `ALL` on all tables when permissions are absent.
 
-The operator does not push an `ApplicationConfig` to execution hosts until all `PostgresCredential` CRs for the Application have reached `Ready` phase.
+When `spec.sql.migrations` is set, an additional implicit credential is provisioned:
+
+- **`PostgresCredential` name:** `wasm-<namespace>-<app_name>-migrations-pg`.
+- **`spec.databaseOwner: true`** — makes this role the owner of the app's database, enabling DDL (`CREATE TABLE`, etc.).
+- **Privileges:** `ALL` on the app's database.
+- The migrations credential is deleted on Application deletion alongside user credentials.
+
+The operator does not push an `ApplicationConfig` to execution hosts until all `PostgresCredential` CRs for the Application have reached `Ready` phase **and**, if `spec.sql.migrations` is set, the migrations Job has succeeded.
 
 ## Config API
 
@@ -228,6 +237,8 @@ Generates: gRPC stubs → `internal/grpc/configsync/`, CRD deepcopy → `api/v1a
 | `DatabaseConfigMissing` | Set when `spec.sql` is present but `PostgresDatabaseName` is not configured. |
 | `DatabaseNotFound` | Set when the named `PostgresDatabase` CR does not exist. |
 | `InvalidIdentifier` | Set when namespace or app name contains consecutive hyphens, preventing PG identifier derivation. |
+| `MigrationsRunning` | Set while the migrations credential is pending or the migrations Job is active. |
+| `MigrationFailed` | Set when the migrations Job exits with a non-zero code. Message: `Job <name>: pod <pod> exited with code <n>`. No automatic retry — bump `spec.sql.migrations` to a new ref to trigger a new Job. |
 
 **Status fields:**
 

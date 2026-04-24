@@ -1,8 +1,4 @@
 def demo_app(namespace, resource_deps=[]):
-    k8s_kind('Application',
-             image_json_path = '{.spec.functions[*].module}',
-             pod_readiness = 'ignore')
-
     custom_build(
         'demo-app-http',
         command = (

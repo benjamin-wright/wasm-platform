@@ -199,21 +199,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sql-hello-insert-test"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen",
-]
-
-[[package]]
-name = "sql-hello-query"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen",
-]
-
-[[package]]
-name = "sql-hello-setup"
+name = "sql-hello"
 version = "0.1.0"
 dependencies = [
  "wit-bindgen",

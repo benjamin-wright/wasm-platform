@@ -3,6 +3,10 @@ load('ext://helm_resource', 'helm_resource')
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 
 def wp_operator(namespace):
+    k8s_kind('Application',
+             image_json_path = ['{.spec.functions[*].module}', '{.spec[?(@.migrations)].migrations}'],
+             pod_readiness = 'ignore')
+
     custom_build(
         IMAGE_REF,
         command = (

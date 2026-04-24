@@ -1,8 +1,4 @@
 def sql_hello(namespace, resource_deps=[]):
-    k8s_kind('Application',
-             image_json_path = ['{.spec.functions[*].module}', '{.spec.sql.migrations}'],
-             pod_readiness = 'ignore')
-
     docker_build(
         'sql-hello-migrations',
         '.',
@@ -14,16 +10,15 @@ def sql_hello(namespace, resource_deps=[]):
     custom_build(
         'sql-hello-setup',
         command = (
-            'cargo build --manifest-path examples/sql-hello/fns/setup/Cargo.toml' +
-            ' --target wasm32-wasip2 --release --target-dir target &&' +
+            'cargo build --manifest-path examples/sql-hello/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --target-dir target --example setup &&' +
             ' oras push $EXPECTED_REF' +
-            ' target/wasm32-wasip2/release/sql_hello_setup.wasm' +
+            ' target/wasm32-wasip2/release/examples/setup.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
             ' --plain-http'
         ),
         deps = [
-            'examples/sql-hello/fns/setup/src',
-            'examples/sql-hello/fns/setup/Cargo.toml',
+            'examples/sql-hello/examples/setup.rs',
             'examples/sql-hello/Cargo.toml',
             'framework/runtime.wit',
         ],
@@ -33,16 +28,15 @@ def sql_hello(namespace, resource_deps=[]):
     custom_build(
         'sql-hello-query',
         command = (
-            'cargo build --manifest-path examples/sql-hello/fns/query/Cargo.toml' +
-            ' --target wasm32-wasip2 --release --target-dir target &&' +
+            'cargo build --manifest-path examples/sql-hello/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --target-dir target --example query &&' +
             ' oras push $EXPECTED_REF' +
-            ' target/wasm32-wasip2/release/sql_hello_query.wasm' +
+            ' target/wasm32-wasip2/release/examples/query.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
             ' --plain-http'
         ),
         deps = [
-            'examples/sql-hello/fns/query/src',
-            'examples/sql-hello/fns/query/Cargo.toml',
+            'examples/sql-hello/examples/query.rs',
             'examples/sql-hello/Cargo.toml',
             'framework/runtime.wit',
         ],
@@ -52,16 +46,15 @@ def sql_hello(namespace, resource_deps=[]):
     custom_build(
         'sql-hello-insert-test',
         command = (
-            'cargo build --manifest-path examples/sql-hello/fns/insert-test/Cargo.toml' +
-            ' --target wasm32-wasip2 --release --target-dir target &&' +
+            'cargo build --manifest-path examples/sql-hello/Cargo.toml' +
+            ' --target wasm32-wasip2 --release --target-dir target --example insert-test &&' +
             ' oras push $EXPECTED_REF' +
-            ' target/wasm32-wasip2/release/sql_hello_insert_test.wasm' +
+            ' target/wasm32-wasip2/release/examples/insert_test.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
             ' --plain-http'
         ),
         deps = [
-            'examples/sql-hello/fns/insert-test/src',
-            'examples/sql-hello/fns/insert-test/Cargo.toml',
+            'examples/sql-hello/examples/insert-test.rs',
             'examples/sql-hello/Cargo.toml',
             'framework/runtime.wit',
         ],

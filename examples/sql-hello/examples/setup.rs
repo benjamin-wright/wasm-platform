@@ -1,6 +1,6 @@
 wit_bindgen::generate!({
     world: "http-application",
-    path: "../../../../framework/runtime.wit",
+    path: "../../framework/runtime.wit",
 });
 
 use framework::runtime::{log, sql};

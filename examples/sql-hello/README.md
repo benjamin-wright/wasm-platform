@@ -12,8 +12,9 @@ Each function is a separate compiled module. The Application CR declares two nam
 
 `POST /sql-hello/setup` — bound to the `writer` SQL user.
 
-1. `CREATE TABLE IF NOT EXISTS greetings (id serial PRIMARY KEY, name text NOT NULL UNIQUE, active bool NOT NULL DEFAULT true)`.
-2. `INSERT INTO greetings (name, active) VALUES ('Alice', true), ('Bob', true), ('Carol', false) ON CONFLICT (name) DO UPDATE SET active = EXCLUDED.active`.
+Seeds the `greetings` table (schema created by the migrations Job before activation):
+
+1. `INSERT INTO greetings (name, active) VALUES ('Alice', true), ('Bob', true), ('Carol', false) ON CONFLICT (name) DO UPDATE SET active = EXCLUDED.active`.
 
 Returns HTTP 200 on success. Idempotent.
 

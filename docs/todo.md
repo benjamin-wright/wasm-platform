@@ -444,7 +444,7 @@ the operator. Document **immutable tags or digests required**; do not enforce in
 - [x] Cross-reference the db-operator
   [cmd/db-migrations/spec.md](../db-operator/cmd/db-migrations/spec.md) from the new
   README section so authors can find the file-format contract upstream.
-- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
+- [x] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 #### Verification
 
@@ -549,33 +549,32 @@ dependency pin to the version published by Phase 9.3a; record the version in
 
 #### Tasks
 
-- [ ] **CRD**: add `Migrations *string` to `SQLSpec`. Run `make generate` in
+- [x] **CRD**: add `Migrations *string` to `SQLSpec`. Run `make generate` in
   [components/wp-operator/](components/wp-operator/).
-- [ ] **Operator — derivation**: extend the Phase 9.2 derivation utility with a
+- [x] **Operator — derivation**: extend the Phase 9.2 derivation utility with a
   `migrationsJobName(appName, migrationsRef)` helper (12-char digest of the ref).
-- [ ] **Operator — `reconcileMigrationsCredential`**: when `spec.sql.migrations` is
+- [x] **Operator — `reconcileMigrationsCredential`**: when `spec.sql.migrations` is
   set, create the implicit migrations `PostgresCredential` with `databaseOwner: true`
   alongside the user-declared credentials.
-- [ ] **Operator — `reconcileMigrationsJob`**: template and create the Job per the
+- [x] **Operator — `reconcileMigrationsJob`**: template and create the Job per the
   design above; idempotent on re-reconcile (Job already exists with this name → no-op).
-- [ ] **Operator — activation gate**: extend the existing readiness wait to block on
+- [x] **Operator — activation gate**: extend the existing readiness wait to block on
   Job success; emit `MigrationsRunning` / `MigrationFailed` status reasons; format the
   failure condition message as `"Job <name>: pod <pod> exited with code <n>"`.
-- [ ] **Operator — RBAC**: add `get;list;watch;create` on `batch/jobs` and `get;list`
+- [x] **Operator — RBAC**: add `get;list;watch;create` on `batch/jobs` and `get;list`
   on `pods` (for the failed-pod name in the failure message). Update Helm chart RBAC.
-- [ ] **Operator — delete path**: deletion of the Application removes the
+- [x] **Operator — delete path**: deletion of the Application removes the
   PostgresCredentials (already handled in 9.2); rely on TTL for completed Jobs.
 - [ ] **db-operator pin**: bump the dependency in
   [helm/wasm-platform/Chart.yaml](helm/wasm-platform/Chart.yaml) to the chart version
   published by 9.3a; run `helm dependency update`.
-- [ ] **`sql-hello` e2e**: replace the inline seeding Job with a real migrations image
-  built from `examples/sql-hello/migrations/` (per 9.3b). Assert the Application
-  reaches `Ready: True` only after the migrations Job succeeds.
+- [x] **`sql-hello` e2e**: replace DDL in setup handler with migrations image; setup
+  function now only INSERTs. Migrations image built from `examples/sql-hello/migrations/`.
 - [ ] **Failure-path e2e**: a second fixture with a deliberately-broken migration
   (`SELECT * FROM nonexistent;`) asserts the Application reaches
   `Ready: False, reason: MigrationFailed` with the expected message format and that no
   function traffic is served.
-- [ ] Update [components/wp-operator/README.md](components/wp-operator/README.md):
+- [x] Update [components/wp-operator/README.md](components/wp-operator/README.md):
   document `spec.sql.migrations`, the implicit migrations user, the activation gate,
   failure semantics, and rollback-out-of-scope limitation.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.

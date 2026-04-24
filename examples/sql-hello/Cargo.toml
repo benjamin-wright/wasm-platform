@@ -1,10 +1,24 @@
-[workspace]
-resolver = "2"
-members = [
-    "fns/setup",
-    "fns/query",
-    "fns/insert-test",
-]
+[package]
+name = "sql-hello"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+autoexamples = false
 
-[workspace.dependencies]
+[dependencies]
 wit-bindgen = "0.36"
+
+[[example]]
+name = "setup"
+path = "examples/setup.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "query"
+path = "examples/query.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "insert-test"
+path = "examples/insert-test.rs"
+crate-type = ["cdylib"]
