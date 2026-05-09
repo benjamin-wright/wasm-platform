@@ -453,13 +453,15 @@ Tilt.
 
 ---
 
-### Phase 9.3c: Operator Migrations Integration
+### Phase 9.3c: Operator Migrations Integration (revised)
 
-Wire migrations into the wp-operator: a new `spec.sql.migrations` field, a Kubernetes
-Job per Application generation, an activation gate that holds traffic until the Job
-succeeds, and status surfacing on failure.
+Wire migrations into the wp-operator via a `PostgresMigrationSet` CR (db-operator
+manages all Job and credential lifecycle). The wp-operator creates/patches the CR and
+gates function activation on its `Ready` phase.
 
-**Depends on Phase 9.3a** (db-operator chart with `databaseOwner` + advisory lock).
+**Supersedes the original 9.3c design** (which had the wp-operator template Jobs directly
+and manage an implicit `migrations` `PostgresCredential`). The db-operator now owns both
+concerns via the `PostgresMigrationSet` CRD.
 
 #### Design
 
@@ -468,120 +470,78 @@ succeeds, and status surfacing on failure.
 ```yaml
 spec:
   sql:
-    migrations: oci://ghcr.io/acme/orders-migrations:v3   # immutable tag or @sha256:…
+    migrations:
+      artifact: oci://ghcr.io/acme/orders-migrations:v3  # ORAS artifact (tar+gzip of SQL files)
+      targetRevision: 5                                   # numeric migration ID to converge to
     users:
       - name: writer
         permissions: [...]
 ```
 
-Field type: optional string. Empty / absent → no migrations Job is created (existing
-9.2 behaviour). Present → Job runs before any function activation.
+`MigrationsSpec` struct: `Artifact string` (ORAS artifact ref, not a Docker image) +
+`TargetRevision int64`. The reserved `migrations` CEL rule on `spec.sql.users[*].name`
+has been removed — the db-operator handles its own internal migrations role.
 
-**Implicit `migrations` PG user**
+**PostgresMigrationSet lifecycle**
 
-Added unconditionally when `spec.sql.migrations` is set:
+When `spec.sql.migrations` is set, the wp-operator creates one `PostgresMigrationSet` CR:
+- **Name**: `wasm-<namespace>-<app_name>-migrations` (stable — the db-operator handles
+  in-flight Job sequencing when `artifact` or `targetRevision` change).
+- **Labels**: `wasm-platform.io/app-namespace` + `wasm-platform.io/app-name` (used by
+  the watch handler to enqueue the owning Application on status changes).
+- **`spec.databaseRef`**: `Config.PostgresDatabaseName`.
+- **`spec.database`**: `PGDatabaseName(namespace, app_name)`.
+- **`spec.artifact`** / **`spec.targetRevision`**: from the Application spec.
 
-- PG username derived as `wasm_<namespace>_<app_name>_migrations` (same algorithm as
-  Phase 9.2, including hash-truncation at 63 chars).
-- `PostgresCredential` CR named `wasm-<namespace>-<app_name>-migrations-pg`.
-- `spec.databaseOwner: true` (requires Phase 9.3a).
-- `spec.permissions`: `databases: [<derived_db_name>]`, `permissions: [ALL]`.
-- The name `migrations` is reserved in `spec.sql.users[*].name` (already enforced by
-  the Phase 9.2 CEL rule).
+On re-reconcile, the CR is patched if `artifact` or `targetRevision` changed.
+On Application deletion, the CR is deleted.
 
-**Job spec**
+**Activation gate** — gated on `PostgresMigrationSet.status.phase`:
 
-The wp-operator templates the Job directly (no Helm-in-operator). Job manifest:
+| Phase | Application condition |
+|---|---|
+| `Pending` / `Running` / `""` | `Ready: False, reason: MigrationsRunning`; `RequeueAfter: 5s` |
+| `Failed` | `Ready: False, reason: MigrationFailed`; message from status conditions; no auto-requeue |
+| `Ready` | Proceed with config push |
 
-- **Name**: `<app>-migrate-<digest12>`, where `digest12` is the first 12 hex chars of
-  the SHA-256 of `spec.sql.migrations` (string hash, not OCI digest — sufficient for
-  uniqueness without registry round-trips). On a re-deploy with the same migrations
-  ref, the Job already exists and is reused; on a bumped tag, a new Job is created.
-- **`spec.ttlSecondsAfterFinished: 86400`** — completed Jobs auto-clean after 24 h.
-- **`spec.backoffLimit: 3`**, **`spec.template.spec.restartPolicy: Never`**.
-- **`spec.template.spec.containers[0]`**:
-  - `image`: `spec.sql.migrations` verbatim.
-  - `args`: `[]` (defaults to apply-all; rollback is out of scope, see below).
-  - `envFrom`: the `PostgresCredential` Secret for the migrations user
-    (`PGUSER`/`PGPASSWORD`/`PGHOST`/`PGPORT`).
-  - `env`: `PGDATABASE: <derived_db_name>` (overrides whatever the Secret carries —
-    the credential targets one database here).
+**ORAS artifact packaging (sql-hello example)**
 
-**Activation gate**
-
-Function activation = the operator pushing `ApplicationConfig` to execution hosts via
-the existing config-sync stream. The gate:
-
-1. If `spec.sql.migrations` is set, the operator does not call
-   `pushApplicationConfig` until the named Job reaches `status.succeeded >= 1`.
-2. While the Job is `Active` or has not yet been created, the reconciler returns
-   `RequeueAfter: 5s` and sets `Ready: False, reason: MigrationsRunning`.
-3. On `status.failed > 0`, set `Ready: False, reason: MigrationFailed` with a message
-   of the form `"Job <name>: pod <pod> exited with code <n>"`. Do not requeue
-   automatically — the Application's owner must bump `spec.sql.migrations` (or fix the
-   image and re-tag immutably) to trigger a new Job.
-4. Once succeeded, the operator pushes config and `Ready: True`.
-
-The activation gate runs *after* all `PostgresCredential`s (including the migrations
-one) reach `Ready` — i.e. extends the existing 9.2 wait, not a parallel path.
-
-**Skew between module and migrations**
-
-Out of scope. If a user pushes a migration that introduces a breaking schema change
-without updating their function modules, runtime SQL errors are the expected outcome.
-Documented in 9.3b. Future Work: a single OCI artifact carrying both modules and
-migrations would close this gap; not pursued now.
-
-**Rollback**
-
-Out of scope for 9.3c. The db-operator runner supports `--target` for forward + reverse
-plans, but plumbing a target ID through the CRD adds another mutation we don't want
-pre-alpha. The operator only ever runs apply-all. If a rollback is required, the user
-deletes the Application (which leaves the database intact) and re-deploys against an
-older migrations image — the runner's content-hash integrity check will then refuse,
-forcing a manual intervention. Documented as a known limitation.
-
-**db-operator chart pin**
-
-The wp-operator's Helm chart depends on the db-operator chart (CRDs). Bump the
-dependency pin to the version published by Phase 9.3a; record the version in
-[helm/wasm-platform/Chart.yaml](helm/wasm-platform/Chart.yaml) `dependencies[]`.
+Migrations are now pushed as an ORAS artifact (tar+gzip of SQL files) rather than a
+Docker image. Tiltfile uses `custom_build` + `oras push` with media type
+`application/vnd.db-operator.migrations.v1.tar+gzip`. The `migrations.Dockerfile` is
+superseded and no longer used by the Tiltfile.
 
 #### Tasks
 
-- [x] **CRD**: add `Migrations *string` to `SQLSpec`. Run `make generate` in
-  [components/wp-operator/](components/wp-operator/).
-- [x] **Operator — derivation**: extend the Phase 9.2 derivation utility with a
-  `migrationsJobName(appName, migrationsRef)` helper (12-char digest of the ref).
-- [x] **Operator — `reconcileMigrationsCredential`**: when `spec.sql.migrations` is
-  set, create the implicit migrations `PostgresCredential` with `databaseOwner: true`
-  alongside the user-declared credentials.
-- [x] **Operator — `reconcileMigrationsJob`**: template and create the Job per the
-  design above; idempotent on re-reconcile (Job already exists with this name → no-op).
-- [x] **Operator — activation gate**: extend the existing readiness wait to block on
-  Job success; emit `MigrationsRunning` / `MigrationFailed` status reasons; format the
-  failure condition message as `"Job <name>: pod <pod> exited with code <n>"`.
-- [x] **Operator — RBAC**: add `get;list;watch;create` on `batch/jobs` and `get;list`
-  on `pods` (for the failed-pod name in the failure message). Update Helm chart RBAC.
-- [x] **Operator — delete path**: deletion of the Application removes the
-  PostgresCredentials (already handled in 9.2); rely on TTL for completed Jobs.
-- [ ] **db-operator pin**: bump the dependency in
-  [helm/wasm-platform/Chart.yaml](helm/wasm-platform/Chart.yaml) to the chart version
-  published by 9.3a; run `helm dependency update`.
-- [x] **`sql-hello` e2e**: replace DDL in setup handler with migrations image; setup
-  function now only INSERTs. Migrations image built from `examples/sql-hello/migrations/`.
+- [x] **CRD**: replace `Migrations *string` with `Migrations *MigrationsSpec` (struct
+  with `Artifact string` + `TargetRevision int64`). Remove CEL reserved-name rule for
+  `migrations`. Run `make generate` in [components/wp-operator/](components/wp-operator/).
+- [x] **Operator — derivation**: replace `MigrationsJobName` with `MigrationSetName`
+  (stable name, no digest suffix).
+- [x] **Operator — `reconcileMigrationSet`**: create/patch `PostgresMigrationSet` CR;
+  gate on `status.phase`; surface failure message from status conditions.
+- [x] **Operator — RBAC**: remove `batch/jobs` + `pods`; add `postgresmigrationsets`
+  (get;list;watch;create;update;patch;delete). Update Helm chart RBAC.
+- [x] **Operator — watch**: watch `PostgresMigrationSet` and enqueue owning Application
+  via `wasm-platform.io/app-namespace` / `wasm-platform.io/app-name` labels.
+- [x] **Operator — delete path**: delete `PostgresMigrationSet` CR on Application deletion.
+- [x] **`sql-hello` example**: update Application CR to new `migrations` struct shape;
+  replace `docker_build` with `custom_build` ORAS artifact push in Tiltfile.
+- [x] **go.mod**: add `replace` directive to use local db-operator (run `go mod tidy`
+  before building; pin to published version once db-operator phases 4–7 are complete).
+- [ ] **db-operator pin**: once db-operator phases 4–7 are complete and a new version
+  is published, remove the `replace` directive and bump `go.mod` + `helm/wasm-platform/Chart.yaml`;
+  run `go mod tidy` and `helm dependency update`.
+- [ ] **`wp-operator/README.md`**: update `spec.sql.migrations` description — new struct
+  shape, ORAS artifact format, `targetRevision` semantics, delete path, `MigrationSetName`.
 - [ ] **Failure-path e2e**: a second fixture with a deliberately-broken migration
   (`SELECT * FROM nonexistent;`) asserts the Application reaches
-  `Ready: False, reason: MigrationFailed` with the expected message format and that no
-  function traffic is served.
-- [x] Update [components/wp-operator/README.md](components/wp-operator/README.md):
-  document `spec.sql.migrations`, the implicit migrations user, the activation gate,
-  failure semantics, and rollback-out-of-scope limitation.
+  `Ready: False, reason: MigrationFailed` and no function traffic is served.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 #### Verification
 
-`sql-hello` e2e test passes via real migrations image. Failure-path e2e test passes.
+`sql-hello` e2e test passes via ORAS migrations artifact. Failure-path e2e test passes.
 `e2e-tests` resource passes. hello-world e2e test is unaffected.
 
 ---

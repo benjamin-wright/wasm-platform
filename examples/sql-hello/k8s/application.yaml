@@ -5,7 +5,9 @@ metadata:
   namespace: default
 spec:
   sql:
-    migrations: sql-hello-migrations
+    migrations:
+      artifact: sql-hello-migrations
+      targetRevision: 1
     users:
       - name: writer
         permissions:

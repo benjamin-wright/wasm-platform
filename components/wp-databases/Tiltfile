@@ -6,11 +6,11 @@ def db_operator(namespace):
     helm_resource(
         'db-operator',
         namespace=namespace,
-        chart='oci://docker.io/benwright/db-operator-chart:v1.0.10',
+        chart='oci://docker.io/benwright/db-operator-chart:v1.1.0',
         labels=['platform'],
         flags=[
             '--set=image.repository=docker.io/benwright/db-operator',
-            '--set=image.tag=v1.0.10',
+            '--set=image.tag=v1.1.0',
         ],
     )
     local_resource(
@@ -18,6 +18,18 @@ def db_operator(namespace):
         cmd='kubectl rollout status deployment/db-operator -n {} --timeout=120s'.format(namespace),
         resource_deps=['db-operator'],
         labels=['internal'],
+    )
+
+    helm_resource(
+        'db-operator-mcp',
+        namespace=namespace,
+        chart='oci://docker.io/benwright/db-mcp-chart:v1.1.0',
+        labels=['platform'],
+        flags=[
+            '--set=image.repository=docker.io/benwright/db-mcp',
+            '--set=image.tag=v1.1.0',
+        ],
+        port_forwards=['8090:8080', '8091:8081'],
     )
 
 def wp_databases(namespace):

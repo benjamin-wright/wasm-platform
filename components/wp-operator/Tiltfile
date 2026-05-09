@@ -4,7 +4,7 @@ IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 
 def wp_operator(namespace):
     k8s_kind('Application',
-             image_json_path = ['{.spec.functions[*].module}', '{.spec[?(@.migrations)].migrations}'],
+             image_json_path = ['{.spec.functions[*].module}', '{.spec[?(@.migrations)].migrations.artifact}'],
              pod_readiness = 'ignore')
 
     custom_build(
