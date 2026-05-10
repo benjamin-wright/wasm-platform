@@ -69,14 +69,16 @@ spec:
 | `spec.functions` | []FunctionSpec | yes (min 1) | List of functions in this application. |
 | `spec.env` | map[string]string | no | Environment variables injected into all functions. |
 | `spec.sql` | SQLSpec | no | SQL database access configuration. Absent means no SQL access. Present as `{}` provisions a single implicit `app` user with ALL privileges on all tables, and every function is implicitly bound to it. Present with `users` provisions exactly those users; functions must opt in via `sqlUser`. |
-| `spec.sql.migrations` | string | no | OCI reference to a migrations image. When set, the operator provisions an implicit `migrations` database-owner user, runs the image as a Kubernetes Job, and withholds function activation until the Job succeeds. See [Application Authoring — Database Migrations](#database-migrations). |
+| `spec.sql.migrations` | MigrationsSpec | no | Database migrations configuration. When set, the operator creates a `PostgresMigrationSet` CR (managed by the db-operator) and withholds function activation until it reaches `Ready` phase. See [Application Authoring — Database Migrations](#database-migrations). |
+| `spec.sql.migrations.artifact` | string | yes (when `migrations` set) | ORAS artifact reference to a tar+gzip of SQL migration files. Media type `application/vnd.db-operator.migrations.v1.tar+gzip`. Use an immutable tag or digest. |
+| `spec.sql.migrations.targetRevision` | int64 | yes (when `migrations` set) | Numeric migration ID to converge the database to. Must match a revision present in the artifact. The db-operator runs all pending apply migrations up to and including this ID; if the database is currently at a higher revision, it runs rollbacks down to it. |
 | `spec.metrics` | []MetricDefinition | no | User-defined Prometheus metrics (max 50). Each metric has a `name`, `type` (`counter`/`gauge`), and optional `labels` (max 10). Names must follow `[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$` and must not start with `__`. Labels must not include `app_name` or `app_namespace` (host-injected). |
 
 **`spec.sql.users[]` (when explicit users are listed):**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Logical user identifier. Referenced by function `sqlUser` fields. The name `migrations` is reserved. |
+| `name` | string | yes | Logical user identifier. Referenced by function `sqlUser` fields. |
 | `permissions[].tables` | []string | no | Tables to grant on. Absent means all tables. |
 | `permissions[].grant` | []string | yes | PostgreSQL privileges: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, or `ALL`. |
 
@@ -98,14 +100,13 @@ spec:
 **Internal NATS subjects:** `trigger.topic` functions get a `fn.` prefix; `trigger.http` functions get an auto-generated `http.<namespace>.<app-name>.<function-name>` subject. Both are invisible to the module author.
 
 **CEL validation rules on `spec.sql`:**
-- `migrations` is reserved in `spec.sql.users[*].name`.
 - When `spec.sql.users` is non-empty, each function's `sqlUser` must name a defined user or be absent.
 
 ## Application Authoring
 
 ### Database Migrations
 
-Applications can include versioned SQL schema migrations. The operator runs a Kubernetes Job from a migrations image before activating any functions, ensuring the schema is correct before traffic is served. See Phase 9.3c for the `spec.sql.migrations` field; this section covers how to package and build a migrations image.
+Applications can include versioned SQL schema migrations. When `spec.sql.migrations` is set, the operator creates a `PostgresMigrationSet` CR for the Application; the db-operator runs the migrations and reports status. The wp-operator gates function activation on the migration set reaching `Ready`, ensuring the schema is correct before traffic is served.
 
 **File naming convention**
 
@@ -121,36 +122,42 @@ migrations/
 
 > **Footgun — never edit an applied file.** The runner tracks a content hash of every file it has applied. Editing or deleting an applied file is a hard error; the runner will refuse to run until the file is restored. Only ever add new migration files.
 
-For the full file-format contract (ID format, hash tracking, advisory lock behaviour) see the [db-operator migrations spec](../../db-operator/cmd/db-migrations/spec.md).
+For the full file-format contract (ID format, hash tracking, advisory lock behaviour) see the [db-operator migrations spec](../../../db-operator/cmd/db-migrations/spec.md).
 
-**Building a migrations image**
+**Packaging migrations as an ORAS artifact**
 
-Create one `Dockerfile` per repository (a monorepo pattern), parameterised by `APP` build-arg:
-
-```dockerfile
-ARG DB_MIGRATIONS_VERSION=v1.0.10
-FROM docker.io/benwright/db-migrations:${DB_MIGRATIONS_VERSION}
-ARG APP
-COPY ${APP}/migrations/ /migrations/
-```
-
-Build per app:
+Migrations are packaged as a tar+gzip of the `migrations/` directory and pushed as an OCI artifact with media type `application/vnd.db-operator.migrations.v1.tar+gzip`:
 
 ```sh
-docker build --build-arg APP=sql-hello \
-  -f migrations.Dockerfile \
-  -t registry.example.com/sql-hello-migrations:v1 .
+tar czf sql-hello-migrations.tar.gz -C examples/sql-hello/migrations .
+oras push registry.example.com/sql-hello-migrations:v1 \
+  sql-hello-migrations.tar.gz:application/vnd.db-operator.migrations.v1.tar+gzip \
+  --artifact-type application/vnd.db-operator.migrations.v1.tar+gzip
 ```
 
-A worked example lives in [`examples/sql-hello/migrations.Dockerfile`](../../examples/sql-hello/migrations.Dockerfile) and [`examples/sql-hello/migrations/`](../../examples/sql-hello/migrations/).
+A worked example lives in [`examples/sql-hello/Tiltfile`](../../examples/sql-hello/Tiltfile) (the `sql-hello-migrations` `custom_build` block) and [`examples/sql-hello/migrations/`](../../examples/sql-hello/migrations/).
+
+**Reference the artifact from the Application:**
+
+```yaml
+spec:
+  sql:
+    migrations:
+      artifact: registry.example.com/sql-hello-migrations:v1
+      targetRevision: 2
+```
+
+`targetRevision` is the migration ID to converge to. Bump it when adding new migration files; the db-operator will apply the pending migrations and update the `PostgresMigrationSet` status. The wp-operator watches that status and re-pushes config when the set reaches `Ready` again.
 
 **Immutable tags required**
 
-> **Warning:** `spec.sql.migrations` accepts any OCI reference, but mutable tags (`:latest`, branch tags) cause silent schema skew across replicas and mask changes from the operator. Always use an immutable tag or digest (`@sha256:…`). This is not enforced by CEL — it is a deployment discipline requirement.
+> **Warning:** `spec.sql.migrations.artifact` accepts any OCI reference, but mutable tags (`:latest`, branch tags) cause silent schema skew across replicas and mask changes from the operator. Always use an immutable tag or digest (`@sha256:…`). This is not enforced by CEL — it is a deployment discipline requirement.
 
-**Rollback**
+**Failure path**
 
-Rollback is not yet wired through the platform. If a migration fails, the Application is held at `Ready: False, reason: MigrationFailed`. To recover, fix the migrations image, push it under a new immutable tag, and update `spec.sql.migrations` to trigger a new Job. If a schema rollback is needed, add forward-correcting SQL rather than editing existing migration files.
+If a migration fails, the `PostgresMigrationSet` enters `Failed` phase. The wp-operator surfaces this as `Ready: False, reason: MigrationFailed` on the Application, with the failure message copied from the migration set's status conditions. There is no automatic retry; recovery requires fixing the SQL files, pushing a new immutable artifact tag, and updating `spec.sql.migrations.artifact` (or `targetRevision`) — both trigger a fresh migrations run via the same `PostgresMigrationSet` CR.
+
+Rollback is not yet wired through the platform; if a schema rollback is needed, add forward-correcting SQL rather than editing existing migration files.
 
 ## PostgreSQL Identifier Derivation
 
@@ -179,7 +186,7 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
    b. Checks that `Config.PostgresDatabaseName` is configured and the named `PostgresDatabase` CR exists.
    c. Creates one `PostgresCredential` CR per SQL user (including the implicit `app` user when `spec.sql.users` is absent). Each credential targets the derived PG username, derived database name, and declared privileges.
    d. Waits until all credentials reach `Ready` phase and their Secrets are available. Returns `RequeueAfter: 5s` while any credential or Secret is pending.
-   e. If `spec.sql.migrations` is set: creates the implicit `migrations` `PostgresCredential` (database owner, ALL privileges) and waits for it to reach `Ready`. Once ready, creates the migrations Job if it does not exist. Returns `RequeueAfter: 5s` while the Job is active. If the Job fails, sets `Ready: False, reason: MigrationFailed` and stops requeueing — bump `spec.sql.migrations` to a new ref to retry.
+   e. If `spec.sql.migrations` is set: creates (or patches) a `PostgresMigrationSet` CR named `wasm-<namespace>-<app_name>-migrations` with `spec.artifact` and `spec.targetRevision` from the Application. Returns `RequeueAfter: 5s` while the set is `Pending` or `Running`. If the set reports `Failed`, sets `Ready: False, reason: MigrationFailed` (with the failure message from the set's status conditions) and stops requeueing — update `spec.sql.migrations.artifact` or `targetRevision` to retry. The set is watched, so status changes re-enqueue the Application without polling.
    f. Assembles per-user connection URLs from the db-operator Secrets (`PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT`) and the derived database name.
 3. Pushes an incremental config update (with all functions) to all connected execution hosts via `PushIncrementalUpdate`.
 4. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
@@ -188,7 +195,7 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 
 1. Pushes a delete config update to execution hosts.
 2. Pushes route delete updates for all HTTP-triggered functions to gateways.
-3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs (including the implicit `migrations` credential when `spec.sql.migrations` was set). The db-operator cleans up the PG users; the database itself persists until the `PostgresDatabase` CR is removed. Completed migrations Jobs are cleaned up by their `TTLSecondsAfterFinished: 86400` setting.
+3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs. The db-operator cleans up the PG users; the database itself persists until the `PostgresDatabase` CR is removed. If `spec.sql.migrations` was set, the `PostgresMigrationSet` CR is also deleted.
 
 ## SQL Credential Lifecycle
 
@@ -199,14 +206,9 @@ For each SQL user (or the synthetic `app` user when `spec.sql: {}`):
 - **Namespace:** the operator's own namespace (`POD_NAMESPACE`).
 - **Privileges:** declared in `spec.sql.users[*].permissions`; defaults to `ALL` on all tables when permissions are absent.
 
-When `spec.sql.migrations` is set, an additional implicit credential is provisioned:
+When `spec.sql.migrations` is set, the operator additionally creates a `PostgresMigrationSet` CR (one per Application) that the db-operator reconciles — see [Database Migrations](#database-migrations). The set is named `wasm-<namespace>-<app_name>-migrations` and is deleted alongside the user credentials on Application deletion. The migrations runner uses an internal db-operator-owned role; the wp-operator does not provision a separate `migrations` `PostgresCredential`.
 
-- **`PostgresCredential` name:** `wasm-<namespace>-<app_name>-migrations-pg`.
-- **`spec.databaseOwner: true`** — makes this role the owner of the app's database, enabling DDL (`CREATE TABLE`, etc.).
-- **Privileges:** `ALL` on the app's database.
-- The migrations credential is deleted on Application deletion alongside user credentials.
-
-The operator does not push an `ApplicationConfig` to execution hosts until all `PostgresCredential` CRs for the Application have reached `Ready` phase **and**, if `spec.sql.migrations` is set, the migrations Job has succeeded.
+The operator does not push an `ApplicationConfig` to execution hosts until all `PostgresCredential` CRs for the Application have reached `Ready` phase **and**, if `spec.sql.migrations` is set, the `PostgresMigrationSet` has reached `Ready` phase.
 
 ## Config API
 
@@ -237,8 +239,8 @@ Generates: gRPC stubs → `internal/grpc/configsync/`, CRD deepcopy → `api/v1a
 | `DatabaseConfigMissing` | Set when `spec.sql` is present but `PostgresDatabaseName` is not configured. |
 | `DatabaseNotFound` | Set when the named `PostgresDatabase` CR does not exist. |
 | `InvalidIdentifier` | Set when namespace or app name contains consecutive hyphens, preventing PG identifier derivation. |
-| `MigrationsRunning` | Set while the migrations credential is pending or the migrations Job is active. |
-| `MigrationFailed` | Set when the migrations Job exits with a non-zero code. Message: `Job <name>: pod <pod> exited with code <n>`. No automatic retry — bump `spec.sql.migrations` to a new ref to trigger a new Job. |
+| `MigrationsRunning` | Set while the `PostgresMigrationSet` is in `Pending` or `Running` phase. |
+| `MigrationFailed` | Set when the `PostgresMigrationSet` reports `Failed`. Message is copied from the set's status conditions. No automatic retry — update `spec.sql.migrations.artifact` or `targetRevision` to trigger a new run. |
 
 **Status fields:**
 

@@ -203,12 +203,11 @@ The operator checks all existing Applications for metric name collisions at reco
 
 **Decision:**
 
-- **Image reference:** `spec.migrations.image` (optional OCI image reference) at the Application level. The image is expected to run to completion (exit 0 = success). No arguments are passed by the platform; the image is responsible for connecting to its own database using credentials injected as environment variables by the operator (`PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`).
-- **Trigger:** A migrations Job is created on the first apply of any Application that has `spec.migrations.image` set, and on any subsequent apply where `spec.migrations.image` or any `spec.functions[*].module` digest changes (detected via `metadata.generation` increment). Job name pattern: `<app-name>-migrations-<generation>`.
-- **Activation gate:** The operator does not push an ApplicationConfig to execution hosts until the migrations Job for the current generation has completed successfully. Applications without `spec.migrations.image` are unaffected.
-- **Failure model:** If the Job fails (all retries exhausted), the operator sets `MigrationFailed: True` on the Application status and does not push config. No traffic flows to the Application. The user fixes the migrations image and re-applies, incrementing `metadata.generation` and triggering a new Job.
-- **Rollback:** Out of scope for v1alpha1. Migrations are forward-only.
-- **Job retention:** Jobs are retained after completion for debugging. A completed Job for a prior generation is deleted when a new generation's Job is created.
+- **Artifact reference:** `spec.sql.migrations.artifact` (ORAS artifact reference) plus `spec.sql.migrations.targetRevision` (numeric migration ID) at the Application level. The artifact is a tar+gzip of paired `.sql` files (`<id>-<name>-apply.sql` / `<id>-<name>-rollback.sql`) with media type `application/vnd.db-operator.migrations.v1.tar+gzip`.
+- **Lifecycle owner:** The db-operator owns the migrations runner via the `PostgresMigrationSet` CRD. The wp-operator creates one `PostgresMigrationSet` per Application (named `wasm-<namespace>-<app_name>-migrations`) and patches `spec.artifact` / `spec.targetRevision` when they change. The db-operator pulls the artifact, runs the SQL files inside an advisory-locked Job, and reports `Pending` / `Running` / `Ready` / `Failed` on the set's status. The migrations role is owned and rotated entirely inside the db-operator — the wp-operator does not provision a separate `migrations` `PostgresCredential`.
+- **Activation gate:** The wp-operator does not push an `ApplicationConfig` to execution hosts until the `PostgresMigrationSet` reaches `Ready` phase. Applications without `spec.sql.migrations` are unaffected.
+- **Failure model:** If the migration runner fails, the set enters `Failed` phase. The wp-operator surfaces `MigrationFailed: True` on the Application status (with the failure message copied from the set's status conditions) and does not push config. No traffic flows. Recovery is by updating `spec.sql.migrations.artifact` (push a new immutable tag) or `spec.sql.migrations.targetRevision`; both trigger a fresh run via the same `PostgresMigrationSet`.
+- **Rollback:** Bidirectional in principle (rollback files are required by the file-pair contract), but not yet wired through the platform — `targetRevision` is intended as monotonically increasing for v1alpha1. Forward-correcting SQL is the supported recovery path.
 
 ---
 
