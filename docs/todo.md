@@ -4,22 +4,6 @@ Active implementation plan for the wasm-platform project.
 
 ---
 
-### Phase 10.1: Fuel Metering + Memory Limits
-
-Add engine-level resource limits for CPU (fuel) and memory.
-
-#### Tasks
-
-- [ ] Enable fuel metering on `Engine`; set fuel budget per `Store` before each invocation (`WASM_FUEL_LIMIT` env var).
-- [ ] Configure `InstanceLimits` for linear memory on `Engine` (`WASM_MEMORY_LIMIT_MB` env var, default 64 MB).
-- [ ] Add unit tests: a module that loops infinitely is killed with a fuel error; a module that allocates beyond the limit is killed.
-
-#### Verification
-
-Unit tests pass. `e2e-tests` resource passes.
-
----
-
 ### Phase 10.2: Wall-Clock Timeout
 
 Add a per-invocation wall-clock timeout to cover host calls that fuel metering does not reach.

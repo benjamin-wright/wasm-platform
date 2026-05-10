@@ -46,6 +46,8 @@ Guest modules emit log entries via the `log` WIT interface (`log::emit(level, me
 | `REDIS_URL` | Shared Redis URL (e.g. `redis://redis:6379`). |
 | `PG_POOL_MAX_CONNECTIONS` | Maximum connections per per-user PostgreSQL pool (default `5`). |
 | `MAX_CONCURRENT_INVOCATIONS` | Concurrency limit per host (default `64`). |
+| `WASM_FUEL_LIMIT` | Maximum fuel units per invocation; unset disables fuel metering (optional). |
+| `WASM_MEMORY_LIMIT_MB` | Maximum linear memory per module in MiB (default `64`). |
 | `HOSTNAME` | Used as `host_id` in gRPC (injected by downward API). |
 
 ## Metrics

@@ -59,6 +59,12 @@ spec:
               value: "redis://$(REDIS_USERNAME):$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)"
             - name: RUST_LOG
               value: {{ .Values.executionHost.logLevel | quote }}
+            - name: WASM_MEMORY_LIMIT_MB
+              value: "{{ .Values.executionHost.wasmMemoryLimitMb }}"
+            {{- if .Values.executionHost.wasmFuelLimit }}
+            - name: WASM_FUEL_LIMIT
+              value: "{{ .Values.executionHost.wasmFuelLimit }}"
+            {{- end }}
           volumeMounts:
             - name: nats-credentials
               mountPath: /var/run/secrets/nats

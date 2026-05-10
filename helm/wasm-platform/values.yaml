@@ -32,6 +32,8 @@ executionHost:
       cpu: 500m
       memory: 512Mi
   replicaCount: 1
+  wasmMemoryLimitMb: 64
+  # wasmFuelLimit: 500000000  # Optional: set to enable fuel metering (max WASM instructions per invocation). Unset disables fuel metering.
   nats:
     secretName: execution-host-nats-credentials
   redis:
