@@ -1,12 +1,109 @@
-# Values that override subchart defaults for a full wasm-platform deployment.
-# The wp-databases subchart names its PostgresDatabase as
-# "{{ .Release.Name }}-postgres" — when this chart is released as
-# "wasm-platform" that resolves to "wasm-platform-postgres".
-wp-operator:
+wpOperator:
+  image:
+    repository: wasm-platform-registry.localhost:5001/wp-operator
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  replicaCount: 1
+  grpc:
+    port: 50051
+  # databases configures how the reconciler discovers db-operator-provisioned
+  # credentials. Set postgresDatabaseName to the name of the PostgresDatabase CR,
+  # which by convention is <release-name>-postgres.
   databases:
-    # Must match the PostgresDatabase CR name created by the wp-databases subchart.
-    postgresDatabaseName: "wasm-platform-postgres"
+    postgresDatabaseName: ""
 
-execution-host:
+executionHost:
+  image:
+    repository: wasm-platform-registry.localhost:5001/execution-host
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  replicaCount: 1
+  nats:
+    secretName: execution-host-nats-credentials
+  redis:
+    secretName: execution-host-redis-credentials
   configSync:
     serverAddr: "http://wp-operator-grpc:50051"
+  moduleCache:
+    addr: "http://module-cache:80"
+  logLevel: info
+
+gateway:
+  image:
+    repository: wasm-platform-registry.localhost:5001/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  replicaCount: 1
+  nats:
+    secretName: gateway-nats-credentials
+  operator:
+    addr: "http://wp-operator-grpc:50051"
+  gateway:
+    timeoutSecs: 30
+    httpPort: 3000
+  ingress:
+    enabled: true
+    host: ""
+  logLevel: info
+
+moduleCache:
+  image:
+    repository: wasm-platform-registry.localhost:5001/module-cache
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  replicaCount: 1
+  logLevel: info
+
+databases:
+  postgres:
+    version: "16"
+    storageSize: 1Gi
+  redis:
+    storageSize: 1Gi
+    wpOperator:
+      username: wp-operator
+      secretName: wp-operator-redis-credentials
+    executionHost:
+      username: execution-host
+      secretName: execution-host-redis-credentials
+  nats:
+    version: "2.10"
+    jetStream:
+      storageSize: 1Gi
+    wpOperator:
+      username: wp-operator
+      secretName: wp-operator-nats-credentials
+    executionHost:
+      username: execution-host
+      secretName: execution-host-nats-credentials
+    gateway:
+      username: gateway
+      secretName: gateway-nats-credentials

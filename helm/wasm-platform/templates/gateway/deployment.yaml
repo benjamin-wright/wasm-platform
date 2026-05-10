@@ -1,19 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}
+  name: gateway
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "gateway.labels" . | nindent 4 }}
+    {{- include "wasm-platform.gateway.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.gateway.replicaCount }}
   selector:
     matchLabels:
+      app.kubernetes.io/name: gateway
       app.kubernetes.io/instance: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        {{- include "gateway.labels" . | nindent 8 }}
+        {{- include "wasm-platform.gateway.labels" . | nindent 8 }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -21,15 +22,15 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
           env:
             - name: OPERATOR_ADDR
-              value: {{ .Values.operator.addr | quote }}
+              value: {{ .Values.gateway.operator.addr | quote }}
             - name: GATEWAY_TIMEOUT_SECS
-              value: {{ .Values.gateway.timeoutSecs | quote }}
+              value: {{ .Values.gateway.gateway.timeoutSecs | quote }}
             - name: HTTP_PORT
-              value: {{ .Values.gateway.httpPort | quote }}
+              value: {{ .Values.gateway.gateway.httpPort | quote }}
             - name: HOSTNAME
               valueFrom:
                 fieldRef:
@@ -37,29 +38,29 @@ spec:
             - name: NATS_CREDENTIALS_PATH
               value: /var/run/secrets/nats
             - name: RUST_LOG
-              value: {{ .Values.logLevel | quote }}
+              value: {{ .Values.gateway.logLevel | quote }}
           volumeMounts:
             - name: nats-credentials
               mountPath: /var/run/secrets/nats
               readOnly: true
           ports:
             - name: http
-              containerPort: {{ .Values.gateway.httpPort }}
+              containerPort: {{ .Values.gateway.gateway.httpPort }}
               protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ .Values.gateway.httpPort }}
+              port: {{ .Values.gateway.gateway.httpPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ .Values.gateway.httpPort }}
+              port: {{ .Values.gateway.gateway.httpPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -68,4 +69,4 @@ spec:
       volumes:
         - name: nats-credentials
           secret:
-            secretName: {{ .Values.nats.secretName }}
+            secretName: {{ .Values.gateway.nats.secretName }}

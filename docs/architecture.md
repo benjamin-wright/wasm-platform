@@ -161,7 +161,23 @@ Scaling targets concurrent invocations (not CPU/memory). A single execution host
 
 ---
 
-## 4. Decisions (Phase 8+)
+## 4. Deployment
+
+### Helm Chart Structure
+
+All platform components are deployed from a single Helm chart at `helm/wasm-platform/`. Templates are split into per-component subdirectories (`templates/wp-operator/`, `templates/execution-host/`, `templates/gateway/`, `templates/module-cache/`, `templates/databases/`) purely for navigation — Helm flattens them at render time.
+
+`values.yaml` is nested per component (`wpOperator`, `executionHost`, `gateway`, `moduleCache`, `databases`). Workload names are deterministic (e.g. `wp-operator`, not `{{ .Release.Name }}`-prefixed) so component Tiltfiles can address them via `k8s_resource()`. RBAC cluster-scoped resources use `{{ .Release.Name }}-wp-operator` for uniqueness.
+
+The **db-operator** is installed separately as an OCI chart prerequisite in its own `db-operator` namespace. Only its CRs (PostgresDatabase, RedisDatabase, NatsCluster, etc.) are rendered by the umbrella chart, under `templates/databases/`.
+
+### Tilt Layout
+
+The root `Tiltfile` renders the umbrella chart once via `helm()` + `k8s_yaml()`. Each component Tiltfile exposes a function that registers the `custom_build`, calls `k8s_resource()` for its workload, and declares component-scoped test `local_resource`s. Tilt's automatic image injection means no `image_keys` plumbing is needed — rendered manifests already reference the registry image refs.
+
+---
+
+## 5. Decisions (Phase 8+)
 
 ### Multi-Function Application CRD Shape
 

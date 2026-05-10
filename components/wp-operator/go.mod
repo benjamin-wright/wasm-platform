@@ -3,7 +3,7 @@ module github.com/benjamin-wright/wasm-platform/wp-operator
 go 1.25.1
 
 require (
-	github.com/benjamin-wright/db-operator v1.1.2
+	github.com/benjamin-wright/db-operator v1.1.6
 	github.com/onsi/gomega v1.39.1
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.10

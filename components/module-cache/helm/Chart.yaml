@@ -1,6 +1,0 @@
-apiVersion: v2
-name: module-cache
-description: Centralized cache for AOT-compiled WASM artifacts.
-type: application
-version: 0.1.0
-appVersion: latest

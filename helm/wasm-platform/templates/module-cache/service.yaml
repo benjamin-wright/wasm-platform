@@ -1,16 +1,17 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-grpc
+  name: module-cache
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-operator.labels" . | nindent 4 }}
+    {{- include "wasm-platform.module-cache.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
+    app.kubernetes.io/name: module-cache
     app.kubernetes.io/instance: {{ .Release.Name }}
   ports:
-    - name: grpc
-      port: {{ .Values.grpc.port }}
-      targetPort: grpc
+    - name: http
+      port: 80
+      targetPort: 3000
       protocol: TCP

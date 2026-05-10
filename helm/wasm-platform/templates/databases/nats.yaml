@@ -4,11 +4,11 @@ metadata:
   name: {{ .Release.Name }}-nats
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
-  natsVersion: {{ .Values.nats.version | quote }}
+  natsVersion: {{ .Values.databases.nats.version | quote }}
   jetStream:
-    storageSize: {{ .Values.nats.jetStream.storageSize }}
+    storageSize: {{ .Values.databases.nats.jetStream.storageSize }}
 ---
 apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
 kind: NatsAccount
@@ -16,12 +16,12 @@ metadata:
   name: {{ .Release.Name }}-nats-wp-operator
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
   clusterRef: {{ .Release.Name }}-nats
   users:
-    - username: {{ .Values.nats.wpOperator.username }}
-      secretName: {{ .Values.nats.wpOperator.secretName }}
+    - username: {{ .Values.databases.nats.wpOperator.username }}
+      secretName: {{ .Values.databases.nats.wpOperator.secretName }}
       permissions:
         publish:
           allow:
@@ -36,12 +36,12 @@ metadata:
   name: {{ .Release.Name }}-nats-execution-host
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
   clusterRef: {{ .Release.Name }}-nats
   users:
-    - username: {{ .Values.nats.executionHost.username }}
-      secretName: {{ .Values.nats.executionHost.secretName }}
+    - username: {{ .Values.databases.nats.executionHost.username }}
+      secretName: {{ .Values.databases.nats.executionHost.secretName }}
       permissions:
         publish:
           allow:
@@ -61,12 +61,12 @@ metadata:
   name: {{ .Release.Name }}-nats-gateway
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
   clusterRef: {{ .Release.Name }}-nats
   users:
-    - username: {{ .Values.nats.gateway.username }}
-      secretName: {{ .Values.nats.gateway.secretName }}
+    - username: {{ .Values.databases.nats.gateway.username }}
+      secretName: {{ .Values.databases.nats.gateway.secretName }}
       permissions:
         publish:
           allow:

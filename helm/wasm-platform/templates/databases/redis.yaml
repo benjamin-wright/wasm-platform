@@ -4,9 +4,9 @@ metadata:
   name: {{ .Release.Name }}-redis
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
-  storageSize: {{ .Values.redis.storageSize }}
+  storageSize: {{ .Values.databases.redis.storageSize }}
 ---
 apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
 kind: RedisCredential
@@ -14,11 +14,11 @@ metadata:
   name: {{ .Release.Name }}-redis-wp-operator
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
   databaseRef: {{ .Release.Name }}-redis
-  username: {{ .Values.redis.wpOperator.username }}
-  secretName: {{ .Values.redis.wpOperator.secretName }}
+  username: {{ .Values.databases.redis.wpOperator.username }}
+  secretName: {{ .Values.databases.redis.wpOperator.secretName }}
   aclCategories:
     - all
 ---
@@ -28,11 +28,11 @@ metadata:
   name: {{ .Release.Name }}-redis-execution-host
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wp-databases.labels" . | nindent 4 }}
+    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
 spec:
   databaseRef: {{ .Release.Name }}-redis
-  username: {{ .Values.redis.executionHost.username }}
-  secretName: {{ .Values.redis.executionHost.secretName }}
+  username: {{ .Values.databases.redis.executionHost.username }}
+  secretName: {{ .Values.databases.redis.executionHost.secretName }}
   keyPatterns:
     - "*"
   aclCategories:

@@ -1,6 +1,0 @@
-apiVersion: v2
-name: execution-host
-description: Wasmtime-based WASM execution host for wasm-platform.
-type: application
-version: 0.1.0
-appVersion: latest

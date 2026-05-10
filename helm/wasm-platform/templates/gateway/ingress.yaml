@@ -1,21 +1,21 @@
-{{- if .Values.ingress.enabled }}
+{{- if .Values.gateway.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Release.Name }}
+  name: gateway
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "gateway.labels" . | nindent 4 }}
+    {{- include "wasm-platform.gateway.labels" . | nindent 4 }}
 spec:
   rules:
-    - host: {{ .Values.ingress.host | default "" }}
+    - host: {{ .Values.gateway.ingress.host | default "" }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ .Release.Name }}
+                name: gateway
                 port:
                   name: http
 {{- end }}

@@ -1,4 +1,3 @@
-load('ext://helm_resource', 'helm_resource')
 load('./tilt/namespace.Tiltfile', 'k8s_namespace')
 
 allow_k8s_contexts('k3d-wasm-platform')
@@ -23,11 +22,20 @@ k8s_namespace(namespace)
 db_operator(namespace = 'db-operator')
 
 workspace_deps()
+
+# Render the unified platform chart. Each Deployment becomes its own Tilt resource;
+# component Tiltfiles then attach port-forwards, labels, and deps via k8s_resource().
+k8s_yaml(helm(
+    'helm/wasm-platform',
+    name = 'wasm-platform',
+    namespace = namespace,
+))
+
+wp_operator()
 wp_databases(namespace)
-wp_operator(namespace)
-execution_host(namespace, resource_deps=['wp-operator'])
-gateway(namespace, resource_deps=['wp-operator'])
-module_cache(namespace)
+execution_host(resource_deps=['wp-operator'])
+gateway(resource_deps=['wp-operator'])
+module_cache()
 
 
 ## Example applications ##
