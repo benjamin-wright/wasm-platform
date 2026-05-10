@@ -358,6 +358,20 @@ e2e test. Confirm it is covered by operator unit tests before closing the phase.
 - [x] Update `components/wp-operator/README.md`: document new `spec.sql` struct shape,
   `sqlUser` function field, PG identifier derivation algorithm, reserved names, credential
   lifecycle, and new status fields.
+- [ ] **Fix A (db-operator prerequisite)**: add `GRANT ALL ON ALL SEQUENCES IN SCHEMA
+  public TO <user>` to the all-tables branch of `EnsureUser` in db-operator's
+  `internal/operator/controller/postgrescredential_client.go`. Without this, `INSERT`
+  into any table with a `SERIAL`/`IDENTITY` column fails with `permission denied for
+  sequence`. Tracked in `db-operator/docs/todo.md` under "Bug: Sequence Grants Missing
+  from EnsureUser". This unblocks the e2e test immediately.
+- [ ] **Fix B (this repo)**: in `components/wp-operator/internal/controller/application_controller.go`,
+  function `buildPostgresCredentialForUser`, produce one `DatabasePermissionEntry` per
+  `SQLTablePermission` entry and carry the `Tables` slice through to
+  `dboperator.DatabasePermissionEntry.Tables`. Currently all grants are merged into one
+  entry with no table restriction, so every credential is provisioned as all-tables even
+  when the Application spec declares named tables. This is a correctness/least-privilege
+  bug; it does not affect the e2e test outcome (greetings is the only table) but must be
+  fixed before any real workload uses named-table grants.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 #### Verification
@@ -534,7 +548,7 @@ superseded and no longer used by the Tiltfile.
   run `go mod tidy` and `helm dependency update`.
 - [ ] **`wp-operator/README.md`**: update `spec.sql.migrations` description — new struct
   shape, ORAS artifact format, `targetRevision` semantics, delete path, `MigrationSetName`.
-- [ ] **Failure-path e2e**: a second fixture with a deliberately-broken migration
+- [x] **Failure-path e2e**: a second fixture with a deliberately-broken migration
   (`SELECT * FROM nonexistent;`) asserts the Application reaches
   `Ready: False, reason: MigrationFailed` and no function traffic is served.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.

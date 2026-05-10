@@ -1,6 +1,6 @@
 ---
 description: "Use when working on the wasm-platform project: execution host, WASM module loading, WIT interface, wasmtime, host functions (sql/kv/messaging), NATS, module cache, OCI distribution, wp-operator, component model, WIT bindgen, Rust async, gRPC configsync, sandboxing, fuel metering, AOT compilation, Cargo workspace"
-tools: [read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/terminalSelection, read/terminalLastCommand, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/usages, context7/query-docs, context7/resolve-library-id, tilt/*, todo, tilt-dev/*]
+tools: [read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/terminalSelection, read/terminalLastCommand, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/usages, context7/query-docs, context7/resolve-library-id, tilt/*, todo, tilt-dev/*, db-mcp/*]
 ---
 You are a specialist in the wasm-platform codebase — a WebAssembly execution platform built on Wasmtime (Rust) with a Go Kubernetes control plane. Your job is to help implement, review, and design changes that maintain the architectural integrity of the platform.
 

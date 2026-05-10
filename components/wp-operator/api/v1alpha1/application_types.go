@@ -150,7 +150,7 @@ type SQLSpec struct {
 	// Migrations configures database migrations via a db-operator PostgresMigrationSet.
 	// When set, the operator creates a PostgresMigrationSet CR and withholds function
 	// activation until it reaches Ready phase. On failure, the Application is held at
-	// Ready: False, reason: MigrationFailed and no automatic requeue is performed.
+	// Ready=False, reason=MigrationFailed and no automatic requeue is performed.
 	// +optional
 	Migrations *MigrationsSpec `json:"migrations,omitempty"`
 

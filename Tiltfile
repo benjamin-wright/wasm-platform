@@ -15,6 +15,7 @@ load('./components/wp-operator/Tiltfile', 'wp_operator')
 load('./examples/demo-app/Tiltfile', 'demo_app')
 load('./examples/counter-app/Tiltfile', 'counter_app')
 load('./examples/sql-hello/Tiltfile', 'sql_hello')
+load('./examples/sql-broken-migrations/Tiltfile', 'sql_broken_migrations')
 load('./tests/e2e/Tiltfile', 'e2e_tests')
 load('./tilt/workspace-deps.Tiltfile', 'workspace_deps')
 
@@ -35,6 +36,7 @@ k8s_namespace('examples')
 demo_app('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
 counter_app('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
 sql_hello('default', resource_deps=['wp-operator', 'execution-host', 'gateway'])
+sql_broken_migrations('default', resource_deps=['wp-operator', 'execution-host', 'gateway'])
 
 ## Tests ##
 

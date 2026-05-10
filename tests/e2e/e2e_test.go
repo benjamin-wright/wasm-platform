@@ -46,6 +46,7 @@ const (
 	sqlHelloURL       = "http://localhost/sql-hello"
 	sqlHelloSetupURL  = "http://localhost/sql-hello/setup"
 	sqlHelloInsertURL = "http://localhost/sql-hello/insert"
+	sqlBrokenURL      = "http://localhost/sql-broken"
 	routeTimeout      = 60 * time.Second
 	pollInterval      = 1 * time.Second
 )
@@ -361,4 +362,56 @@ func TestSQLHello(t *testing.T) {
 	defer resp.Body.Close()
 	g.Expect(resp.StatusCode).To(Equal(http.StatusForbidden),
 		"reader user INSERT should be rejected with 403 (permission denied)")
+}
+
+// migrationFailedTimeout bounds how long we'll wait for the db-operator to run
+// the broken migration, fail it, and propagate the failure up to the
+// Application status. It is deliberately longer than routeTimeout because the
+// path involves CR creation, image pull, Job execution, and a status round-trip.
+const migrationFailedTimeout = 180 * time.Second
+
+// TestSQLBrokenMigrationsFailurePath verifies the Phase 9.3c failure path:
+// an Application whose spec.sql.migrations references a deliberately broken
+// migration (SELECT * FROM nonexistent;) must reach Ready=False with reason
+// MigrationFailed, and the wp-operator must withhold function activation so
+// no traffic is served on the declared HTTP route.
+//
+// The fixture (examples/sql-broken-migrations/) is intentionally not waited on
+// in TestMain — its Application is expected never to become Ready.
+func TestSQLBrokenMigrationsFailurePath(t *testing.T) {
+	g := NewWithT(t)
+
+	g.Eventually(func() (string, error) {
+		return readyConditionReason("sql-broken-migrations", "default")
+	}, migrationFailedTimeout, pollInterval).Should(Equal("MigrationFailed"),
+		"sql-broken-migrations Application should reach Ready=False, reason=MigrationFailed")
+
+	// Sanity check: the gateway must not have wired up the function's route,
+	// since wp-operator never pushed config. A consistent absence is what we
+	// want, so we use Consistently rather than a single fetch.
+	g.Consistently(func() (int, error) {
+		resp, err := http.Get(sqlBrokenURL)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode, nil
+	}, 5*time.Second, pollInterval).ShouldNot(Equal(http.StatusOK),
+		"GET %s must not be served while the Application is in MigrationFailed", sqlBrokenURL)
+}
+
+// readyConditionReason shells out to kubectl to read the current Ready
+// condition reason for an Application. Returns an empty string (not an error)
+// when the condition is not yet present so that callers using Eventually keep
+// polling rather than failing immediately.
+func readyConditionReason(name, namespace string) (string, error) {
+	cmd := exec.Command("kubectl", "get", "application", name,
+		"-n", namespace,
+		"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].reason}`,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("kubectl get application %s/%s: %w", namespace, name, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

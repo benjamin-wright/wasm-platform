@@ -1,0 +1,26 @@
+def sql_broken_migrations(namespace, resource_deps=[]):
+    custom_build(
+        'sql-broken-migrations',
+        command = (
+            'mkdir -p examples/sql-broken-migrations/bin &&' +
+            ' tar czf examples/sql-broken-migrations/bin/sql-broken-migrations.tar.gz' +
+            ' -C examples/sql-broken-migrations/migrations . &&' +
+            ' oras push $EXPECTED_REF' +
+            ' examples/sql-broken-migrations/bin/sql-broken-migrations.tar.gz' +
+            ':application/vnd.db-operator.migrations.v1.tar+gzip' +
+            ' --artifact-type application/vnd.db-operator.migrations.v1.tar+gzip' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/sql-broken-migrations/migrations/',
+        ],
+        skips_local_docker = True,
+    )
+
+    k8s_yaml('examples/sql-broken-migrations/k8s/application.yaml')
+
+    k8s_resource(
+        'sql-broken-migrations',
+        resource_deps = ['module-cache', 'wp-operator'] + resource_deps,
+        labels = ['example'],
+    )

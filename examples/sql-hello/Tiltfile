@@ -2,9 +2,10 @@ def sql_hello(namespace, resource_deps=[]):
     custom_build(
         'sql-hello-migrations',
         command = (
-            'tar czf /tmp/sql-hello-migrations.tar.gz -C examples/sql-hello/migrations . &&' +
+            'mkdir -p examples/sql-hello/bin &&' +
+            'tar czf examples/sql-hello/bin/sql-hello-migrations.tar.gz -C examples/sql-hello/migrations . &&' +
             ' oras push $EXPECTED_REF' +
-            ' /tmp/sql-hello-migrations.tar.gz:application/vnd.db-operator.migrations.v1.tar+gzip' +
+            ' examples/sql-hello/bin/sql-hello-migrations.tar.gz:application/vnd.db-operator.migrations.v1.tar+gzip' +
             ' --artifact-type application/vnd.db-operator.migrations.v1.tar+gzip' +
             ' --plain-http'
         ),

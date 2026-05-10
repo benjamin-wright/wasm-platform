@@ -194,12 +194,11 @@ spec:
                   When spec.sql.users is non-empty, only the listed users are provisioned.
                 properties:
                   migrations:
-                    description: Migrations configures database migrations via a
-                      db-operator PostgresMigrationSet. When set, the operator creates
-                      a PostgresMigrationSet CR and withholds function activation until
-                      it reaches Ready phase. On failure, the Application is held at
-                      Ready: False, reason: MigrationFailed and no automatic requeue
-                      is performed.
+                    description: |-
+                      Migrations configures database migrations via a db-operator PostgresMigrationSet.
+                      When set, the operator creates a PostgresMigrationSet CR and withholds function
+                      activation until it reaches Ready phase. On failure, the Application is held at
+                      Ready=False, reason=MigrationFailed and no automatic requeue is performed.
                     properties:
                       artifact:
                         description: |-
@@ -209,9 +208,9 @@ spec:
                         minLength: 1
                         type: string
                       targetRevision:
-                        description: TargetRevision is the migration ID (numeric prefix
-                          of a SQL file pair) to converge the database to. Must match
-                          a revision present in the artifact.
+                        description: |-
+                          TargetRevision is the migration ID (numeric prefix of a SQL file pair) to converge
+                          the database to. Must match a revision present in the artifact.
                         format: int64
                         minimum: 0
                         type: integer
@@ -230,9 +229,9 @@ spec:
                         its table-level permissions.
                       properties:
                         name:
-                          description: Name is the logical user identifier. Used to
-                            derive the PG username and referenced by function sqlUser
-                            fields.
+                          description: |-
+                            Name is the logical user identifier. Used to derive the PG username and referenced
+                            by function sqlUser fields.
                           maxLength: 63
                           minLength: 1
                           type: string
