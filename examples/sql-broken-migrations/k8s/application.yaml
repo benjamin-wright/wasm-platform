@@ -1,0 +1,22 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: sql-broken-migrations
+  namespace: default
+spec:
+  sql:
+    migrations:
+      artifact: sql-broken-migrations
+      targetRevision: 1
+  functions:
+    - name: query
+      # Module reference is irrelevant: the wp-operator gates on the
+      # PostgresMigrationSet reaching Ready before pushing config, so this
+      # function is never activated and never invoked. We reuse an existing
+      # module ref so the manifest is valid and self-contained.
+      module: sql-hello-query
+      trigger:
+        http:
+          path: /sql-broken
+          methods:
+            - GET

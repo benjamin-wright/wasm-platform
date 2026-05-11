@@ -35,6 +35,22 @@ async fn main() -> Result<()> {
 
     let mut wasm_config = wasmtime::Config::new();
     wasm_config.wasm_component_model(true);
+
+    let fuel_limit: Option<u64> = std::env::var("WASM_FUEL_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    if let Some(limit) = fuel_limit {
+        wasm_config.consume_fuel(true);
+        tracing::info!(limit, "fuel metering enabled");
+    }
+
+    let memory_limit_bytes: usize = std::env::var("WASM_MEMORY_LIMIT_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64)
+        * 1024
+        * 1024;
+
     let engine = Engine::new(&wasm_config)?;
 
     let redis_client = match std::env::var("REDIS_URL") {
@@ -59,12 +75,12 @@ async fn main() -> Result<()> {
         .unwrap_or(5);
     let sql_pools = SqlPoolMap::new(pg_pool_max);
 
-    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone(), Arc::clone(&sql_pools))?);
+    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone(), Arc::clone(&sql_pools), fuel_limit, memory_limit_bytes)?);
 
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
 
-    let module_registry = ModuleRegistry::new(cache_addr, engine, metrics_registry.clone());
+    let module_registry = ModuleRegistry::new(cache_addr, engine, metrics_registry.clone(), fuel_limit.is_some());
 
     tracing::info!("execution-host starting");
 

@@ -88,3 +88,15 @@ func K8sCredentialName(namespace, appName, userName string) string {
 	}
 	return base + "-pg"
 }
+
+// MigrationSetName derives the Kubernetes resource name for the PostgresMigrationSet
+// owned by a given Application. The name is stable across reconciles so the
+// db-operator can detect artifact/targetRevision changes and act on them.
+func MigrationSetName(namespace, appName string) string {
+	base := "wasm-" + namespace + "-" + appName + "-migrations"
+	if len(base) > k8sMaxNameLen {
+		h := sha256.Sum256([]byte(base))
+		base = base[:k8sMaxNameLen-16] + "-" + fmt.Sprintf("%x", h)[:15]
+	}
+	return base
+}

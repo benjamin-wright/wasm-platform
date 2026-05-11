@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wasm-platform.gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "wasm-platform.gateway.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          env:
+            - name: OPERATOR_ADDR
+              value: {{ .Values.gateway.operator.addr | quote }}
+            - name: GATEWAY_TIMEOUT_SECS
+              value: {{ .Values.gateway.gateway.timeoutSecs | quote }}
+            - name: HTTP_PORT
+              value: {{ .Values.gateway.gateway.httpPort | quote }}
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NATS_CREDENTIALS_PATH
+              value: /var/run/secrets/nats
+            - name: RUST_LOG
+              value: {{ .Values.gateway.logLevel | quote }}
+          volumeMounts:
+            - name: nats-credentials
+              mountPath: /var/run/secrets/nats
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.gateway.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.gateway.gateway.httpPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.gateway.gateway.httpPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: nats-credentials
+          secret:
+            secretName: {{ .Values.gateway.nats.secretName }}

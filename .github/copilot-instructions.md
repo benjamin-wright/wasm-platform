@@ -27,7 +27,7 @@
 - Question directives that conflict with existing code, standards, or architecture — cite the specific conflict and ask for resolution.
 - Suggest simpler or more effective alternatives when you see them, even if not asked.
 - Never make design decisions, deviate from `docs/todo.md`, or take irreversible actions without explicit approval.
-- Never write generated files by hand (`go.sum`, `Cargo.lock`, `// Code generated … DO NOT EDIT.`). Run the tool or note the exact command.
+- Never write generated files by hand (`go.sum`, `Cargo.lock`, `// Code generated … DO NOT EDIT.`). Always run the tool. If you cannot run the tool, never update the file directly — ask for help.
 
 ## Context Before Action
 

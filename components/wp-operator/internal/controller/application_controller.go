@@ -58,6 +58,7 @@ type Config struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgrescredentials,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresdatabases,verbs=get;list;watch
+// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresmigrationsets,verbs=get;list;watch;create;update;patch;delete
 type ApplicationReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
@@ -119,6 +120,22 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 				}
 			} else if !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("getting PostgresCredential %q for deletion: %w", credName, err)
+			}
+		}
+
+		if app.Spec.SQL.Migrations != nil {
+			msName := MigrationSetName(app.Namespace, app.Name)
+			var ms dboperator.PostgresMigrationSet
+			err := r.Get(ctx, types.NamespacedName{
+				Namespace: r.Config.PostgresCredentialNamespace,
+				Name:      msName,
+			}, &ms)
+			if err == nil {
+				if delErr := r.Delete(ctx, &ms); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return ctrl.Result{}, fmt.Errorf("deleting PostgresMigrationSet %q: %w", msName, delErr)
+				}
+			} else if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("getting PostgresMigrationSet %q for deletion: %w", msName, err)
 			}
 		}
 	}
@@ -270,6 +287,24 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			// db-operator hasn't finished provisioning the Secrets yet.
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
+
+		if app.Spec.SQL.Migrations != nil {
+			done, failMsg, err := r.reconcileMigrationSet(ctx, app)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if failMsg != "" {
+				r.setReadyCondition(app, metav1.ConditionFalse, "MigrationFailed", failMsg)
+				_ = r.Status().Update(ctx, app)
+				return ctrl.Result{}, nil
+			}
+			if !done {
+				r.setReadyCondition(app, metav1.ConditionFalse, "MigrationsRunning", "Waiting for PostgresMigrationSet to reach Ready phase.")
+				_ = r.Status().Update(ctx, app)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+		}
+
 		cfg.SqlUsers = sqlUsers
 
 		app.Status.SQLDatabaseName = PGDatabaseName(app.Namespace, app.Name)
@@ -383,6 +418,73 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 }
 
 // ── SQL helpers ───────────────────────────────────────────────────────────────
+
+// reconcileMigrationSet ensures a PostgresMigrationSet CR exists for the Application
+// and reports whether it has reached Ready phase. On failure it returns a non-empty
+// failMsg and no automatic requeue is performed — the user must correct the artifact.
+func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *wasmplatformv1alpha1.Application) (done bool, failMsg string, err error) {
+	msName := MigrationSetName(app.Namespace, app.Name)
+	msNS := r.Config.PostgresCredentialNamespace
+	dbName := PGDatabaseName(app.Namespace, app.Name)
+
+	desiredSpec := dboperator.PostgresMigrationSetSpec{
+		DatabaseRef:    r.Config.PostgresDatabaseName,
+		Database:       dbName,
+		Artifact:       app.Spec.SQL.Migrations.Artifact,
+		TargetRevision: app.Spec.SQL.Migrations.TargetRevision,
+	}
+
+	var existing dboperator.PostgresMigrationSet
+	err = r.Get(ctx, types.NamespacedName{Namespace: msNS, Name: msName}, &existing)
+	if apierrors.IsNotFound(err) {
+		desired := &dboperator.PostgresMigrationSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      msName,
+				Namespace: msNS,
+				Labels: map[string]string{
+					"wasm-platform.io/app-namespace": app.Namespace,
+					"wasm-platform.io/app-name":      app.Name,
+				},
+			},
+			Spec: desiredSpec,
+		}
+		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, "", fmt.Errorf("creating PostgresMigrationSet %q: %w", msName, createErr)
+		}
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("getting PostgresMigrationSet %q: %w", msName, err)
+	}
+
+	// Patch if the artifact or target revision changed.
+	if existing.Spec.Artifact != desiredSpec.Artifact || existing.Spec.TargetRevision != desiredSpec.TargetRevision {
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Spec.Artifact = desiredSpec.Artifact
+		existing.Spec.TargetRevision = desiredSpec.TargetRevision
+		if patchErr := r.Patch(ctx, &existing, patch); patchErr != nil {
+			return false, "", fmt.Errorf("patching PostgresMigrationSet %q: %w", msName, patchErr)
+		}
+		return false, "", nil // requeue to observe new status
+	}
+
+	switch existing.Status.Phase {
+	case dboperator.MigrationSetPhaseReady:
+		return true, "", nil
+	case dboperator.MigrationSetPhaseFailed:
+		msg := fmt.Sprintf("PostgresMigrationSet %s failed", msName)
+		for _, c := range existing.Status.Conditions {
+			if c.Status == metav1.ConditionFalse && c.Message != "" {
+				msg = fmt.Sprintf("PostgresMigrationSet %s: %s", msName, c.Message)
+				break
+			}
+		}
+		return false, msg, nil
+	default:
+		// Pending or Running — wait.
+		return false, "", nil
+	}
+}
 
 // sqlUsernameForFunction resolves the derived PG username for a function based on
 // spec.sql. Implicit mode (spec.sql.users absent/empty): all functions are bound to the
@@ -503,6 +605,18 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&wasmplatformv1alpha1.Application{}).
+		Watches(
+			&dboperator.PostgresMigrationSet{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				labels := obj.GetLabels()
+				ns := labels["wasm-platform.io/app-namespace"]
+				name := labels["wasm-platform.io/app-name"]
+				if ns == "" || name == "" {
+					return nil
+				}
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
+			}),
+		).
 		Watches(
 			&wasmplatformv1alpha1.Application{},
 			handler.Funcs{

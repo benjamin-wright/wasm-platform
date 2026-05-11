@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use wasmtime::
-    {Engine, Store,
+    {Engine, Store, StoreLimits, StoreLimitsBuilder,
     component::{Component, Linker, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -34,6 +34,7 @@ mod http_bindings {
 pub(crate) struct HostState {
     wasi: WasiCtx,
     table: ResourceTable,
+    store_limits: StoreLimits,
     pub(crate) redis_client: Option<redis::Client>,
     pub(crate) nats_client: Option<async_nats::Client>,
     pub(crate) sql_pool: Option<sqlx::postgres::PgPool>,
@@ -63,6 +64,8 @@ pub struct RuntimeState {
     pub redis_client: Option<redis::Client>,
     pub sql_pools: Arc<SqlPoolMap>,
     pub metrics_registry: MetricsRegistry,
+    fuel_limit: Option<u64>,
+    memory_limit_bytes: usize,
 }
 
 impl RuntimeState {
@@ -71,6 +74,8 @@ impl RuntimeState {
         redis_client: Option<redis::Client>,
         metrics_registry: MetricsRegistry,
         sql_pools: Arc<SqlPoolMap>,
+        fuel_limit: Option<u64>,
+        memory_limit_bytes: usize,
     ) -> Result<Self> {
         let mut linker: Linker<HostState> = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
@@ -94,7 +99,7 @@ impl RuntimeState {
             &mut linker,
             |h: &mut HostState| h,
         )?;
-        Ok(Self { engine, linker, redis_client, sql_pools, metrics_registry })
+        Ok(Self { engine, linker, redis_client, sql_pools, metrics_registry, fuel_limit, memory_limit_bytes })
     }
 }
 
@@ -116,6 +121,9 @@ pub fn invoke_on_message(
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
+        store_limits: StoreLimitsBuilder::new()
+            .memory_size(state.memory_limit_bytes)
+            .build(),
         redis_client: state.redis_client.clone(),
         nats_client,
         sql_pool,
@@ -125,6 +133,10 @@ pub fn invoke_on_message(
         metrics_registry: state.metrics_registry.clone(),
     };
     let mut store = Store::new(&state.engine, host_state);
+    store.limiter(|h| &mut h.store_limits);
+    if let Some(fuel) = state.fuel_limit {
+        store.set_fuel(fuel)?;
+    }
 
     let app = message_bindings::MessageApplication::instantiate(
         &mut store,
@@ -153,6 +165,9 @@ pub fn invoke_on_request(
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
+        store_limits: StoreLimitsBuilder::new()
+            .memory_size(state.memory_limit_bytes)
+            .build(),
         redis_client: state.redis_client.clone(),
         nats_client,
         sql_pool,
@@ -162,6 +177,10 @@ pub fn invoke_on_request(
         metrics_registry: state.metrics_registry.clone(),
     };
     let mut store = Store::new(&state.engine, host_state);
+    store.limiter(|h| &mut h.store_limits);
+    if let Some(fuel) = state.fuel_limit {
+        store.set_fuel(fuel)?;
+    }
 
     let app = http_bindings::HttpApplication::instantiate(
         &mut store,
@@ -189,5 +208,55 @@ pub fn invoke_on_request(
             })
         }
         Err(msg) => Err(anyhow::anyhow!("component returned error: {msg}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasmtime::{Engine, Instance, Module, Store, StoreLimitsBuilder};
+
+    /// A plain (non-component) engine with fuel metering enabled.
+    fn fuel_engine() -> Engine {
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        Engine::new(&config).unwrap()
+    }
+
+    #[test]
+    fn infinite_loop_is_killed_by_fuel() {
+        let engine = fuel_engine();
+        // Start function loops unconditionally; fuel exhaustion traps.
+        let module = Module::new(
+            &engine,
+            r#"(module (func $loop (loop (br 0))) (start $loop))"#,
+        )
+        .unwrap();
+        let mut store = Store::new(&engine, ());
+        store.set_fuel(10_000).unwrap();
+        let err = Instance::new(&mut store, &module, &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("fuel"),
+            "expected fuel trap, got: {err}",
+        );
+    }
+
+    #[test]
+    fn memory_beyond_limit_is_rejected() {
+        struct LimitedState {
+            limits: wasmtime::StoreLimits,
+        }
+        let engine = Engine::default();
+        // 2 000 pages × 64 KiB = 128 MiB; the 64 MiB limit rejects this.
+        let module = Module::new(&engine, "(module (memory 2000))").unwrap();
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(64 * 1024 * 1024)
+            .build();
+        let mut store = Store::new(&engine, LimitedState { limits });
+        store.limiter(|s| &mut s.limits);
+        let err = Instance::new(&mut store, &module, &[]).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("memory"),
+            "expected memory limit error, got: {err}",
+        );
     }
 }

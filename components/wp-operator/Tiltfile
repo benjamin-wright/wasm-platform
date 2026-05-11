@@ -1,8 +1,14 @@
-load('ext://helm_resource', 'helm_resource')
-
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 
-def wp_operator(namespace):
+# Release name used by helm() in the root Tiltfile.
+# The ClusterRole and ClusterRoleBinding are named <release>-wp-operator.
+RELEASE_NAME = 'wasm-platform'
+
+def wp_operator(namespace='wasm-platform'):
+    k8s_kind('Application',
+             image_json_path = ['{.spec.functions[*].module}', '{.spec[?(@.migrations)].migrations.artifact}'],
+             pod_readiness = 'ignore')
+
     custom_build(
         IMAGE_REF,
         command = (
@@ -19,14 +25,15 @@ def wp_operator(namespace):
         ],
     )
 
-    helm_resource(
+    k8s_resource(
         'wp-operator',
-        chart = 'components/wp-operator/helm',
-        image_deps = [IMAGE_REF],
-        image_keys = [('image.repository', 'image.tag')],
         labels = ['platform'],
-        namespace=namespace,
         port_forwards = ['50051:50051'],
+        objects = [
+            'wp-operator:ServiceAccount:{}'.format(namespace),
+            '{}-wp-operator:ClusterRole'.format(RELEASE_NAME),
+            '{}-wp-operator:ClusterRoleBinding'.format(RELEASE_NAME),
+        ],
     )
 
     local_resource(

@@ -113,13 +113,12 @@ type SQLTablePermission struct {
 }
 
 // SQLUserSpec declares a named database user and its table-level permissions.
-//
-// +kubebuilder:validation:XValidation:rule="self.name != 'migrations'",message="'migrations' is a reserved SQL user name"
 type SQLUserSpec struct {
 	// Name is the logical user identifier. Used to derive the PG username and referenced
-	// by function sqlUser fields. The name 'migrations' is reserved.
+	// by function sqlUser fields.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 
 	// Permissions is the list of table-level grants for this user.
@@ -128,15 +127,39 @@ type SQLUserSpec struct {
 	Permissions []SQLTablePermission `json:"permissions,omitempty"`
 }
 
+// MigrationsSpec configures database migrations via a db-operator PostgresMigrationSet.
+type MigrationsSpec struct {
+	// Artifact is an ORAS artifact reference to a tar+gzip of SQL migration files.
+	// The artifact must have media type application/vnd.db-operator.migrations.v1.tar+gzip.
+	// Use an immutable tag or digest (@sha256:…); mutable tags may cause silent schema skew.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Artifact string `json:"artifact"`
+
+	// TargetRevision is the migration ID (numeric prefix of a SQL file pair) to converge
+	// the database to. Must match a revision present in the artifact.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=0
+	TargetRevision int64 `json:"targetRevision"`
+}
+
 // SQLSpec configures SQL database access for an Application.
 // An empty struct (sql: {}) enables SQL with a single implicit 'app' user granted ALL
 // on all tables. Functions are implicitly bound to the 'app' user when users is absent.
 type SQLSpec struct {
+	// Migrations configures database migrations via a db-operator PostgresMigrationSet.
+	// When set, the operator creates a PostgresMigrationSet CR and withholds function
+	// activation until it reaches Ready phase. On failure, the Application is held at
+	// Ready=False, reason=MigrationFailed and no automatic requeue is performed.
+	// +optional
+	Migrations *MigrationsSpec `json:"migrations,omitempty"`
+
 	// Users is the list of named database users to provision.
 	// If absent or empty, a single user named 'app' is provisioned with ALL on all tables
 	// and all functions are implicitly bound to that user.
 	// If non-empty, only the listed users are provisioned; functions must opt in via sqlUser.
 	// +optional
+	// +kubebuilder:validation:MaxItems=20
 	Users []SQLUserSpec `json:"users,omitempty"`
 }
 
@@ -164,6 +187,7 @@ type FunctionSpec struct {
 	// under the named user; a function without this field has no SQL access.
 	// When spec.sql is absent, this field has no effect.
 	// +optional
+	// +kubebuilder:validation:MaxLength=63
 	SQLUser *string `json:"sqlUser,omitempty"`
 }
 
@@ -175,6 +199,7 @@ type ApplicationSpec struct {
 	// Each function has its own module and trigger.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
 	Functions []FunctionSpec `json:"functions"`
 
 	// Env is an optional map of environment variables injected into all functions'

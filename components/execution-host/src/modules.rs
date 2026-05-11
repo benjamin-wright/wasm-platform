@@ -34,15 +34,22 @@ pub struct ModuleRegistry {
     cache: Arc<ModuleCacheClient>,
     engine: Engine,
     metrics: MetricsRegistry,
+    version_key: String,
 }
 
 impl ModuleRegistry {
-    pub fn new(cache_base_url: String, engine: Engine, metrics: MetricsRegistry) -> Self {
+    pub fn new(cache_base_url: String, engine: Engine, metrics: MetricsRegistry, fuel_enabled: bool) -> Self {
+        let version_key = if fuel_enabled {
+            format!("{WASMTIME_VERSION}+fuel")
+        } else {
+            WASMTIME_VERSION.to_string()
+        };
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
             cache: Arc::new(ModuleCacheClient::new(cache_base_url)),
             engine,
             metrics,
+            version_key,
         }
     }
 
@@ -71,7 +78,7 @@ impl ModuleRegistry {
         let digest_key = digest.strip_prefix("sha256:").unwrap_or(&digest);
 
         let component = if let Some(artifact) =
-            self.cache.get(digest_key, ARCH, WASMTIME_VERSION).await?
+            self.cache.get(digest_key, ARCH, &self.version_key).await?
         {
             tracing::debug!(
                 namespace,
@@ -99,7 +106,7 @@ impl ModuleRegistry {
 
                     if let Err(err) = self
                         .cache
-                        .put(digest_key, ARCH, WASMTIME_VERSION, compiled.clone())
+                        .put(digest_key, ARCH, &self.version_key, compiled.clone())
                         .await
                     {
                         // A failed cache write is non-fatal; we can still run.

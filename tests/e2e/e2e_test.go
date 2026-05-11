@@ -17,16 +17,23 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	for _, app := range []string{"demo-app", "counter-app"} {
-		cmd := exec.Command("kubectl", "wait", "application", app,
-			"-n", "examples",
+	type appRef struct {
+		name, namespace string
+	}
+	for _, app := range []appRef{
+		{"demo-app", "examples"},
+		{"counter-app", "examples"},
+		{"sql-hello", "default"},
+	} {
+		cmd := exec.Command("kubectl", "wait", "application", app.name,
+			"-n", app.namespace,
 			"--for=condition=Ready",
 			"--timeout=120s",
 		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app, err)
+			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app.name, err)
 			os.Exit(1)
 		}
 	}
@@ -34,10 +41,14 @@ func TestMain(m *testing.M) {
 }
 
 const (
-	baseURL       = "http://localhost/hello"
-	counterAppURL = "http://localhost/counter"
-	routeTimeout  = 60 * time.Second
-	pollInterval  = 1 * time.Second
+	baseURL           = "http://localhost/hello"
+	counterAppURL     = "http://localhost/counter"
+	sqlHelloURL       = "http://localhost/sql-hello"
+	sqlHelloSetupURL  = "http://localhost/sql-hello/setup"
+	sqlHelloInsertURL = "http://localhost/sql-hello/insert"
+	sqlBrokenURL      = "http://localhost/sql-broken"
+	routeTimeout      = 60 * time.Second
+	pollInterval      = 1 * time.Second
 )
 
 type counters struct {
@@ -283,4 +294,124 @@ func scrapeMetricSum(url, name string) (float64, error) {
 		total += v
 	}
 	return total, nil
+}
+
+// TestSQLHello exercises the sql-hello Application using its three HTTP
+// handler functions:
+//
+//  1. POST /sql-hello/setup  — seeds the greetings table (writer user).
+//  2. GET  /sql-hello        — queries active rows (reader user); asserts
+//     Alice and Bob are present and Carol is absent.
+//  3. POST /sql-hello/insert — attempts an INSERT with the reader user;
+//     expects HTTP 403 (permission denied enforced by PostgreSQL).
+//
+// No external seed Job is required. TestMain already waits for the
+// sql-hello Application to reach Ready before tests run.
+func TestSQLHello(t *testing.T) {
+	g := NewWithT(t)
+
+	// Step 1: seed the table via the setup handler (writer user).
+	g.Eventually(func() error {
+		resp, err := http.Post(sqlHelloSetupURL, "", nil)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("setup returned %d: %s", resp.StatusCode, b)
+		}
+		return nil
+	}, routeTimeout, pollInterval).Should(Succeed(),
+		"POST %s should return 200 within %s", sqlHelloSetupURL, routeTimeout)
+
+	// Step 2: query active rows; assert Alice and Bob present, Carol absent.
+	var body string
+	g.Eventually(func() (string, error) {
+		resp, err := http.Get(sqlHelloURL)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("query returned status %d", resp.StatusCode)
+		}
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("reading body: %w", err)
+		}
+		s := string(b)
+		if s == "" || s == "[]" {
+			return "", fmt.Errorf("empty response body")
+		}
+		body = s
+		return s, nil
+	}, routeTimeout, pollInterval).ShouldNot(BeEmpty(),
+		"GET %s should return a non-empty JSON response within %s", sqlHelloURL, routeTimeout)
+
+	g.Expect(body).To(ContainSubstring(`"name":"Alice"`),
+		"expected Alice (active=true) in sql-hello response")
+	g.Expect(body).To(ContainSubstring(`"name":"Bob"`),
+		"expected Bob (active=true) in sql-hello response")
+	g.Expect(body).NotTo(ContainSubstring(`"name":"Carol"`),
+		"expected Carol (active=false) to be excluded from sql-hello response")
+
+	// Step 3: reader user attempts INSERT — must be rejected with 403.
+	resp, err := http.Post(sqlHelloInsertURL, "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	g.Expect(resp.StatusCode).To(Equal(http.StatusForbidden),
+		"reader user INSERT should be rejected with 403 (permission denied)")
+}
+
+// migrationFailedTimeout bounds how long we'll wait for the db-operator to run
+// the broken migration, fail it, and propagate the failure up to the
+// Application status. It is deliberately longer than routeTimeout because the
+// path involves CR creation, image pull, Job execution, and a status round-trip.
+const migrationFailedTimeout = 180 * time.Second
+
+// TestSQLBrokenMigrationsFailurePath verifies the Phase 9.3c failure path:
+// an Application whose spec.sql.migrations references a deliberately broken
+// migration (SELECT * FROM nonexistent;) must reach Ready=False with reason
+// MigrationFailed, and the wp-operator must withhold function activation so
+// no traffic is served on the declared HTTP route.
+//
+// The fixture (examples/sql-broken-migrations/) is intentionally not waited on
+// in TestMain — its Application is expected never to become Ready.
+func TestSQLBrokenMigrationsFailurePath(t *testing.T) {
+	g := NewWithT(t)
+
+	g.Eventually(func() (string, error) {
+		return readyConditionReason("sql-broken-migrations", "default")
+	}, migrationFailedTimeout, pollInterval).Should(Equal("MigrationFailed"),
+		"sql-broken-migrations Application should reach Ready=False, reason=MigrationFailed")
+
+	// Sanity check: the gateway must not have wired up the function's route,
+	// since wp-operator never pushed config. A consistent absence is what we
+	// want, so we use Consistently rather than a single fetch.
+	g.Consistently(func() (int, error) {
+		resp, err := http.Get(sqlBrokenURL)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode, nil
+	}, 5*time.Second, pollInterval).ShouldNot(Equal(http.StatusOK),
+		"GET %s must not be served while the Application is in MigrationFailed", sqlBrokenURL)
+}
+
+// readyConditionReason shells out to kubectl to read the current Ready
+// condition reason for an Application. Returns an empty string (not an error)
+// when the condition is not yet present so that callers using Eventually keep
+// polling rather than failing immediately.
+func readyConditionReason(name, namespace string) (string, error) {
+	cmd := exec.Command("kubectl", "get", "application", name,
+		"-n", namespace,
+		"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].reason}`,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("kubectl get application %s/%s: %w", namespace, name, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

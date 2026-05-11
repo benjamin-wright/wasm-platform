@@ -6,11 +6,10 @@ def db_operator(namespace):
     helm_resource(
         'db-operator',
         namespace=namespace,
-        chart='oci://docker.io/benwright/db-operator-chart:v1.0.9',
+        chart='oci://docker.io/benwright/db-operator-chart:v1.1.6',
         labels=['platform'],
         flags=[
-            '--set=image.repository=docker.io/benwright/db-operator',
-            '--set=image.tag=v1.0.8',
+            '--set=mcp.enabled=true',
         ],
     )
     local_resource(
@@ -21,13 +20,21 @@ def db_operator(namespace):
     )
 
 def wp_databases(namespace):
-    helm_resource(
-        'wp-databases',
-        chart='components/wp-databases',
-        namespace=namespace,
-        labels=['platform'],
-        deps=['components/wp-databases'],
-        resource_deps=[
-            'db-operator-crds-ready',
+    # Group all database CRs rendered by the umbrella chart into a single Tilt
+    # resource so they are applied only after db-operator is ready.
+    release = 'wasm-platform'
+    k8s_resource(
+        new_name = 'wp-databases',
+        objects = [
+            '{}:PostgresDatabase:{}'.format(release + '-postgres', namespace),
+            '{}:RedisDatabase:{}'.format(release + '-redis', namespace),
+            '{}:RedisCredential:{}'.format(release + '-redis-wp-operator', namespace),
+            '{}:RedisCredential:{}'.format(release + '-redis-execution-host', namespace),
+            '{}:NatsCluster:{}'.format(release + '-nats', namespace),
+            '{}:NatsAccount:{}'.format(release + '-nats-wp-operator', namespace),
+            '{}:NatsAccount:{}'.format(release + '-nats-execution-host', namespace),
+            '{}:NatsAccount:{}'.format(release + '-nats-gateway', namespace),
         ],
+        labels = ['platform'],
+        resource_deps = ['db-operator-crds-ready'],
     )
