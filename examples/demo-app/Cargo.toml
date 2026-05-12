@@ -1,11 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
-    "setup",
-    "query",
-    "insert-test",
+    "http-handler",
+    "message-handler",
 ]
 
 [workspace.dependencies]
 wit-bindgen = "0.36"
-

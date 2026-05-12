@@ -1,5 +1,5 @@
 [package]
-name = "http-handler"
+name = "counter-app"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,4 +8,4 @@ path = "lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = { workspace = true }
+wit-bindgen = "0.36"

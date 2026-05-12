@@ -4,11 +4,8 @@ members = [
     "components/execution-host",
     "components/gateway",
     "components/module-cache",
-    "examples/demo-app/http-handler",
-    "examples/demo-app/message-handler",
-    "examples/counter-app/http-handler",
     "lib/platform-common",
 ]
 exclude = [
-    "examples/sql-hello",
+    "examples",
 ]

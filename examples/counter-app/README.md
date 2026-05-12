@@ -26,11 +26,11 @@ The function uses the same store name (`counters`) and key name (`requests`) as 
 
 ```bash
 cargo build \
-  --manifest-path examples/counter-app/http-handler/Cargo.toml \
-  --target wasm32-wasip2 --release
+  --manifest-path examples/counter-app/Cargo.toml \
+  --target wasm32-wasip2 --release --target-dir target
 ```
 
-Output: `target/wasm32-wasip2/release/counter_app_http_handler.wasm`
+Output: `target/wasm32-wasip2/release/counter_app.wasm`
 
 ---
 
@@ -38,7 +38,7 @@ Output: `target/wasm32-wasip2/release/counter_app_http_handler.wasm`
 
 ```bash
 oras push wasm-platform-registry.localhost:5001/counter-app-http:dev \
-  target/wasm32-wasip2/release/counter_app_http_handler.wasm \
+  target/wasm32-wasip2/release/counter_app.wasm \
   --artifact-type application/vnd.wasm.content.layer.v1+wasm \
   --plain-http
 ```

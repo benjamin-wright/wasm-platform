@@ -51,6 +51,13 @@ async fn main() -> Result<()> {
         * 1024
         * 1024;
 
+    let wasm_timeout_secs: u64 = std::env::var("WASM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let wasm_timeout = std::time::Duration::from_secs(wasm_timeout_secs);
+    tracing::info!(secs = wasm_timeout_secs, "wall-clock timeout configured");
+
     let engine = Engine::new(&wasm_config)?;
 
     let redis_client = match std::env::var("REDIS_URL") {
@@ -163,7 +170,7 @@ async fn main() -> Result<()> {
         result = health_server => {
             result?;
         }
-        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, metrics_registry, client_rx, shutdown_tx.subscribe(), max_concurrent) => {}
+        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, metrics_registry, client_rx, shutdown_tx.subscribe(), max_concurrent, wasm_timeout) => {}
     }
 
     Ok(())
@@ -183,6 +190,7 @@ async fn process_nats_messages(
     client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     max_concurrent: usize,
+    wasm_timeout: std::time::Duration,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut join_set = tokio::task::JoinSet::new();
@@ -254,15 +262,16 @@ async fn process_nats_messages(
             let _permit = permit;
             let reply = message.reply.clone();
             let payload = message.payload.to_vec();
+            let app_name_log = app_name.clone();
+            let app_namespace_log = app_namespace.clone();
 
             // WASM execution is CPU-bound; run it on the blocking thread
             // pool so the async runtime stays responsive.
-            let result = match world_type {
+            let task = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
                         invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username)
                     })
-                    .await
                 }
                 config::configsync::WorldType::Http => {
                     tokio::task::spawn_blocking(move || {
@@ -276,7 +285,34 @@ async fn process_nats_messages(
                         })?;
                         Ok(Some(bytes))
                     })
-                    .await
+                }
+            };
+
+            let result = match tokio::time::timeout(wasm_timeout, task).await {
+                Ok(join_result) => join_result,
+                Err(_elapsed) => {
+                    tracing::error!(
+                        app_name = %app_name_log,
+                        app_namespace = %app_namespace_log,
+                        timeout_secs = wasm_timeout.as_secs(),
+                        "invocation timed out"
+                    );
+                    if let (
+                        config::configsync::WorldType::Http,
+                        Some(reply_subject),
+                        Some(client),
+                    ) = (world_type, reply, client_snapshot)
+                    {
+                        let error_response = HttpResponsePayload {
+                            status: 504,
+                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                            body: Some(b"invocation timed out".to_vec()),
+                        };
+                        if let Ok(bytes) = serde_json::to_vec(&error_response) {
+                            let _ = client.publish(reply_subject, bytes.into()).await;
+                        }
+                    }
+                    return;
                 }
             };
 
@@ -352,5 +388,3 @@ async fn metrics_handler(State(registry): State<MetricsRegistry>) -> impl IntoRe
         }
     }
 }
-
-

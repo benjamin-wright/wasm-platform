@@ -38,15 +38,24 @@ Attempts `INSERT INTO greetings (name, active) VALUES ('TestUser', true)`. Postg
 
 ## Structure
 
-The three functions live in a sub-workspace under `examples/sql-hello/`. A shared `Cargo.toml` at the workspace root pins the `wit-bindgen` version; each crate inherits it via `wit-bindgen = { workspace = true }`.
+Each function is a separate crate inside a Cargo workspace rooted at `examples/sql-hello/`.
 
 ```
 examples/sql-hello/
-  Cargo.toml          ← virtual workspace
-  fns/
-    setup/            ← sql-hello-setup crate
-    query/            ← sql-hello-query crate
-    insert-test/      ← sql-hello-insert-test crate
+  Cargo.toml          ← workspace
+  application.yaml
+  setup/
+    Cargo.toml
+    lib.rs
+  query/
+    Cargo.toml
+    lib.rs
+  insert-test/
+    Cargo.toml
+    lib.rs
+  migrations/
+    001-create-greetings-apply.sql
+    001-create-greetings-rollback.sql
 ```
 
 ---
@@ -54,18 +63,18 @@ examples/sql-hello/
 ## Build
 
 ```bash
-cargo build --manifest-path examples/sql-hello/fns/setup/Cargo.toml \
-  --target wasm32-wasip2 --release
-cargo build --manifest-path examples/sql-hello/fns/query/Cargo.toml \
-  --target wasm32-wasip2 --release
-cargo build --manifest-path examples/sql-hello/fns/insert-test/Cargo.toml \
-  --target wasm32-wasip2 --release
+cargo build --manifest-path examples/sql-hello/setup/Cargo.toml \
+  --target wasm32-wasip2 --release --target-dir target
+cargo build --manifest-path examples/sql-hello/query/Cargo.toml \
+  --target wasm32-wasip2 --release --target-dir target
+cargo build --manifest-path examples/sql-hello/insert-test/Cargo.toml \
+  --target wasm32-wasip2 --release --target-dir target
 ```
 
 Outputs:
-- `target/wasm32-wasip2/release/sql_hello_setup.wasm`
-- `target/wasm32-wasip2/release/sql_hello_query.wasm`
-- `target/wasm32-wasip2/release/sql_hello_insert_test.wasm`
+- `target/wasm32-wasip2/release/setup.wasm`
+- `target/wasm32-wasip2/release/query.wasm`
+- `target/wasm32-wasip2/release/insert_test.wasm`
 
 ---
 
@@ -73,14 +82,14 @@ Outputs:
 
 ```bash
 oras push wasm-platform-registry.localhost:5001/sql-hello-setup:dev \
-  target/wasm32-wasip2/release/sql_hello_setup.wasm \
+  target/wasm32-wasip2/release/setup.wasm \
   --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http
 
 oras push wasm-platform-registry.localhost:5001/sql-hello-query:dev \
-  target/wasm32-wasip2/release/sql_hello_query.wasm \
+  target/wasm32-wasip2/release/query.wasm \
   --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http
 
 oras push wasm-platform-registry.localhost:5001/sql-hello-insert-test:dev \
-  target/wasm32-wasip2/release/sql_hello_insert_test.wasm \
+  target/wasm32-wasip2/release/insert_test.wasm \
   --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http
 ```

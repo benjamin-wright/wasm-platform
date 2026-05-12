@@ -17,7 +17,7 @@ def sql_broken_migrations(namespace, resource_deps=[]):
         skips_local_docker = True,
     )
 
-    k8s_yaml('examples/sql-broken-migrations/k8s/application.yaml')
+    k8s_yaml('examples/sql-broken-migrations/application.yaml')
 
     k8s_resource(
         'sql-broken-migrations',

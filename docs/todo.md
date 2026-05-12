@@ -4,21 +4,6 @@ Active implementation plan for the wasm-platform project.
 
 ---
 
-### Phase 10.2: Wall-Clock Timeout
-
-Add a per-invocation wall-clock timeout to cover host calls that fuel metering does not reach.
-
-#### Tasks
-
-- [ ] Wrap each `spawn_blocking` invocation in `tokio::time::timeout` (`WASM_TIMEOUT_SECS` env var, default 30s).
-- [ ] Add a unit test: a module that sleeps longer than the timeout is cancelled and returns an error.
-
-#### Verification
-
-Unit test passes. `e2e-tests` resource passes.
-
----
-
 ### Phase 11: README Alignment
 
 Documentation-only pass to bring all READMEs and docs into sync with the current implementation. No functional change.
