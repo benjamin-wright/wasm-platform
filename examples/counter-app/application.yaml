@@ -4,7 +4,6 @@ metadata:
   name: counter-app
   namespace: examples
 spec:
-  keyValue: counter-app
   functions:
     - name: http-handler
       module: counter-app-http
