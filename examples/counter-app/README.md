@@ -11,14 +11,14 @@ A single-function WebAssembly application used as a KV isolation fixture. It int
 Implements the `http-application` world. On each `GET /counter` request it:
 
 1. Emits an `info` log entry.
-2. Increments the `requests` counter in the `counter-app` KV store via `kv::incr`.
+2. Increments the `requests` counter via `kv::incr`.
 3. Returns a plain-text response with the counter value.
 
 | Export | Example response |
 |---|---|
 | `on-request` | `counter-app: requests=3` |
 
-The function uses the same store name (`counters`) and key name (`requests`) as `demo-app`'s http-handler. Because `spec.keyValue` is `counter-app` (not `demo-app`), the two applications operate on separate KV namespaces and their counters are fully independent.
+The function uses the same key name (`requests`) as `demo-app`'s http-handler. Because each Application has its own isolated KV namespace (derived automatically from its namespace and name), the two applications' counters are fully independent.
 
 ---
 

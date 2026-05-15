@@ -177,19 +177,19 @@ The root `Tiltfile` renders the umbrella chart once via `helm()` + `k8s_yaml()`.
 
 ---
 
-## 5. Decisions (Phase 8+)
+## 5. Design Decisions
 
 ### Multi-Function Application CRD Shape
 
-**Decision:** Replace `spec.module`, `spec.topic`, and `spec.http` with a `spec.functions` list. Each entry has:
+**Decision:** The `Application` CRD uses a `spec.functions` list. Each entry has:
 
 - `name` — identifier unique within the Application.
 - `module` — OCI image reference for the `.wasm` module.
-- `trigger` — exactly one of `trigger.http` (`HttpConfig`) or `trigger.topic` (string); enforced by CEL validation, consistent with the existing pattern.
+- `trigger` — exactly one of `trigger.http` (`HttpConfig`) or `trigger.topic` (string); enforced by CEL validation.
 
-Application-level fields (`spec.env`, `spec.sql`, `spec.keyValue`) are retained and remain shared across all functions in the Application. The CRD is v1alpha1, so this is a clean breaking migration; no backwards-compatibility shim is provided. The hello-world Application CR is migrated to the new single-entry `spec.functions` shape in Phase 8.2.
+Application-level fields (`spec.env`, `spec.sql`) are shared across all functions in the Application.
 
-**Uniqueness:** topic uniqueness remains cluster-wide per the existing `TopicConflict` enforcement. HTTP path uniqueness is enforced the same way. Uniqueness is checked against the user-supplied value at the function level, not the application level.
+**Uniqueness:** Topic uniqueness is enforced cluster-wide (`TopicConflict`). HTTP path uniqueness is enforced the same way. Uniqueness is checked against the user-supplied value at the function level, not the application level.
 
 ---
 
@@ -227,23 +227,21 @@ The operator checks all existing Applications for metric name collisions at reco
 
 ---
 
-### Config-Sync Proto Changes for Multi-Function and Metrics
+### Config-Sync Proto Schema
 
-**Decision:** Clean break — field numbers are reassigned for clarity. Since the operator and execution host are always deployed together and the API is v1alpha1, no wire-format backwards compatibility is required.
-
-`ApplicationConfig` is restructured:
+`ApplicationConfig` carries per-application configuration from the operator to execution hosts:
 
 | Field number | Name | Description |
 |---|---|---|
-| 1 | `name` | unchanged |
-| 2 | `namespace` | unchanged |
-| 3 | `functions` | `repeated FunctionConfig` — replaces `module_ref` (old 3), `topic` (old 4), `world_type` (old 8), `http` (old 9) |
-| 4 | `env` | `map<string, string>` — was field 5 |
-| 5 | `sql` | `optional SqlConfig` — was field 6 |
-| 6 | `key_value` | `optional KeyValueConfig` — was field 7 |
-| 7 | `metrics` | `repeated MetricDefinition` — new |
+| 1 | `name` | Application name |
+| 2 | `namespace` | Application namespace |
+| 3 | `functions` | `repeated FunctionConfig` |
+| 4 | `env` | `map<string, string>` |
+| 5 | `sql` | `optional SqlConfig` |
+| 6 | `key_value` | `optional KeyValueConfig` |
+| 7 | `metrics` | `repeated MetricDefinition` |
 
-New messages and enums added:
+Key message types:
 
 - **`FunctionConfig`** — `name`, `module_ref`, `world_type` (`WorldType`), `topic` (optional string), `http_config` (optional `HttpConfig`).
 - **`MetricDefinition`** — `name`, `type` (`MetricType`), `label_keys` (`repeated string`).

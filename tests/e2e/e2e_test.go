@@ -370,7 +370,7 @@ func TestSQLHello(t *testing.T) {
 // path involves CR creation, image pull, Job execution, and a status round-trip.
 const migrationFailedTimeout = 180 * time.Second
 
-// TestSQLBrokenMigrationsFailurePath verifies the Phase 9.3c failure path:
+// TestSQLBrokenMigrationsFailurePath verifies the migration failure path:
 // an Application whose spec.sql.migrations references a deliberately broken
 // migration (SELECT * FROM nonexistent;) must reach Ready=False with reason
 // MigrationFailed, and the wp-operator must withhold function activation so

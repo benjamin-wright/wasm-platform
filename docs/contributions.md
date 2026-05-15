@@ -56,9 +56,14 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 ├── framework/
 │   └── runtime.wit             # WIT interface — the platform's API surface
 ├── components/
+│   ├── cli/                    # Developer CLI tool
+│   │   └── Tiltfile            # Defines cli() for the root Tiltfile
 │   ├── execution-host/         # Rust binary — loads and invokes WASM modules
 │   │   ├── Tiltfile            # Defines execution_host() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the execution host
+│   ├── gateway/                # Rust HTTP server — HTTP-to-NATS translation
+│   │   ├── Tiltfile            # Defines gateway() for the root Tiltfile
+│   │   └── helm/               # Helm chart for the gateway
 │   ├── module-cache/           # Rust HTTP service — caches AOT-compiled WASM artifacts
 │   │   ├── Tiltfile            # Defines module_cache() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the module cache
@@ -67,8 +72,7 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 │   └── wp-operator/            # Go operator — reconciles Application CRDs
 │       ├── Tiltfile            # Defines wp_operator() for the root Tiltfile
 │       └── helm/               # Helm chart for the operator
-├── examples/
-│   └── hello-world/            # Minimal guest module for testing the interface
+├── examples/                   # Guest module examples — each has its own README
 ├── Tiltfile                    # Root live-development entrypoint — loads component Tiltfiles
 ├── .dockerignore               # Excludes target/ and .git/ from Docker build context
 ├── docs/
@@ -80,9 +84,9 @@ Each component's build, deploy, and test logic lives in `components/<name>/Tiltf
 
 ### Adding a New Guest Example
 
-1. Create a new crate under `examples/` with `crate-type = ["cdylib"]`.
-2. Add `wit-bindgen` as a dependency and generate bindings for the `application` world from `framework/runtime.wit`.
-3. Implement the `Guest` trait (`on-message`).
+1. Create a new crate (or Cargo workspace) under `examples/` with `crate-type = ["cdylib"]`.
+2. Add `wit-bindgen` as a dependency and generate bindings for the appropriate world (`message-application` or `http-application`) from `framework/runtime.wit`.
+3. Implement the `Guest` trait (`on-message` or `on-request`).
 4. Add the crate to the workspace `members` in the root `Cargo.toml`.
 5. Build with `cargo build --manifest-path examples/<name>/Cargo.toml --target wasm32-wasip2 --release`.
 6. Add a `README.md` documenting what the example demonstrates.
@@ -103,6 +107,12 @@ The `framework/runtime.wit` file is the platform's API contract. Changing it is 
 1. Check whether the change can be made backwards-compatible (adding new functions is safe; changing signatures is not).
 2. Update both the host (`components/execution-host`) and all guest examples to match.
 3. Rebuild and test everything: `tilt up`, then trigger the integration test for each component manually in the Tilt UI.
+
+### Modifying the gRPC Proto
+
+The `proto/configsync/v1/` directory defines the wire contract between wp-operator, execution hosts, and the gateway. The `v1` path prefix is reserved for the current stable contract.
+
+The platform is not yet live in production. Until it is, backwards-incompatible changes (removing or renaming fields, changing field semantics) are permitted with coordinated updates to all affected components. Once the system is in live use, any non-backwards-compatible change requires a new package version (e.g. `configsync/v2/`) so that old and new components can coexist during rollout.
 
 ## Standards
 

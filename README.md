@@ -2,20 +2,17 @@
 
 A serverless application platform that runs WebAssembly guest modules on Kubernetes. Guest code interacts with SQL databases, key-value stores, and message queues through a strongly-typed WIT interface — the platform handles provisioning, sandboxing, and scaling.
 
-## Current Status — Phase 0 (Proof of Concept)
-
-The project is in its earliest phase: a single Rust binary that loads a `.wasm` guest module and invokes it on incoming NATS messages. SQL and KV host functions are defined in the WIT interface but not yet wired to backing stores.
-
 ## Components
 
 | Component | Path | Description |
 |---|---|---|
-| **Execution Host** | `components/execution-host/` | Rust binary — syncs config from the wp-operator via gRPC, checks the module cache, pulls and AOT-compiles WASM modules on a cache miss, subscribes to a NATS subject, and calls guest exports on each message. |
-| **WP Operator** | `components/wp-operator/` | Go operator — watches `Application` CRDs, reconciles database bindings and message subscriptions, and syncs config to execution hosts via a gRPC `ConfigSync` service. |
-| **Module Cache** | `components/module-cache/` | Centralized cache for AOT-compiled WASM artifacts, keyed by digest, architecture, and Wasmtime version. |
+| **Execution Host** | `components/execution-host/` | Rust binary — syncs config from the wp-operator via gRPC, checks the module cache, pulls and AOT-compiles WASM modules on a cache miss, subscribes to NATS subjects, and calls guest exports on each message. |
+| **WP Operator** | `components/wp-operator/` | Go operator — watches `Application` CRDs, reconciles database bindings and message subscriptions, and syncs config to execution hosts and the gateway via gRPC. |
+| **Gateway** | `components/gateway/` | Rust HTTP server — translates inbound HTTP requests to NATS request-reply based on an operator-pushed route table and returns the response. |
+| **Module Cache** | `components/module-cache/` | Rust HTTP service — stores and serves AOT-compiled WASM artifacts keyed by digest, architecture, and Wasmtime version. |
+| **CLI** | `components/cli/` | Developer tooling for bootstrapping projects, scaffolding functions and migrations, and building guest modules. |
 | **WP Databases** | `components/wp-databases/` | db-operator CRDs that provision the shared PostgreSQL, Redis, and NATS instances (rendered by the umbrella chart). |
-| **Hello World** | `examples/hello-world/` | Minimal guest module that implements the `application` world and echoes back request details. |
-| **WIT Interface** | `framework/runtime.wit` | The platform's API surface — defines `sql`, `kv`, and `messaging` imports and the `on-message` export. |
+| **WIT Interface** | `framework/runtime.wit` | The platform's API surface — defines `sql`, `kv`, `messaging`, `log`, and `metrics` imports and the `on-message` / `on-request` exports across two guest worlds. See [docs/architecture.md](docs/architecture.md) for the design rationale. |
 | **Helm Chart** | `helm/wasm-platform/` | Unified Helm chart for all platform components and database CRs. |
 
 ## Quick Start
@@ -35,6 +32,10 @@ tilt up             # Build, deploy, and live-reload on changes
 make cluster-down   # Tear down the cluster when done
 ```
 
+## Examples
+
+Worked guest module examples live under `examples/`. Each directory contains a `README.md` explaining what the example demonstrates and how to build it.
+
 ## Documentation
 
 | Document | Purpose |
@@ -46,10 +47,3 @@ make cluster-down   # Tear down the cluster when done
 ## Contributing
 
 See [docs/contributions.md](docs/contributions.md) for development setup and workflow.
-
-## Open Questions
-
-| Item | Notes |
-|---|---|
-| Proto versioning strategy | `configsync/v1/` implies a future `v2` is possible. A policy (e.g. bump when a field is removed or semantics change) should be established before the service is live. |
-| gRPC service address/port | Not yet in the Helm chart or operator configuration. Needs a `values.yaml` entry and a `ConfigMap`/env-var wiring so the execution host can discover the operator's gRPC endpoint. |

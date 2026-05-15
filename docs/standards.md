@@ -29,6 +29,16 @@ Every line in a component README must pass these checks:
 - **No implementation detail** — describe observable behaviour and interfaces, not internal structure.
 - **No conflicts** — READMEs must not make contradictory claims across or within files.
 
+### Current-State Documentation
+
+All documentation files — with the sole exception of `docs/todo.md` — must describe the current state of the codebase. They must not contain:
+
+- References to implementation phases, sprint numbers, or work item identifiers (e.g. "Phase 9.3c", "added in Phase 7").
+- Descriptions of previous behaviour, migration notes, or "before/after" comparisons.
+- Statements about planned or future work (those belong in `docs/todo.md`).
+
+When a phase is completed and its `todo.md` entries are removed, any language that only made sense in the context of that work — "introduced in", "replaces the previous", "for this phase" — must be excised from all documentation. The reader has no frame of reference for historical phases; documentation must stand on its own as a description of today's system.
+
 ---
 
 ## General
@@ -62,7 +72,7 @@ All interaction with an external system (database, message broker, HTTP service)
 
 ### Definition of Done
 
-A phase or feature is complete when all of the following are true:
+A unit of work is complete when all of the following are true:
 
 - Implementation tasks are finished and the `e2e-tests` Tilt resource passes (triggered via the Tilt MCP server).
 - Documentation (`README.md`, architecture docs) reflects any new or changed behaviour.
@@ -72,10 +82,10 @@ A phase or feature is complete when all of the following are true:
 
 End-to-end tests live in `tests/e2e/` as a Go module with a `//go:build integration` build tag. They verify the full stack from the perspective of a platform user.
 
-- The permanent test fixture is the hello-world Application CR (HTTP trigger, KV counter). It must remain deployed and passing at all times. Phase-specific fixtures may be added alongside it but must not break it.
+- The permanent test fixtures are `demo-app`, `counter-app`, and `sql-hello`. These must remain deployed and passing at all times. Additional fixtures may be added alongside them but must not break them.
 - Traefik `Ingress` routes `localhost:80` to the gateway (no TLS; host is configurable via the gateway Helm chart).
 - Tests are run as `go test -tags integration -count=1 -v ./...`, wired as the `e2e-tests` local resource in Tilt depending on `demo-app`. Trigger this resource and verify it passes using the Tilt MCP server.
-- A phase that adds a new user-facing workflow is not complete until the e2e suite covers that workflow.
+- A feature that adds a new user-facing workflow is not complete until the e2e suite covers that workflow.
 
 ---
 

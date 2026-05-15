@@ -681,40 +681,6 @@ func (r *ApplicationReconciler) setReadyCondition(app *wasmplatformv1alpha1.Appl
 	})
 }
 
-// postgresCredentialName returns a deterministic name for the PostgresCredential
-// CR owned by a given Application.
-func postgresCredentialName(app *wasmplatformv1alpha1.Application) string {
-	return fmt.Sprintf("wp-%s-%s", app.Namespace, app.Name)
-}
-
-// postgresCredentialSecretName returns the name of the Secret the db-operator
-// will populate for the PostgresCredential.
-func postgresCredentialSecretName(app *wasmplatformv1alpha1.Application) string {
-	return fmt.Sprintf("wp-%s-%s-pg", app.Namespace, app.Name)
-}
-
-// buildPostgresCredential constructs a PostgresCredential CR for a given Application.
-func buildPostgresCredential(name, namespace, secretName string, app *wasmplatformv1alpha1.Application, pgdbName string) *dboperator.PostgresCredential {
-	// PostgreSQL usernames are limited to 63 characters.
-	username := fmt.Sprintf("%s_%s", app.Namespace, app.Name)
-	if len(username) > 63 {
-		username = username[:63]
-	}
-	return &dboperator.PostgresCredential{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: dboperator.PostgresCredentialSpec{
-			DatabaseRef: pgdbName,
-			Username:    username,
-			SecretName:  secretName,
-			// TODO(Phase 9.2 operator task): populate per-user credentials via PG identifier algorithm.
-			Permissions: []dboperator.DatabasePermissionEntry{},
-		},
-	}
-}
-
 // ── topic ownership ───────────────────────────────────────────────────────────
 
 // findTopicOwner returns the Application that rightfully owns the given topic,

@@ -2,28 +2,6 @@
 
 Active implementation plan for the wasm-platform project.
 
----
-
-### Phase 11: README Alignment
-
-Documentation-only pass to bring all READMEs and docs into sync with the current implementation. No functional change.
-
-#### Tasks
-
-- [ ] Update project README status section — currently says "Phase 0 (Proof of Concept)", should reflect actual progress.
-- [ ] Replace wildcard `fn.>` / `NATS_TOPIC_PREFIX` description with per-topic subscription model and internal prefix scheme.
-- [ ] Replace `for_each_concurrent` reference with actual concurrency description.
-- [ ] Verify module loading section matches Phase 1 implementation.
-- [ ] Document gateway in execution-host README (NATS reply flow, platform JSON payload format, two-world dispatch).
-- [ ] Document the two WIT worlds in the project README and `framework/` — note `message-application` for pure message-passing and `http-application` for HTTP endpoints.
-- [ ] Full pass for any remaining stale claims.
-
-#### Verification
-
-`e2e-tests` resource passes. PR is reviewable as a docs-only change.
-
----
-
 ## Future Work: OCI Digest Pinning
 
 The operator currently copies `spec.functions[].module` verbatim into `FunctionConfig.module_ref`. When a mutable tag (e.g. `:latest`) is used, different replicas may resolve different digests, updates are not detected on image push, and there is no audit trail of which digest is running.

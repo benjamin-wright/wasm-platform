@@ -12,7 +12,7 @@ Implements the `http-application` world. On each `GET /hello` request it:
 
 1. Emits an `info` log entry.
 2. Publishes a `tick` event to `demo-app.events` via `messaging::send`.
-3. Increments the `requests` counter in the `demo-app` KV store via `kv::incr`.
+3. Increments the `requests` counter via `kv::incr`.
 4. Reads the `messages` counter written by `message-handler`.
 5. Returns a plain-text response with both counter values.
 
@@ -25,9 +25,9 @@ Implements the `http-application` world. On each `GET /hello` request it:
 Implements the `message-application` world. On each message received on topic `demo-app.events` it:
 
 1. Emits an `info` log entry.
-2. Increments the `messages` counter in the `demo-app` KV store via `kv::incr`.
+2. Increments the `messages` counter via `kv::incr`.
 
-The two functions share the same KV namespace (`spec.keyValue: demo-app`), so `http-handler` can read the counter that `message-handler` writes.
+Both functions belong to the same Application, so they share a KV namespace and `http-handler` can read the counter that `message-handler` writes.
 
 ---
 
