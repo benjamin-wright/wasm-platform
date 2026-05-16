@@ -2,6 +2,34 @@
 
 Active implementation plan for the wasm-platform project.
 
+---
+
+## Phase 11: ValidatingWebhook
+
+### Design
+
+The wp-operator currently detects constraint violations (topic conflicts, metric name conflicts, invalid identifiers) post-admission via the reconciler and surfaces them as `Ready: False` status conditions. Users discover problems only after `kubectl apply` succeeds, by inspecting status. This phase introduces a `ValidatingWebhookConfiguration` backed by wp-operator, with TLS provided by a cert-manager self-signed `ClusterIssuer`, giving immediate admission rejection at apply time.
+
+The webhook fires on `Application` create and update:
+- **Cross-resource checks** (require listing all Applications): `TopicConflict`, `MetricConflict` — these move exclusively to the webhook.
+- **Single-resource checks**: `InvalidIdentifier` (and future structural checks requiring no external context) — validated at the webhook as the primary gate; the reconciler retains the check as defense-in-depth.
+
+`failurePolicy: Fail` — if the webhook is unavailable, Application changes are blocked. This is safe because execution hosts continue serving the last-known config while the operator is down.
+
+### Tasks
+
+- [ ] Add cert-manager as a Helm dependency; provision a self-signed `ClusterIssuer` and a `Certificate` for the webhook TLS endpoint.
+- [ ] Implement the validating webhook handler in wp-operator: validate `TopicConflict`, `MetricConflict`, and `InvalidIdentifier` on `Application` create/update.
+- [ ] Register a `ValidatingWebhookConfiguration` in the Helm chart with `failurePolicy: Fail`.
+- [ ] Remove `TopicConflict` and `MetricConflict` detection from the reconciler; retain `InvalidIdentifier` as defense-in-depth.
+- [ ] Update e2e tests: assert admission rejection (kubectl error) rather than status condition for conflict and identifier scenarios.
+- [ ] Update wp-operator README: document webhook scope, failure policy, and degraded-mode behaviour when the webhook is unavailable.
+- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
+
+### Verification
+
+Trigger the `e2e-tests` resource via the Tilt MCP server. The suite must pass with tests confirming: (1) applying an `Application` with a conflicting topic or metric name is rejected at admission with a `kubectl` error; (2) applying an `Application` with an invalid identifier is rejected at admission; (3) valid `Application` creates and updates are admitted and reconcile to `Ready: True`.
+
 ## Future Work: OCI Digest Pinning
 
 The operator currently copies `spec.functions[].module` verbatim into `FunctionConfig.module_ref`. When a mutable tag (e.g. `:latest`) is used, different replicas may resolve different digests, updates are not detected on image push, and there is no audit trail of which digest is running.
@@ -82,28 +110,6 @@ NATS and Redis credentials use deterministically-named Secrets (e.g. `wasm-platf
 - [ ] Remove database CR provisioning from the Helm chart; update Helm values and chart documentation.
 - [ ] Gate Application `Ready` on required infrastructure CRs reaching `Ready` phase; add status conditions for infrastructure provisioning state.
 - [ ] Update wp-operator README and `docs/architecture.md` to reflect the new ownership model.
-- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
-
----
-
-## Future Work: ValidatingWebhook
-
-The wp-operator currently detects constraint violations (topic conflicts, metric name conflicts, invalid identifiers) post-admission via the reconciler and surfaces them as `Ready: False` status conditions. Users discover problems only after `kubectl apply` succeeds, by inspecting status. This item introduces a `ValidatingWebhookConfiguration` backed by wp-operator, with TLS provided by a cert-manager self-signed `ClusterIssuer`, giving immediate admission rejection at apply time.
-
-The webhook fires on `Application` create and update:
-- **Cross-resource checks** (require listing all Applications): `TopicConflict`, `MetricConflict` — these move exclusively to the webhook.
-- **Single-resource checks**: `InvalidIdentifier` (and future structural checks requiring no external context) — validated at the webhook as the primary gate; the reconciler retains the check as defense-in-depth.
-
-`failurePolicy: Fail` — if the webhook is unavailable, Application changes are blocked. This is safe because execution hosts continue serving the last-known config while the operator is down.
-
-### Tasks
-
-- [ ] Add cert-manager as a Helm dependency; provision a self-signed `ClusterIssuer` and a `Certificate` for the webhook TLS endpoint.
-- [ ] Implement the validating webhook handler in wp-operator: validate `TopicConflict`, `MetricConflict`, and `InvalidIdentifier` on `Application` create/update.
-- [ ] Register a `ValidatingWebhookConfiguration` in the Helm chart with `failurePolicy: Fail`.
-- [ ] Remove `TopicConflict` and `MetricConflict` detection from the reconciler; retain `InvalidIdentifier` as defense-in-depth.
-- [ ] Update e2e tests: assert admission rejection (kubectl error) rather than status condition for conflict and identifier scenarios.
-- [ ] Update wp-operator README: document webhook scope, failure policy, and degraded-mode behaviour when the webhook is unavailable.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 ---
