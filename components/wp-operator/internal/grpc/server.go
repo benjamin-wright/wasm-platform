@@ -42,6 +42,8 @@ func (s *Server) RequestFullConfig(_ context.Context, req *configsync.FullConfig
 			Version:      version,
 			Applications: apps,
 			Timestamp:    time.Now().UnixMilli(),
+			Nats:         s.store.NatsConfig(),
+			Redis:        s.store.RedisConfig(),
 		},
 	}, nil
 }

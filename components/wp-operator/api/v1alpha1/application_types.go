@@ -191,6 +191,12 @@ type FunctionSpec struct {
 	SQLUser *string `json:"sqlUser,omitempty"`
 }
 
+// KVSpec enables key-value store access for an Application.
+// An empty struct (kv: {}) enables KV with automatic per-app key-prefix isolation.
+// The key prefix is derived from the application's namespace and name and applied
+// automatically — no CRD field is required to configure it.
+type KVSpec struct{}
+
 // ApplicationSpec defines the desired state of an Application.
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.sql) || !has(self.sql.users) || self.sql.users.size() == 0 || self.functions.all(f, !has(f.sqlUser) || self.sql.users.exists(u, u.name == f.sqlUser))",message="each function's sqlUser must reference a user name defined in spec.sql.users"
@@ -214,6 +220,13 @@ type ApplicationSpec struct {
 	// When spec.sql.users is non-empty, only the listed users are provisioned.
 	// +optional
 	SQL *SQLSpec `json:"sql,omitempty"`
+
+	// KV enables key-value store access for this Application.
+	// When present (even as kv: {}), a RedisDatabase is provisioned cluster-wide
+	// and a per-app key prefix is assigned automatically.
+	// When absent, no KV access is provisioned.
+	// +optional
+	KV *KVSpec `json:"kv,omitempty"`
 
 	// Metrics is the list of user-defined Prometheus metrics declared by this Application.
 	// Names must be unique within the Application and cluster-wide; the operator enforces

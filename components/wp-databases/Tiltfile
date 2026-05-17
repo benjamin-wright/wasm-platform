@@ -20,20 +20,19 @@ def db_operator(namespace):
     )
 
 def wp_databases(namespace):
-    # Group all database CRs rendered by the umbrella chart into a single Tilt
-    # resource so they are applied only after db-operator is ready.
+    # wp-operator now manages all database CR lifecycles. The Tilt resource
+    # below tracks the operator-provisioned CRs so their status is visible
+    # in the Tilt UI. These objects are created by wp-operator, not by the
+    # Helm chart; they will only appear once the first Application is deployed.
     release = 'wasm-platform'
     k8s_resource(
         new_name = 'wp-databases',
         objects = [
-            '{}:PostgresDatabase:{}'.format(release + '-postgres', namespace),
-            '{}:RedisDatabase:{}'.format(release + '-redis', namespace),
-            '{}:RedisCredential:{}'.format(release + '-redis-wp-operator', namespace),
-            '{}:RedisCredential:{}'.format(release + '-redis-execution-host', namespace),
-            '{}:NatsCluster:{}'.format(release + '-nats', namespace),
-            '{}:NatsAccount:{}'.format(release + '-nats-wp-operator', namespace),
-            '{}:NatsAccount:{}'.format(release + '-nats-execution-host', namespace),
-            '{}:NatsAccount:{}'.format(release + '-nats-gateway', namespace),
+            '{}:NatsCluster:{}'.format('wasm-platform-nats', namespace),
+            '{}:NatsAccount:{}'.format('wasm-platform-nats-execution-host', namespace),
+            '{}:NatsAccount:{}'.format('wasm-platform-nats-gateway', namespace),
+            '{}:RedisDatabase:{}'.format('wasm-platform-redis', namespace),
+            '{}:RedisCredential:{}'.format('wasm-platform-redis-execution-host', namespace),
         ],
         labels = ['platform'],
         resource_deps = ['db-operator-crds-ready'],

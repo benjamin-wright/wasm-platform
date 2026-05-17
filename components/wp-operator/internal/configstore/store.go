@@ -14,14 +14,20 @@ type hostEntry struct {
 	ch chan *configsync.IncrementalConfig
 }
 
-// Store is a thread-safe in-memory registry of ApplicationConfig values.
-// It also maintains a registry of connected execution-host streams so that
-// the reconciler can broadcast incremental updates.
+// Store is a thread-safe in-memory registry of ApplicationConfig values and
+// infrastructure connection configuration.  It also maintains a registry of
+// connected execution-host streams so that the reconciler can broadcast
+// incremental updates.
 type Store struct {
 	mu      sync.RWMutex
 	configs map[types.NamespacedName]*configsync.ApplicationConfig
 	hosts   map[string]*hostEntry
 	version uint64 // accessed atomically
+
+	// Infrastructure connection config pushed to all execution hosts.
+	// nil means the resource is not yet provisioned.
+	natsConfig  *configsync.NatsConnectionConfig
+	redisConfig *configsync.RedisConnectionConfig
 }
 
 // New returns an initialised Store.
@@ -70,6 +76,48 @@ func (s *Store) Snapshot() []*configsync.ApplicationConfig {
 		out = append(out, v)
 	}
 	return out
+}
+
+// SetNatsConfig updates the stored NATS connection config.  Returns true if
+// the value materially changed (caller should broadcast an update).
+// Pass nil to signal that NATS is no longer provisioned.
+func (s *Store) SetNatsConfig(cfg *configsync.NatsConnectionConfig) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if proto.Equal(s.natsConfig, cfg) {
+		return false
+	}
+	s.natsConfig = cfg
+	atomic.AddUint64(&s.version, 1)
+	return true
+}
+
+// SetRedisConfig updates the stored Redis connection config.  Returns true if
+// the value materially changed (caller should broadcast an update).
+// Pass nil to signal that Redis is no longer provisioned.
+func (s *Store) SetRedisConfig(cfg *configsync.RedisConnectionConfig) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if proto.Equal(s.redisConfig, cfg) {
+		return false
+	}
+	s.redisConfig = cfg
+	atomic.AddUint64(&s.version, 1)
+	return true
+}
+
+// NatsConfig returns the current NATS connection config (may be nil).
+func (s *Store) NatsConfig() *configsync.NatsConnectionConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.natsConfig
+}
+
+// RedisConfig returns the current Redis connection config (may be nil).
+func (s *Store) RedisConfig() *configsync.RedisConnectionConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.redisConfig
 }
 
 // RegisterHost adds a connected host to the registry and returns the channel

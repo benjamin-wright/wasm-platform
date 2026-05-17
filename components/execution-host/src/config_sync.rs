@@ -2,12 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use platform_common::nats_client::NatsConnectionInfo;
 
 use crate::sql_pool::SqlPoolMap;
 use crate::{
     config::{
         AppRegistry,
-        configsync::{FullConfigRequest, IncrementalUpdateAck, config_sync_client::ConfigSyncClient},
+        configsync::{FullConfigRequest, IncrementalUpdateAck, NatsConnectionConfig, RedisConnectionConfig, config_sync_client::ConfigSyncClient},
     },
     metrics::MetricsRegistry,
     modules::ModuleRegistry,
@@ -17,6 +18,7 @@ use crate::{
 // update stream.  On any error or clean stream close, backs off and retries.
 // `synced_tx` is set to `true` after the first successful full snapshot and
 // back to `false` while reconnecting, so readiness reflects operator reachability.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_config_sync_loop(
     addr: String,
     host_id: String,
@@ -26,10 +28,15 @@ pub async fn run_config_sync_loop(
     topics_tx: tokio::sync::watch::Sender<Vec<String>>,
     synced_tx: tokio::sync::watch::Sender<bool>,
     sql_pools: Arc<SqlPoolMap>,
+    nats_tx: tokio::sync::watch::Sender<Option<NatsConnectionInfo>>,
+    redis_tx: tokio::sync::watch::Sender<Option<String>>,
 ) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_config_sync(&addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx, &sql_pools).await {
+        match run_config_sync(
+            &addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx, &sql_pools,
+            &nats_tx, &redis_tx,
+        ).await {
             Ok(()) => {
                 tracing::warn!("config sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
@@ -46,6 +53,7 @@ pub async fn run_config_sync_loop(
 
 // Fetches a full config snapshot then drives a single incremental update stream
 // session until it closes or errors.
+#[allow(clippy::too_many_arguments)]
 async fn run_config_sync(
     addr: &str,
     host_id: &str,
@@ -55,8 +63,10 @@ async fn run_config_sync(
     topics_tx: &tokio::sync::watch::Sender<Vec<String>>,
     synced_tx: &tokio::sync::watch::Sender<bool>,
     sql_pools: &Arc<SqlPoolMap>,
+    nats_tx: &tokio::sync::watch::Sender<Option<NatsConnectionInfo>>,
+    redis_tx: &tokio::sync::watch::Sender<Option<String>>,
 ) -> Result<()> {
-    fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules, sql_pools).await?;
+    fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules, sql_pools, nats_tx, redis_tx).await?;
     if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
         tracing::warn!("failed to sync user metrics after full config: {e:#}");
     }
@@ -105,7 +115,8 @@ async fn run_config_sync(
         if let Some(incremental) = request.incremental_config {
             let version = incremental.version.clone();
             let update_count = incremental.updates.len();
-            let diff = registry.apply_incremental(incremental.updates)?;
+            apply_infra_changes(&incremental.nats, &incremental.redis, nats_tx, redis_tx);
+            let diff = registry.apply_incremental(incremental)?;
             if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
                 tracing::warn!("failed to sync user metrics after incremental config: {e:#}");
             }
@@ -138,6 +149,8 @@ async fn fetch_full_config(
     registry: &AppRegistry,
     modules: &ModuleRegistry,
     sql_pools: &Arc<SqlPoolMap>,
+    nats_tx: &tokio::sync::watch::Sender<Option<NatsConnectionInfo>>,
+    redis_tx: &tokio::sync::watch::Sender<Option<String>>,
 ) -> Result<()> {
     tracing::info!(%addr, "connecting to operator for full config");
     let mut client = ConfigSyncClient::connect(addr).await?;
@@ -149,6 +162,7 @@ async fn fetch_full_config(
         .await?
         .into_inner();
     if let Some(full) = response.config {
+        apply_infra_changes(&full.nats, &full.redis, nats_tx, redis_tx);
         let app_count = full.applications.len();
         let diff = registry.apply_full_config(full)?;
         tracing::info!(app_count, "full config applied");
@@ -158,6 +172,25 @@ async fn fetch_full_config(
         tracing::warn!("operator returned empty full config response");
     }
     Ok(())
+}
+
+// Applies NATS and Redis connection info changes from an incoming config to
+// the corresponding watch channels so the NATS/Redis managers reconnect.
+fn apply_infra_changes(
+    nats: &Option<NatsConnectionConfig>,
+    redis: &Option<RedisConnectionConfig>,
+    nats_tx: &tokio::sync::watch::Sender<Option<NatsConnectionInfo>>,
+    redis_tx: &tokio::sync::watch::Sender<Option<String>>,
+) {
+    let nats_info = nats.as_ref().map(|n| NatsConnectionInfo {
+        url: n.url.clone(),
+        username: n.username.clone(),
+        password: n.password.clone(),
+    });
+    let _ = nats_tx.send(nats_info);
+
+    let redis_url = redis.as_ref().map(|r| r.url.clone());
+    let _ = redis_tx.send(redis_url);
 }
 
 // Evicts stale pools synchronously, then spawns background tasks for each pool

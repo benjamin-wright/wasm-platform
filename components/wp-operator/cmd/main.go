@@ -154,7 +154,11 @@ func configFromEnv() controller.Config {
 	}
 
 	return controller.Config{
-		PostgresDatabaseName:        os.Getenv("POSTGRES_DATABASE_NAME"),
 		PostgresCredentialNamespace: pgCredNS,
+		NatsVersion:                 os.Getenv("NATS_VERSION"),
+		NatsJetStreamStorageSize:    os.Getenv("NATS_JETSTREAM_STORAGE_SIZE"),
+		PostgresVersion:             os.Getenv("POSTGRES_VERSION"),
+		PostgresStorageSize:         os.Getenv("POSTGRES_STORAGE_SIZE"),
+		RedisStorageSize:            os.Getenv("REDIS_STORAGE_SIZE"),
 	}
 }

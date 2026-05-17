@@ -42,6 +42,13 @@ pub struct ConfigDiff {
     pub pools_to_create: Vec<(String, String, String, String)>,
     /// Applications whose SQL pools should all be evicted: `(namespace, app_name)`.
     pub pools_to_evict_apps: Vec<(String, String)>,
+    /// Updated NATS connection info, if the config carried a NATS field.
+    /// `Some(Some(...))` → new/updated credentials.
+    /// `Some(None)` → NATS no longer provisioned (disconnect).
+    /// `None` → not present in the update (no change).
+    pub nats_change: Option<Option<configsync::NatsConnectionConfig>>,
+    /// Updated Redis connection info, parallel to `nats_change`.
+    pub redis_change: Option<Option<configsync::RedisConnectionConfig>>,
 }
 
 /// Shared, thread-safe registry of all known function entries, keyed by NATS topic.
@@ -120,7 +127,18 @@ impl AppRegistry {
             map.insert(topic, entry);
         }
 
-        Ok(ConfigDiff { modules_to_load, modules_to_evict, pools_to_create, pools_to_evict_apps })
+        // Extract infrastructure connection changes from the full config.
+        let nats_change = Some(full.nats);
+        let redis_change = Some(full.redis);
+
+        Ok(ConfigDiff {
+            modules_to_load,
+            modules_to_evict,
+            pools_to_create,
+            pools_to_evict_apps,
+            nats_change,
+            redis_change,
+        })
     }
 
     /// Apply a list of incremental updates: upsert or delete each application's functions.
@@ -128,7 +146,7 @@ impl AppRegistry {
     ///
     /// On upsert, all existing entries for the application are replaced with the new
     /// function list.  This handles both additions and removals of individual functions.
-    pub fn apply_incremental(&self, updates: Vec<AppUpdate>) -> Result<ConfigDiff> {
+    pub fn apply_incremental(&self, incremental: configsync::IncrementalConfig) -> Result<ConfigDiff> {
         let mut map = self
             .inner
             .write()
@@ -139,7 +157,7 @@ impl AppRegistry {
         let mut pools_to_create: Vec<(String, String, String, String)> = Vec::new();
         let mut pools_to_evict_apps: Vec<(String, String)> = Vec::new();
 
-        for update in updates {
+        for update in incremental.updates {
             let Some(app) = update.app_config else {
                 if update.delete {
                     tracing::warn!("received delete update with no app_config; ignoring");
@@ -227,7 +245,18 @@ impl AppRegistry {
             }
         }
 
-        Ok(ConfigDiff { modules_to_load, modules_to_evict, pools_to_create, pools_to_evict_apps })
+        // Extract infrastructure connection changes.
+        let nats_change = Some(incremental.nats);
+        let redis_change = Some(incremental.redis);
+
+        Ok(ConfigDiff {
+            modules_to_load,
+            modules_to_evict,
+            pools_to_create,
+            pools_to_evict_apps,
+            nats_change,
+            redis_change,
+        })
     }
 
     /// Returns the NATS topic for every function currently in the registry.

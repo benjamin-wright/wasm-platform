@@ -20,9 +20,10 @@ use metrics::MetricsRegistry;
 use modules::ModuleRegistry;
 use platform_common::health::{self, ReadyState};
 use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
+use platform_common::nats_client::NatsConnectionInfo;
 use runtime::{RuntimeState, invoke_on_message, invoke_on_request};
 use sql_pool::SqlPoolMap;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::{Arc, RwLock};
 use wasmtime::Engine;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -60,19 +61,11 @@ async fn main() -> Result<()> {
 
     let engine = Engine::new(&wasm_config)?;
 
-    let redis_client = match std::env::var("REDIS_URL") {
-        Ok(url) => {
-            tracing::info!(%url, "connecting to Redis");
-            Some(
-                redis::Client::open(url.as_str())
-                    .map_err(|e| anyhow::anyhow!("invalid REDIS_URL: {e}"))?,
-            )
-        }
-        Err(_) => {
-            tracing::warn!("REDIS_URL not set; kv host functions will be unavailable");
-            None
-        }
-    };
+    // Redis client is managed dynamically: configsync delivers the URL when
+    // the operator provisions the RedisDatabase; the watcher task keeps
+    // this shared cell up-to-date so invocations always use current creds.
+    let redis_client: Arc<RwLock<Option<redis::Client>>> = Arc::new(RwLock::new(None));
+    tracing::info!("Redis client will be configured via configsync");
 
     let metrics_registry = MetricsRegistry::new()?;
 
@@ -82,7 +75,7 @@ async fn main() -> Result<()> {
         .unwrap_or(5);
     let sql_pools = SqlPoolMap::new(pg_pool_max);
 
-    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone(), Arc::clone(&sql_pools), fuel_limit, memory_limit_bytes)?);
+    let state = Arc::new(RuntimeState::new(engine.clone(), Arc::clone(&redis_client), metrics_registry.clone(), Arc::clone(&sql_pools), fuel_limit, memory_limit_bytes)?);
 
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
@@ -95,10 +88,6 @@ async fn main() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("CONFIG_SYNC_ADDR environment variable is required"))?;
     let host_id = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
 
-    let credentials_path = std::env::var("NATS_CREDENTIALS_PATH")
-        .map(PathBuf::from)
-        .map_err(|_| anyhow::anyhow!("NATS_CREDENTIALS_PATH environment variable is required"))?;
-
     let app_registry = AppRegistry::new();
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
     let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<async_nats::Message>(256);
@@ -107,6 +96,11 @@ async fn main() -> Result<()> {
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
 
     let (client_tx, client_rx) = tokio::sync::watch::channel::<Option<async_nats::Client>>(None);
+
+    // Channels that configsync populates with infrastructure connection info
+    // received from the operator's configsync gRPC stream.
+    let (nats_conn_tx, nats_conn_rx) = tokio::sync::watch::channel::<Option<NatsConnectionInfo>>(None);
+    let (redis_url_tx, mut redis_url_rx) = tokio::sync::watch::channel::<Option<String>>(None);
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
@@ -120,8 +114,34 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx_for_sigterm.send(());
     });
 
+    // Watch redis_url_rx and keep the shared redis_client cell up-to-date.
+    let redis_client_for_watcher = Arc::clone(&redis_client);
+    tokio::spawn(async move {
+        loop {
+            if redis_url_rx.changed().await.is_err() {
+                break;
+            }
+            let url_opt = redis_url_rx.borrow_and_update().clone();
+            let new_client = url_opt.and_then(|url| {
+                match redis::Client::open(url.as_str()) {
+                    Ok(c) => {
+                        tracing::info!(%url, "Redis client configured from configsync");
+                        Some(c)
+                    }
+                    Err(e) => {
+                        tracing::warn!("invalid Redis URL from configsync: {e}");
+                        None
+                    }
+                }
+            });
+            if let Ok(mut guard) = redis_client_for_watcher.write() {
+                *guard = new_client;
+            }
+        }
+    });
+
     tokio::spawn(nats::run_nats_manager(
-        credentials_path,
+        nats_conn_rx,
         client_tx,
         nats_ready_tx,
     ));
@@ -135,6 +155,8 @@ async fn main() -> Result<()> {
         topics_tx,
         synced_tx,
         sql_pools,
+        nats_conn_tx,
+        redis_url_tx,
     ));
     tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx, shutdown_tx.subscribe()));
 

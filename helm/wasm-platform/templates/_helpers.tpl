@@ -37,21 +37,3 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/part-of: wasm-platform
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
-
-{{/*
-Label set for databases resources (postgres, redis, nats CRs).
-*/}}
-{{- define "wasm-platform.databases.labels" -}}
-app.kubernetes.io/name: databases
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/part-of: wasm-platform
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-The name of the PostgresDatabase CR created by this release.
-Falls back to <release-name>-postgres when the value is not explicitly overridden.
-*/}}
-{{- define "wasm-platform.postgresDatabaseName" -}}
-{{- .Values.wpOperator.databases.postgresDatabaseName | default (printf "%s-postgres" .Release.Name) -}}
-{{- end }}

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use wasmtime::
@@ -57,11 +57,16 @@ impl WasiView for HostState {
 // The Engine and Linker are expensive to create and safe to share across
 // threads.  Building the Linker once here avoids repeating add_to_linker_sync
 // on every message invocation.
+//
+// `redis_client` is behind an Arc<RwLock<…>> so that it can be updated
+// dynamically when the configsync stream delivers new Redis credentials,
+// without requiring a restart.
 
 pub struct RuntimeState {
     pub engine: Engine,
     linker: Linker<HostState>,
-    pub redis_client: Option<redis::Client>,
+    /// Current Redis client, swapped by the configsync→Redis watcher task.
+    pub redis_client: Arc<RwLock<Option<redis::Client>>>,
     pub sql_pools: Arc<SqlPoolMap>,
     pub metrics_registry: MetricsRegistry,
     fuel_limit: Option<u64>,
@@ -71,7 +76,7 @@ pub struct RuntimeState {
 impl RuntimeState {
     pub fn new(
         engine: Engine,
-        redis_client: Option<redis::Client>,
+        redis_client: Arc<RwLock<Option<redis::Client>>>,
         metrics_registry: MetricsRegistry,
         sql_pools: Arc<SqlPoolMap>,
         fuel_limit: Option<u64>,
@@ -118,13 +123,14 @@ pub fn invoke_on_message(
     let sql_pool = sql_username
         .as_deref()
         .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
+    let redis_client = state.redis_client.read().ok().and_then(|g| g.clone());
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
         store_limits: StoreLimitsBuilder::new()
             .memory_size(state.memory_limit_bytes)
             .build(),
-        redis_client: state.redis_client.clone(),
+        redis_client,
         nats_client,
         sql_pool,
         app_name,
@@ -162,13 +168,14 @@ pub fn invoke_on_request(
     let sql_pool = sql_username
         .as_deref()
         .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
+    let redis_client = state.redis_client.read().ok().and_then(|g| g.clone());
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
         store_limits: StoreLimitsBuilder::new()
             .memory_size(state.memory_limit_bytes)
             .build(),
-        redis_client: state.redis_client.clone(),
+        redis_client,
         nats_client,
         sql_pool,
         app_name: app_name.clone(),
