@@ -1,0 +1,52 @@
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsCluster
+metadata:
+  name: wasm-platform-nats
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: wasm-platform
+spec:
+  natsVersion: {{ .Values.databases.nats.version | quote }}
+  jetStream:
+    storageSize: {{ .Values.databases.nats.jetStream.storageSize | quote }}
+---
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsAccount
+metadata:
+  name: wasm-platform-nats-execution-host
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: wasm-platform
+spec:
+  clusterRef: wasm-platform-nats
+  users:
+    - username: execution-host
+      secretName: execution-host-nats-credentials
+  exports:
+    - subject: "http.>"
+      type: service
+    - subject: "fn.>"
+      type: service
+---
+apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
+kind: NatsAccount
+metadata:
+  name: wasm-platform-nats-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: wasm-platform
+spec:
+  clusterRef: wasm-platform-nats
+  users:
+    - username: gateway
+      secretName: gateway-nats-credentials
+  imports:
+    - account: wasm-platform-nats-execution-host
+      subject: "http.>"
+      type: service

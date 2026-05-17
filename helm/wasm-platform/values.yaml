@@ -75,11 +75,9 @@ moduleCache:
   replicaCount: 1
   logLevel: info
 
-# databases configures the resource sizes and versions that the wp-operator uses
-# when it provisions infrastructure CRs (NatsCluster, PostgresDatabase, RedisDatabase)
-# in response to Application lifecycle events.
-# The operator manages the full lifecycle of these CRs; no database CRs are
-# provisioned by the Helm chart itself.
+# databases configures the resource sizes and versions for operator-provisioned infrastructure CRs
+# (PostgresDatabase, RedisDatabase) and for the Helm-provisioned NATS infrastructure
+# (NatsCluster, NatsAccount).
 databases:
   postgres:
     version: "16"

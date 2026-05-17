@@ -187,7 +187,7 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 2. **NATS infrastructure (always):** ensures a `NatsCluster` CR (`wasm-platform-nats`) and two `NatsAccount` CRs (`wasm-platform-nats-execution-host` and `wasm-platform-nats-gateway`) exist in the operator namespace and are `Ready`. While any is pending, sets `Ready: False, reason: NatsProvisioningPending` and requeues every 5 s. Once ready, reads the execution-host NATS Secret and publishes the connection info to all connected execution hosts via configsync.
 3. If `spec.sql` is set:
    a. Validates that namespace and app name contain no consecutive hyphens (`--`).
-   b. Derives the PostgresDatabase CR name as `wasm-<namespace>-postgres`; creates the CR (using `databases.postgres.version` and `databases.postgres.storageSize` from Helm values) if not present. Returns `RequeueAfter: 5s` while the DB is provisioning.
+   b. Derives the PostgresDatabase CR name as `wasm-<namespace>-postgres`; creates the CR (in the application's own namespace, using `databases.postgres.version` and `databases.postgres.storageSize` from Helm values) if not present. Returns `RequeueAfter: 5s` while the DB is provisioning.
    c. Creates one `PostgresCredential` CR per SQL user (including the implicit `app` user when `spec.sql.users` is absent). Each credential targets the derived PG username, derived database name, and declared privileges.
    d. Waits until all credentials reach `Ready` phase and their Secrets are available. Returns `RequeueAfter: 5s` while any credential or Secret is pending.
    e. If `spec.sql.migrations` is set: creates (or patches) a `PostgresMigrationSet` CR named `wasm-<namespace>-<app_name>-migrations`. Returns `RequeueAfter: 5s` while pending/running; surfaces failures as `Ready: False, reason: MigrationFailed`.
@@ -205,16 +205,16 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 
 ## Infrastructure CR Naming
 
-All infrastructure CRs are created in the operator's own namespace (`POD_NAMESPACE`).
+NATS and Redis CRs are created in the operator's own namespace (`POD_NAMESPACE`). PostgreSQL CRs are created in the same namespace as the Application that requested them.
 
-| Resource | CR name |
-|---|---|
-| `NatsCluster` | `wasm-platform-nats` |
-| `NatsAccount` (execution host) | `wasm-platform-nats-execution-host` |
-| `NatsAccount` (gateway) | `wasm-platform-nats-gateway` |
-| `PostgresDatabase` | `wasm-<namespace>-postgres` (per app namespace) |
-| `RedisDatabase` | `wasm-platform-redis` |
-| `RedisCredential` (execution host) | `wasm-platform-redis-execution-host` |
+| Resource | CR name | Namespace |
+|---|---|---|
+| `NatsCluster` | `wasm-platform-nats` | operator namespace |
+| `NatsAccount` (execution host) | `wasm-platform-nats-execution-host` | operator namespace |
+| `NatsAccount` (gateway) | `wasm-platform-nats-gateway` | operator namespace |
+| `PostgresDatabase` | `wasm-<namespace>-postgres` | application namespace |
+| `RedisDatabase` | `wasm-platform-redis` | operator namespace |
+| `RedisCredential` (execution host) | `wasm-platform-redis-execution-host` | operator namespace |
 
 All operator-managed CRs carry the label `app.kubernetes.io/managed-by: wp-operator`.
 
@@ -224,7 +224,7 @@ For each SQL user (or the synthetic `app` user when `spec.sql: {}`):
 
 - **`PostgresCredential` name:** `wasm-<namespace>-<app_name>-<user_name>-pg` (Kubernetes-name-safe; hash-truncated at 238 chars to leave room for suffixes).
 - **Secret name:** `wasm-<namespace>-<app_name>-<user_name>-pg-creds` (created by db-operator).
-- **Namespace:** the operator's own namespace (`POD_NAMESPACE`).
+- **Namespace:** the same namespace as the Application.
 - **Privileges:** declared in `spec.sql.users[*].permissions`; defaults to `ALL` on all tables when permissions are absent.
 
 When `spec.sql.migrations` is set, the operator additionally creates a `PostgresMigrationSet` CR (one per Application) that the db-operator reconciles — see [Database Migrations](#database-migrations). The set is named `wasm-<namespace>-<app_name>-migrations` and is deleted alongside the user credentials on Application deletion. The migrations runner uses an internal db-operator-owned role; the wp-operator does not provision a separate `migrations` `PostgresCredential`.

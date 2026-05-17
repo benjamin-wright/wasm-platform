@@ -37,10 +37,6 @@ spec:
                   fieldPath: metadata.namespace
             - name: GRPC_PORT
               value: {{ .Values.wpOperator.grpc.port | quote }}
-            - name: NATS_VERSION
-              value: {{ .Values.databases.nats.version | quote }}
-            - name: NATS_JETSTREAM_STORAGE_SIZE
-              value: {{ .Values.databases.nats.jetStream.storageSize | quote }}
             - name: POSTGRES_VERSION
               value: {{ .Values.databases.postgres.version | quote }}
             - name: POSTGRES_STORAGE_SIZE

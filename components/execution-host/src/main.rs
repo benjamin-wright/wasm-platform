@@ -99,8 +99,14 @@ async fn main() -> Result<()> {
 
     // Channels that configsync populates with infrastructure connection info
     // received from the operator's configsync gRPC stream.
-    let (nats_conn_tx, nats_conn_rx) = tokio::sync::watch::channel::<Option<NatsConnectionInfo>>(None);
     let (redis_url_tx, mut redis_url_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+
+    // NATS credentials are read once from the Secret volume mounted at
+    // NATS_CREDENTIALS_PATH.  The watch channel is initialised with the
+    // static value so run_nats_manager connects immediately on startup.
+    let nats_conn_info = read_nats_credentials()?;
+    let (_nats_conn_tx, nats_conn_rx) =
+        tokio::sync::watch::channel::<Option<NatsConnectionInfo>>(Some(nats_conn_info));
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
@@ -155,7 +161,6 @@ async fn main() -> Result<()> {
         topics_tx,
         synced_tx,
         sql_pools,
-        nats_conn_tx,
         redis_url_tx,
     ));
     tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx, shutdown_tx.subscribe()));
@@ -410,4 +415,28 @@ async fn metrics_handler(State(registry): State<MetricsRegistry>) -> impl IntoRe
             axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// Reads NATS connection credentials from the directory mounted at
+/// `NATS_CREDENTIALS_PATH`.  The directory is a Kubernetes Secret volume where
+/// each Secret key becomes a file: `NATS_HOST`, `NATS_PORT`, `NATS_USERNAME`,
+/// `NATS_PASSWORD`.
+fn read_nats_credentials() -> anyhow::Result<NatsConnectionInfo> {
+    let dir = std::env::var("NATS_CREDENTIALS_PATH")
+        .map_err(|_| anyhow::anyhow!("NATS_CREDENTIALS_PATH environment variable is required"))?;
+    let read = |key: &str| -> anyhow::Result<String> {
+        let path = std::path::Path::new(&dir).join(key);
+        std::fs::read_to_string(&path)
+            .map(|s| s.trim().to_string())
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))
+    };
+    let host = read("NATS_HOST")?;
+    let port = read("NATS_PORT")?;
+    let username = read("NATS_USERNAME")?;
+    let password = read("NATS_PASSWORD")?;
+    Ok(NatsConnectionInfo {
+        url: format!("nats://{}:{}", host, port),
+        username,
+        password,
+    })
 }

@@ -26,7 +26,6 @@ type Store struct {
 
 	// Infrastructure connection config pushed to all execution hosts.
 	// nil means the resource is not yet provisioned.
-	natsConfig  *configsync.NatsConnectionConfig
 	redisConfig *configsync.RedisConnectionConfig
 }
 
@@ -78,20 +77,6 @@ func (s *Store) Snapshot() []*configsync.ApplicationConfig {
 	return out
 }
 
-// SetNatsConfig updates the stored NATS connection config.  Returns true if
-// the value materially changed (caller should broadcast an update).
-// Pass nil to signal that NATS is no longer provisioned.
-func (s *Store) SetNatsConfig(cfg *configsync.NatsConnectionConfig) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if proto.Equal(s.natsConfig, cfg) {
-		return false
-	}
-	s.natsConfig = cfg
-	atomic.AddUint64(&s.version, 1)
-	return true
-}
-
 // SetRedisConfig updates the stored Redis connection config.  Returns true if
 // the value materially changed (caller should broadcast an update).
 // Pass nil to signal that Redis is no longer provisioned.
@@ -104,13 +89,6 @@ func (s *Store) SetRedisConfig(cfg *configsync.RedisConnectionConfig) bool {
 	s.redisConfig = cfg
 	atomic.AddUint64(&s.version, 1)
 	return true
-}
-
-// NatsConfig returns the current NATS connection config (may be nil).
-func (s *Store) NatsConfig() *configsync.NatsConnectionConfig {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.natsConfig
 }
 
 // RedisConfig returns the current Redis connection config (may be nil).

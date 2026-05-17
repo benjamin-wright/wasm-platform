@@ -1,6 +1,10 @@
 load('ext://helm_resource', 'helm_resource')
 load('./namespace.Tiltfile', 'k8s_namespace')
 
+update_settings(
+    k8s_upsert_timeout_secs=300,
+)
+
 def cert_manager():
     k8s_namespace('cert-manager')
     helm_resource(

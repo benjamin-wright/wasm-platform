@@ -45,12 +45,10 @@ pub struct ConfigDiff {
     pub pools_to_create: Vec<(String, String, String, String)>,
     /// Applications whose SQL pools should all be evicted: `(namespace, app_name)`.
     pub pools_to_evict_apps: Vec<(String, String)>,
-    /// Updated NATS connection info, if the config carried a NATS field.
+    /// Updated Redis connection info, if the config carried a Redis field.
     /// `Some(Some(...))` → new/updated credentials.
-    /// `Some(None)` → NATS no longer provisioned (disconnect).
+    /// `Some(None)` → Redis no longer provisioned (disconnect).
     /// `None` → not present in the update (no change).
-    pub nats_change: Option<Option<configsync::NatsConnectionConfig>>,
-    /// Updated Redis connection info, parallel to `nats_change`.
     pub redis_change: Option<Option<configsync::RedisConnectionConfig>>,
 }
 
@@ -131,7 +129,6 @@ impl AppRegistry {
         }
 
         // Extract infrastructure connection changes from the full config.
-        let nats_change = Some(full.nats);
         let redis_change = Some(full.redis);
 
         Ok(ConfigDiff {
@@ -139,7 +136,6 @@ impl AppRegistry {
             modules_to_evict,
             pools_to_create,
             pools_to_evict_apps,
-            nats_change,
             redis_change,
         })
     }
@@ -249,7 +245,6 @@ impl AppRegistry {
         }
 
         // Extract infrastructure connection changes.
-        let nats_change = Some(incremental.nats);
         let redis_change = Some(incremental.redis);
 
         Ok(ConfigDiff {
@@ -257,7 +252,6 @@ impl AppRegistry {
             modules_to_evict,
             pools_to_create,
             pools_to_evict_apps,
-            nats_change,
             redis_change,
         })
     }

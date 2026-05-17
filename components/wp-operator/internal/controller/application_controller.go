@@ -7,9 +7,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,20 +37,10 @@ const topicIndexField = "spec.functions.topic"
 // Used by findMetricOwner and the metric-peer watch handler to avoid full-list scans.
 const metricNameIndexField = "spec.metrics.name"
 
-// Infrastructure CR names. All infra CRs are created in the operator's own namespace
-// (PostgresCredentialNamespace) unless otherwise noted.
+// Infrastructure CR names. Postgres CRs (PostgresDatabase, PostgresCredential,
+// PostgresMigrationSet) are created in the application's namespace. Redis CRs
+// are created in the operator's own namespace (Config.PostgresCredentialNamespace).
 const (
-	// natsClusterName is the name of the cluster-wide NatsCluster CR.
-	natsClusterName = "wasm-platform-nats"
-	// natsAccountExecHostName is the NatsAccount CR for execution-host users.
-	natsAccountExecHostName = "wasm-platform-nats-execution-host"
-	// natsAccountGatewayName is the NatsAccount CR for gateway users.
-	natsAccountGatewayName = "wasm-platform-nats-gateway"
-	// natsExecHostSecretName is the Secret produced by the execution-host NatsAccount.
-	natsExecHostSecretName = "execution-host-nats-credentials"
-	// natsGatewaySecretName is the Secret produced by the gateway NatsAccount.
-	natsGatewaySecretName = "gateway-nats-credentials"
-
 	// redisDatabaseName is the name of the cluster-wide RedisDatabase CR.
 	redisDatabaseName = "wasm-platform-redis"
 	// redisCredExecHostName is the RedisCredential CR for execution-host.
@@ -60,7 +50,7 @@ const (
 )
 
 // postgresDatabaseCRName returns the name of the PostgresDatabase CR for a namespace.
-// The CR is created in the operator namespace.
+// The CR is created in the application namespace.
 func postgresDatabaseCRName(appNamespace string) string {
 	return fmt.Sprintf("wasm-%s-postgres", appNamespace)
 }
@@ -68,17 +58,10 @@ func postgresDatabaseCRName(appNamespace string) string {
 // Config holds environment-driven settings injected into the reconciler at
 // startup. Values are sourced from env vars (see cmd/main.go).
 type Config struct {
-	// PostgresCredentialNamespace is the namespace in which PostgresCredential
-	// CRs, PostgresDatabase CRs, NatsCluster CRs, and RedisDatabase CRs are
-	// created. Defaults to POD_NAMESPACE.
+	// PostgresCredentialNamespace is the namespace in which Redis infrastructure
+	// CRs (RedisDatabase, RedisCredential) are created. Defaults to POD_NAMESPACE.
+	// Postgres CRs are always created in the application's own namespace.
 	PostgresCredentialNamespace string
-
-	// NatsVersion is the NATS server version for provisioned NatsCluster CRs
-	// (e.g. "2.10").
-	NatsVersion string
-	// NatsJetStreamStorageSize is the JetStream PVC size for NatsCluster CRs
-	// (e.g. "1Gi").
-	NatsJetStreamStorageSize string
 
 	// PostgresVersion is the PostgreSQL version for provisioned PostgresDatabase
 	// CRs (e.g. "16").
@@ -100,8 +83,6 @@ type Config struct {
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgrescredentials,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresdatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresmigrationsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=natsclusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=natsaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=redisdatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=rediscredentials,verbs=get;list;watch;create;update;patch;delete
 type ApplicationReconciler struct {
@@ -151,7 +132,7 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
-	infraNS := r.Config.PostgresCredentialNamespace
+	infraNS := app.Namespace
 
 	if app.Spec.SQL != nil {
 		for _, userName := range sqlUsersForApp(app.Spec.SQL) {
@@ -199,11 +180,6 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 		}
 	}
 
-	// If this is the last Application of any kind, delete the NatsCluster and accounts.
-	if err := r.maybeDeleteNatsCluster(ctx, app); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	r.Store.Delete(key)
 	r.Store.BroadcastUpdate(buildDeleteUpdate(r.Store, app))
 
@@ -220,56 +196,6 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 
 	logger.Info("application deleted from config store", "name", app.Name, "namespace", app.Namespace)
 	return ctrl.Result{}, nil
-}
-
-// maybeDeleteNatsCluster deletes the NatsCluster and NatsAccounts if this is
-// the last Application being deleted.
-func (r *ApplicationReconciler) maybeDeleteNatsCluster(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
-	var allApps wasmplatformv1alpha1.ApplicationList
-	if err := r.List(ctx, &allApps); err != nil {
-		return fmt.Errorf("listing applications for NATS cleanup: %w", err)
-	}
-	remaining := 0
-	for i := range allApps.Items {
-		a := &allApps.Items[i]
-		if a.Namespace == app.Namespace && a.Name == app.Name {
-			continue
-		}
-		if a.DeletionTimestamp.IsZero() {
-			remaining++
-		}
-	}
-	if remaining > 0 {
-		return nil
-	}
-
-	infraNS := r.Config.PostgresCredentialNamespace
-	for _, accountName := range []string{natsAccountExecHostName, natsAccountGatewayName} {
-		var account dboperator.NatsAccount
-		err := r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: accountName}, &account)
-		if err == nil {
-			if delErr := r.Delete(ctx, &account); delErr != nil && !apierrors.IsNotFound(delErr) {
-				return fmt.Errorf("deleting NatsAccount %q: %w", accountName, delErr)
-			}
-		} else if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("getting NatsAccount %q for deletion: %w", accountName, err)
-		}
-	}
-
-	var cluster dboperator.NatsCluster
-	err := r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: natsClusterName}, &cluster)
-	if err == nil {
-		if delErr := r.Delete(ctx, &cluster); delErr != nil && !apierrors.IsNotFound(delErr) {
-			return fmt.Errorf("deleting NatsCluster %q: %w", natsClusterName, delErr)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("getting NatsCluster %q for deletion: %w", natsClusterName, err)
-	}
-
-	if r.Store.SetNatsConfig(nil) {
-		r.Store.BroadcastUpdate(buildInfraUpdate(r.Store))
-	}
-	return nil
 }
 
 // maybeDeletePostgresDatabase deletes the PostgresDatabase for this app's namespace
@@ -290,9 +216,8 @@ func (r *ApplicationReconciler) maybeDeletePostgresDatabase(ctx context.Context,
 	}
 
 	pgdbName := postgresDatabaseCRName(app.Namespace)
-	infraNS := r.Config.PostgresCredentialNamespace
 	var pgdb dboperator.PostgresDatabase
-	err := r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: pgdbName}, &pgdb)
+	err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: pgdbName}, &pgdb)
 	if err == nil {
 		if delErr := r.Delete(ctx, &pgdb); delErr != nil && !apierrors.IsNotFound(delErr) {
 			return fmt.Errorf("deleting PostgresDatabase %q: %w", pgdbName, delErr)
@@ -354,18 +279,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
-	// ── Step 1: Ensure NATS infrastructure ──────────────────────────────────────
-	natsRequeue, err := r.reconcileNatsCluster(ctx, app)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if natsRequeue {
-		r.setReadyCondition(app, metav1.ConditionFalse, "NatsProvisioningPending", "Waiting for NatsCluster and accounts to reach Ready phase.")
-		_ = r.Status().Update(ctx, app)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	// ── Step 2: Ensure Postgres infrastructure (if spec.sql is set) ─────────────
+	// ── Step 1: Ensure Postgres infrastructure (if spec.sql is set) ─────────────
 	if app.Spec.SQL != nil {
 		if err := ValidatePGInputs(app.Namespace, app.Name); err != nil {
 			msg := fmt.Sprintf("cannot derive PG identifiers: %s", err)
@@ -385,7 +299,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		}
 	}
 
-	// ── Step 3: Ensure Redis infrastructure (if spec.kv is set) ─────────────────
+	// ── Step 2: Ensure Redis infrastructure (if spec.kv is set) ─────────────────
 	if app.Spec.KV {
 		kvRequeue, err := r.reconcileRedisDatabase(ctx, app)
 		if err != nil {
@@ -398,7 +312,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		}
 	}
 
-	// ── Step 4: Build function configs ───────────────────────────────────────────
+	// ── Step 3: Build function configs ───────────────────────────────────────────
 	functions := make([]*configsync.FunctionConfig, 0, len(app.Spec.Functions))
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
@@ -499,152 +413,10 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-// reconcileNatsCluster ensures the NatsCluster and NatsAccounts exist and are Ready.
-// Returns (true, nil) when provisioning is pending (caller should requeue).
-func (r *ApplicationReconciler) reconcileNatsCluster(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
-	infraNS := r.Config.PostgresCredentialNamespace
-	natsVer := r.Config.NatsVersion
-	if natsVer == "" {
-		natsVer = "2.10"
-	}
-	jetStreamSize := r.Config.NatsJetStreamStorageSize
-	if jetStreamSize == "" {
-		jetStreamSize = "1Gi"
-	}
-
-	// Ensure NatsCluster.
-	var cluster dboperator.NatsCluster
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: natsClusterName}, &cluster)
-	if apierrors.IsNotFound(err) {
-		desired := &dboperator.NatsCluster{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      natsClusterName,
-				Namespace: infraNS,
-				Labels:    infraLabels(),
-			},
-			Spec: dboperator.NatsClusterSpec{
-				NatsVersion: natsVer,
-				JetStream: &dboperator.NatsJetStreamConfig{
-					StorageSize: resource.MustParse(jetStreamSize),
-				},
-			},
-		}
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return false, fmt.Errorf("creating NatsCluster %q: %w", natsClusterName, createErr)
-		}
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("getting NatsCluster %q: %w", natsClusterName, err)
-	}
-	if cluster.Status.Phase != dboperator.NatsClusterPhaseReady {
-		return true, nil
-	}
-
-	// Ensure NatsAccount for execution-host (with fn.> + http.> exports for gateway).
-	execHostAccountReady, err := r.ensureNatsAccount(ctx, infraNS, natsAccountExecHostName, natsClusterName,
-		[]dboperator.NatsUser{
-			{Username: "execution-host", SecretName: natsExecHostSecretName},
-		},
-		[]dboperator.NatsExport{
-			{Subject: "http.>", Type: dboperator.NatsExportTypeService},
-			{Subject: "fn.>", Type: dboperator.NatsExportTypeService},
-		},
-		nil,
-	)
-	if err != nil {
-		return false, err
-	}
-	if !execHostAccountReady {
-		return true, nil
-	}
-
-	// Ensure NatsAccount for gateway (imports http.> from execution-host account).
-	gatewayAccountReady, err := r.ensureNatsAccount(ctx, infraNS, natsAccountGatewayName, natsClusterName,
-		[]dboperator.NatsUser{
-			{Username: "gateway", SecretName: natsGatewaySecretName},
-		},
-		nil,
-		[]dboperator.NatsImport{
-			{Account: natsAccountExecHostName, Subject: "http.>", Type: dboperator.NatsExportTypeService},
-		},
-	)
-	if err != nil {
-		return false, err
-	}
-	if !gatewayAccountReady {
-		return true, nil
-	}
-
-	// Read execution-host NATS secret and update configstore.
-	var natsSecret corev1.Secret
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: natsExecHostSecretName}, &natsSecret)
-	if apierrors.IsNotFound(err) {
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("getting NATS secret %q: %w", natsExecHostSecretName, err)
-	}
-
-	natsHost := string(natsSecret.Data["NATS_HOST"])
-	natsPort := string(natsSecret.Data["NATS_PORT"])
-	natsUser := string(natsSecret.Data["NATS_USERNAME"])
-	natsPass := string(natsSecret.Data["NATS_PASSWORD"])
-	if natsHost == "" || natsPort == "" || natsUser == "" {
-		return true, nil
-	}
-
-	natsCfg := &configsync.NatsConnectionConfig{
-		Url:      fmt.Sprintf("nats://%s:%s", natsHost, natsPort),
-		Username: natsUser,
-		Password: natsPass,
-	}
-	if r.Store.SetNatsConfig(natsCfg) {
-		r.Store.BroadcastUpdate(buildInfraUpdate(r.Store))
-	}
-	return false, nil
-}
-
-// ensureNatsAccount creates or updates a NatsAccount CR and reports whether it
-// has reached Ready phase.
-func (r *ApplicationReconciler) ensureNatsAccount(
-	ctx context.Context,
-	namespace, name, clusterRef string,
-	users []dboperator.NatsUser,
-	exports []dboperator.NatsExport,
-	imports []dboperator.NatsImport,
-) (ready bool, err error) {
-	var account dboperator.NatsAccount
-	err = r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &account)
-	if apierrors.IsNotFound(err) {
-		desired := &dboperator.NatsAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels:    infraLabels(),
-			},
-			Spec: dboperator.NatsAccountSpec{
-				ClusterRef: clusterRef,
-				Users:      users,
-				Exports:    exports,
-				Imports:    imports,
-			},
-		}
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return false, fmt.Errorf("creating NatsAccount %q: %w", name, createErr)
-		}
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("getting NatsAccount %q: %w", name, err)
-	}
-	return account.Status.Phase == dboperator.NatsAccountPhaseReady, nil
-}
-
 // reconcilePostgresDatabase ensures the PostgresDatabase CR for this app's
 // namespace exists and is Ready. Returns (true, nil) when pending.
 func (r *ApplicationReconciler) reconcilePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
-	infraNS := r.Config.PostgresCredentialNamespace
+	infraNS := app.Namespace
 	pgdbName := postgresDatabaseCRName(app.Namespace)
 	pgVersion := r.Config.PostgresVersion
 	if pgVersion == "" {
@@ -789,7 +561,7 @@ func infraLabels() map[string]string {
 // all db-operator Secrets are available.
 // Returns (nil, true, nil) when any credential or Secret is not yet ready.
 func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) ([]*configsync.SqlUserConfig, bool, error) {
-	credNS := r.Config.PostgresCredentialNamespace
+	credNS := app.Namespace
 	dbName := PGDatabaseName(app.Namespace, app.Name)
 	userNames := sqlUsersForApp(app.Spec.SQL)
 	userPermissions := sqlPermissionsForApp(app.Spec.SQL)
@@ -861,7 +633,7 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 // failMsg and no automatic requeue is performed — the user must correct the artifact.
 func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *wasmplatformv1alpha1.Application) (done bool, failMsg string, err error) {
 	msName := MigrationSetName(app.Namespace, app.Name)
-	msNS := r.Config.PostgresCredentialNamespace
+	msNS := app.Namespace
 	dbName := PGDatabaseName(app.Namespace, app.Name)
 
 	desiredSpec := dboperator.PostgresMigrationSetSpec{
@@ -1054,20 +826,6 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
 			}),
 		).
-		// Re-enqueue all Applications when NATS cluster state changes.
-		Watches(
-			&dboperator.NatsCluster{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
-				return r.allApplicationRequests(ctx)
-			}),
-		).
-		// Re-enqueue all Applications when a NatsAccount state changes.
-		Watches(
-			&dboperator.NatsAccount{},
-			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
-				return r.allApplicationRequests(ctx)
-			}),
-		).
 		// Re-enqueue Applications in the affected namespace when a PostgresDatabase changes.
 		Watches(
 			&dboperator.PostgresDatabase{},
@@ -1090,26 +848,6 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}),
 		).
 		Complete(r)
-}
-
-// allApplicationRequests returns reconcile.Requests for every Application across
-// all namespaces.  Used to re-enqueue Applications when a cluster-wide infra CR
-// (NatsCluster, NatsAccount) changes state.
-func (r *ApplicationReconciler) allApplicationRequests(ctx context.Context) []reconcile.Request {
-	var list wasmplatformv1alpha1.ApplicationList
-	if err := r.List(ctx, &list); err != nil {
-		return nil
-	}
-	reqs := make([]reconcile.Request, 0, len(list.Items))
-	for i := range list.Items {
-		reqs = append(reqs, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: list.Items[i].Namespace,
-				Name:      list.Items[i].Name,
-			},
-		})
-	}
-	return reqs
 }
 
 // allKVApplicationRequests returns reconcile.Requests for every Application
@@ -1254,7 +992,6 @@ func buildUpsertUpdate(store *configstore.Store, cfg *configsync.ApplicationConf
 		Version:   fmt.Sprintf("%d", now),
 		Updates:   []*configsync.AppUpdate{{AppConfig: cfg, Delete: false}},
 		Timestamp: now,
-		Nats:      store.NatsConfig(),
 		Redis:     store.RedisConfig(),
 	}
 }
@@ -1273,7 +1010,6 @@ func buildDeleteUpdate(store *configstore.Store, app *wasmplatformv1alpha1.Appli
 			},
 		},
 		Timestamp: now,
-		Nats:      store.NatsConfig(),
 		Redis:     store.RedisConfig(),
 	}
 }
@@ -1286,7 +1022,6 @@ func buildInfraUpdate(store *configstore.Store) *configsync.IncrementalConfig {
 	return &configsync.IncrementalConfig{
 		Version:   fmt.Sprintf("%d", now),
 		Timestamp: now,
-		Nats:      store.NatsConfig(),
 		Redis:     store.RedisConfig(),
 	}
 }

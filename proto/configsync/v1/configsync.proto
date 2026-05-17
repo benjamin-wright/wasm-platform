@@ -29,8 +29,7 @@ message FullConfig {
   string version = 1;
   repeated ApplicationConfig applications = 2;
   int64 timestamp = 3;
-  optional NatsConnectionConfig nats = 4;
-  optional RedisConnectionConfig redis = 5;
+  optional RedisConnectionConfig redis = 4;
 }
 
 // ── Incremental update flow ───────────────────────────────────────────────────
@@ -51,8 +50,7 @@ message IncrementalConfig {
   string version = 1;
   repeated AppUpdate updates = 2;
   int64 timestamp = 3;
-  optional NatsConnectionConfig nats = 4;
-  optional RedisConnectionConfig redis = 5;
+  optional RedisConnectionConfig redis = 4;
 }
 
 message AppUpdate {
@@ -122,15 +120,6 @@ message MetricDefinition {
   string name = 1;
   MetricType type = 2;
   repeated string label_keys = 3;
-}
-
-// NatsConnectionConfig carries the NATS server URL and credentials for the
-// execution-host account.  Absent in FullConfig/IncrementalConfig means NATS
-// is not yet provisioned and the execution host should disconnect.
-message NatsConnectionConfig {
-  string url = 1;
-  string username = 2;
-  string password = 3;
 }
 
 // RedisConnectionConfig carries the full Redis connection URL (including

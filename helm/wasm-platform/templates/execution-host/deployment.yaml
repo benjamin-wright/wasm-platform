@@ -37,6 +37,8 @@ spec:
               value: {{ .Values.executionHost.logLevel | quote }}
             - name: WASM_MEMORY_LIMIT_MB
               value: "{{ .Values.executionHost.wasmMemoryLimitMb }}"
+            - name: NATS_CREDENTIALS_PATH
+              value: /etc/nats-credentials
             {{- if .Values.executionHost.wasmFuelLimit }}
             - name: WASM_FUEL_LIMIT
               value: "{{ .Values.executionHost.wasmFuelLimit }}"
@@ -67,3 +69,11 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: nats-credentials
+              mountPath: /etc/nats-credentials
+              readOnly: true
+      volumes:
+        - name: nats-credentials
+          secret:
+            secretName: execution-host-nats-credentials
