@@ -143,10 +143,9 @@ spec:
               kv:
                 description: |-
                   KV enables key-value store access for this Application.
-                  When present (even as kv: {}), a RedisDatabase is provisioned cluster-wide
-                  and a per-app key prefix is assigned automatically.
-                  When absent, no KV access is provisioned.
-                type: object
+                  When true, a cluster-wide RedisDatabase is provisioned and a per-app key prefix
+                  is assigned automatically. When false or absent, no KV access is provisioned.
+                type: boolean
               metrics:
                 description: |-
                   Metrics is the list of user-defined Prometheus metrics declared by this Application.

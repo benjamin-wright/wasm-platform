@@ -193,7 +193,7 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	}
 
 	// If this is the last Application with spec.kv, delete the RedisDatabase and credentials.
-	if app.Spec.KV != nil {
+	if app.Spec.KV {
 		if err := r.maybeDeleteRedisDatabase(ctx, app); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -315,7 +315,7 @@ func (r *ApplicationReconciler) maybeDeleteRedisDatabase(ctx context.Context, ap
 		if a.Namespace == app.Namespace && a.Name == app.Name {
 			continue
 		}
-		if a.DeletionTimestamp.IsZero() && a.Spec.KV != nil {
+		if a.DeletionTimestamp.IsZero() && a.Spec.KV {
 			return nil // still needed
 		}
 	}
@@ -386,7 +386,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	}
 
 	// ── Step 3: Ensure Redis infrastructure (if spec.kv is set) ─────────────────
-	if app.Spec.KV != nil {
+	if app.Spec.KV {
 		kvRequeue, err := r.reconcileRedisDatabase(ctx, app)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -430,6 +430,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		Namespace: app.Namespace,
 		Functions: functions,
 		Env:       app.Spec.Env,
+		KeyValue:  app.Spec.KV,
 	}
 	cfg.Metrics = buildMetricDefs(app.Spec.Metrics)
 
@@ -1120,7 +1121,7 @@ func (r *ApplicationReconciler) allKVApplicationRequests(ctx context.Context) []
 	}
 	var reqs []reconcile.Request
 	for i := range list.Items {
-		if list.Items[i].Spec.KV != nil {
+		if list.Items[i].Spec.KV {
 			reqs = append(reqs, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: list.Items[i].Namespace,

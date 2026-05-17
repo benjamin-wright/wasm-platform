@@ -28,6 +28,9 @@ pub struct FunctionEntry {
     /// The derived PG username this function uses, or None if the function has no SQL access.
     /// At invocation time, the pool map is looked up by (namespace, app_name, sql_username).
     pub sql_username: Option<String>,
+    /// Whether the application has KV (Redis) access enabled.
+    /// When false, KV host functions return an error even if Redis is globally configured.
+    pub kv_enabled: bool,
     /// User-defined Prometheus metrics declared by the application.
     pub metrics: Vec<configsync::MetricDefinition>,
 }
@@ -316,6 +319,7 @@ fn function_entry_from(
         http_config: fn_cfg.http_config.clone(),
         env: app.env.clone(),
         sql_username: fn_cfg.sql_username.clone(),
+        kv_enabled: app.key_value,
         metrics: app.metrics.clone(),
     }
 }

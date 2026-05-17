@@ -561,6 +561,7 @@ type ApplicationConfig struct {
 	Functions     []*FunctionConfig      `protobuf:"bytes,3,rep,name=functions,proto3" json:"functions,omitempty"`
 	Env           map[string]string      `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	SqlUsers      []*SqlUserConfig       `protobuf:"bytes,5,rep,name=sql_users,json=sqlUsers,proto3" json:"sql_users,omitempty"`
+	KeyValue      bool                   `protobuf:"varint,6,opt,name=key_value,json=keyValue,proto3" json:"key_value,omitempty"`
 	Metrics       []*MetricDefinition    `protobuf:"bytes,7,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -629,6 +630,13 @@ func (x *ApplicationConfig) GetSqlUsers() []*SqlUserConfig {
 		return x.SqlUsers
 	}
 	return nil
+}
+
+func (x *ApplicationConfig) GetKeyValue() bool {
+	if x != nil {
+		return x.KeyValue
+	}
+	return false
 }
 
 func (x *ApplicationConfig) GetMetrics() []*MetricDefinition {

@@ -119,11 +119,16 @@ pub fn invoke_on_message(
     app_namespace: String,
     function_name: String,
     sql_username: Option<String>,
+    kv_enabled: bool,
 ) -> Result<Option<Vec<u8>>> {
     let sql_pool = sql_username
         .as_deref()
         .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
-    let redis_client = state.redis_client.read().ok().and_then(|g| g.clone());
+    let redis_client = if kv_enabled {
+        state.redis_client.read().ok().and_then(|g| g.clone())
+    } else {
+        None
+    };
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),
@@ -164,11 +169,16 @@ pub fn invoke_on_request(
     app_namespace: String,
     function_name: String,
     sql_username: Option<String>,
+    kv_enabled: bool,
 ) -> Result<HttpResponsePayload> {
     let sql_pool = sql_username
         .as_deref()
         .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
-    let redis_client = state.redis_client.read().ok().and_then(|g| g.clone());
+    let redis_client = if kv_enabled {
+        state.redis_client.read().ok().and_then(|g| g.clone())
+    } else {
+        None
+    };
     let host_state = HostState {
         wasi: WasiCtxBuilder::new().inherit_stderr().build(),
         table: ResourceTable::new(),

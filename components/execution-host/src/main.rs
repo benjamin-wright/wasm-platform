@@ -272,6 +272,7 @@ async fn process_nats_messages(
         let function_name = fn_entry.function_name.clone();
         let world_type = fn_entry.world_type;
         let sql_username = fn_entry.sql_username.clone();
+        let kv_enabled = fn_entry.kv_enabled;
         let nats_for_invoke = client_snapshot.clone();
 
         let trigger = match world_type {
@@ -292,7 +293,7 @@ async fn process_nats_messages(
             let task = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username)
+                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username, kv_enabled)
                     })
                 }
                 config::configsync::WorldType::Http => {
@@ -301,7 +302,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name, sql_username)?;
+                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name, sql_username, kv_enabled)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
