@@ -12,11 +12,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -191,59 +189,6 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			return ctrl.Result{}, fmt.Errorf("getting PostgresDatabase %q: %w", r.Config.PostgresDatabaseName, err)
 		}
 	}
-	for i := range app.Spec.Functions {
-		fn := &app.Spec.Functions[i]
-		if fn.Trigger.Topic == "" {
-			continue
-		}
-		owner, err := findTopicOwner(ctx, r.Client, fn.Trigger.Topic, app)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("checking topic ownership for function %q: %w", fn.Name, err)
-		}
-		if owner != nil {
-			msg := fmt.Sprintf("function %q: topic %q is already claimed by %s/%s", fn.Name, fn.Trigger.Topic, owner.Namespace, owner.Name)
-			logger.Info("topic conflict detected", "function", fn.Name, "topic", fn.Trigger.Topic, "owner", owner.Namespace+"/"+owner.Name)
-			apimeta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-				Type:               "TopicConflict",
-				Status:             metav1.ConditionTrue,
-				Reason:             "TopicConflict",
-				Message:            msg,
-				ObservedGeneration: app.Generation,
-			})
-			r.setReadyCondition(app, metav1.ConditionFalse, "TopicConflict", msg)
-			if err := r.Status().Update(ctx, app); err != nil {
-				return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
-			}
-			// No requeue — healed via the topic-peer watch when the owner is deleted or changes topic.
-			return ctrl.Result{}, nil
-		}
-	}
-
-	for i := range app.Spec.Metrics {
-		m := &app.Spec.Metrics[i]
-		owner, err := findMetricOwner(ctx, r.Client, m.Name, app)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("checking metric ownership for %q: %w", m.Name, err)
-		}
-		if owner != nil {
-			msg := fmt.Sprintf("metric %q is already claimed by %s/%s", m.Name, owner.Namespace, owner.Name)
-			logger.Info("metric conflict detected", "metric", m.Name, "owner", owner.Namespace+"/"+owner.Name)
-			apimeta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-				Type:               "MetricConflict",
-				Status:             metav1.ConditionTrue,
-				Reason:             "MetricConflict",
-				Message:            msg,
-				ObservedGeneration: app.Generation,
-			})
-			r.setReadyCondition(app, metav1.ConditionFalse, "MetricConflict", msg)
-			if err := r.Status().Update(ctx, app); err != nil {
-				return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
-			}
-			// No requeue — healed via the metric-peer watch when the owner is deleted or changes metric names.
-			return ctrl.Result{}, nil
-		}
-	}
-
 	functions := make([]*configsync.FunctionConfig, 0, len(app.Spec.Functions))
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
@@ -334,10 +279,6 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	if r.RouteStore.Set(key, httpRoutes) {
 		r.RouteStore.BroadcastUpdate(buildRouteUpsertUpdate(httpRoutes))
 	}
-
-	// Clear any stale TopicConflict and MetricConflict conditions from a previous blocked state.
-	apimeta.RemoveStatusCondition(&app.Status.Conditions, "TopicConflict")
-	apimeta.RemoveStatusCondition(&app.Status.Conditions, "MetricConflict")
 
 	r.setReadyCondition(app, metav1.ConditionTrue, "ConfigPushed", "Application config pushed to execution hosts.")
 	if err := r.Status().Update(ctx, app); err != nil {
@@ -617,55 +558,6 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
 			}),
 		).
-		Watches(
-			&wasmplatformv1alpha1.Application{},
-			handler.Funcs{
-				// On delete, wake up all apps sharing the deleted app's topics or metric names.
-				// They may now be the rightful owner.
-				DeleteFunc: func(ctx context.Context, de event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					app, ok := de.Object.(*wasmplatformv1alpha1.Application)
-					if !ok {
-						return
-					}
-					for _, fn := range app.Spec.Functions {
-						if fn.Trigger.Topic != "" {
-							r.enqueueTopicPeers(ctx, q, fn.Trigger.Topic, app.Namespace, app.Name)
-						}
-					}
-					for _, m := range app.Spec.Metrics {
-						r.enqueueMetricPeers(ctx, q, m.Name, app.Namespace, app.Name)
-					}
-				},
-				// On update, wake up apps sharing any *old* topic or metric name that changed —
-				// they may now be unblocked.
-				UpdateFunc: func(ctx context.Context, ue event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					oldApp, ok := ue.ObjectOld.(*wasmplatformv1alpha1.Application)
-					if !ok {
-						return
-					}
-					newApp, ok := ue.ObjectNew.(*wasmplatformv1alpha1.Application)
-					if !ok {
-						return
-					}
-					oldTopics := functionTopicSet(oldApp)
-					newTopics := functionTopicSet(newApp)
-					for topic := range oldTopics {
-						if !newTopics[topic] {
-							// This topic was removed — wake peers that may now own it.
-							r.enqueueTopicPeers(ctx, q, topic, newApp.Namespace, newApp.Name)
-						}
-					}
-					oldMetrics := metricNameSet(oldApp)
-					newMetrics := metricNameSet(newApp)
-					for name := range oldMetrics {
-						if !newMetrics[name] {
-							// This metric name was removed — wake peers that may now own it.
-							r.enqueueMetricPeers(ctx, q, name, newApp.Namespace, newApp.Name)
-						}
-					}
-				},
-			},
-		).
 		Complete(r)
 }
 
@@ -725,41 +617,6 @@ func topicOwnerLess(a, b *wasmplatformv1alpha1.Application) bool {
 	return false
 }
 
-// enqueueTopicPeers lists all Applications with the given topic and adds them
-// to the work queue, excluding the app identified by (excludeNS, excludeName).
-func (r *ApplicationReconciler) enqueueTopicPeers(
-	ctx context.Context,
-	q workqueue.TypedRateLimitingInterface[reconcile.Request],
-	topic, excludeNS, excludeName string,
-) {
-	var list wasmplatformv1alpha1.ApplicationList
-	if err := r.List(ctx, &list, client.MatchingFields{topicIndexField: topic}); err != nil {
-		log.FromContext(ctx).Error(err, "enqueueTopicPeers: listing applications", "topic", topic)
-		return
-	}
-	for i := range list.Items {
-		app := &list.Items[i]
-		if app.Namespace == excludeNS && app.Name == excludeName {
-			continue
-		}
-		q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-			Namespace: app.Namespace,
-			Name:      app.Name,
-		}})
-	}
-}
-
-// functionTopicSet returns a set of all user-supplied topics across all functions.
-func functionTopicSet(app *wasmplatformv1alpha1.Application) map[string]bool {
-	topics := make(map[string]bool)
-	for _, fn := range app.Spec.Functions {
-		if fn.Trigger.Topic != "" {
-			topics[fn.Trigger.Topic] = true
-		}
-	}
-	return topics
-}
-
 // ── metric name ownership ─────────────────────────────────────────────────────
 
 // findMetricOwner returns the Application that rightfully owns the given metric
@@ -784,39 +641,6 @@ func findMetricOwner(ctx context.Context, c client.Client, metricName string, se
 		return nil, nil // self is the rightful owner
 	}
 	return owner, nil
-}
-
-// metricNameSet returns a set of all metric names declared by the Application.
-func metricNameSet(app *wasmplatformv1alpha1.Application) map[string]bool {
-	names := make(map[string]bool)
-	for _, m := range app.Spec.Metrics {
-		names[m.Name] = true
-	}
-	return names
-}
-
-// enqueueMetricPeers lists all Applications with the given metric name and adds
-// them to the work queue, excluding the app identified by (excludeNS, excludeName).
-func (r *ApplicationReconciler) enqueueMetricPeers(
-	ctx context.Context,
-	q workqueue.TypedRateLimitingInterface[reconcile.Request],
-	metricName, excludeNS, excludeName string,
-) {
-	var list wasmplatformv1alpha1.ApplicationList
-	if err := r.List(ctx, &list, client.MatchingFields{metricNameIndexField: metricName}); err != nil {
-		log.FromContext(ctx).Error(err, "enqueueMetricPeers: listing applications", "metric", metricName)
-		return
-	}
-	for i := range list.Items {
-		app := &list.Items[i]
-		if app.Namespace == excludeNS && app.Name == excludeName {
-			continue
-		}
-		q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-			Namespace: app.Namespace,
-			Name:      app.Name,
-		}})
-	}
 }
 
 func buildUpsertUpdate(cfg *configsync.ApplicationConfig) *configsync.IncrementalConfig {

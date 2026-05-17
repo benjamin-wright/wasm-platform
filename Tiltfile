@@ -17,9 +17,11 @@ load('./examples/sql-hello/Tiltfile', 'sql_hello')
 load('./examples/sql-broken-migrations/Tiltfile', 'sql_broken_migrations')
 load('./tests/e2e/Tiltfile', 'e2e_tests')
 load('./tilt/workspace-deps.Tiltfile', 'workspace_deps')
+load('./tilt/cert-manager.Tiltfile', 'cert_manager')
 
 k8s_namespace(namespace)
 db_operator(namespace = 'db-operator')
+cert_manager()
 
 workspace_deps()
 

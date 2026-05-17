@@ -403,7 +403,7 @@ func TestSQLBrokenMigrationsFailurePath(t *testing.T) {
 // readyConditionReason shells out to kubectl to read the current Ready
 // condition reason for an Application. Returns an empty string (not an error)
 // when the condition is not yet present so that callers using Eventually keep
-// polling rather than failing immediately.
+// polling rather than failing instead.
 func readyConditionReason(name, namespace string) (string, error) {
 	cmd := exec.Command("kubectl", "get", "application", name,
 		"-n", namespace,
@@ -414,4 +414,150 @@ func readyConditionReason(name, namespace string) (string, error) {
 		return "", fmt.Errorf("kubectl get application %s/%s: %w", namespace, name, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// kubectlApply attempts to apply the given YAML via kubectl and returns the
+// combined stdout+stderr output and any error.
+func kubectlApply(yaml string) (string, error) {
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yaml)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// kubectlDelete deletes the resource described by the YAML, ignoring not-found errors.
+func kubectlDelete(yaml string) {
+	cmd := exec.Command("kubectl", "delete", "--ignore-not-found", "-f", "-")
+	cmd.Stdin = strings.NewReader(yaml)
+	_, _ = cmd.CombinedOutput()
+}
+
+// TestWebhookTopicConflictRejection verifies that applying an Application whose
+// topic is already claimed by another Application is rejected at admission by
+// the ValidatingWebhook, not silently accepted and surfaced via status.
+func TestWebhookTopicConflictRejection(t *testing.T) {
+	g := NewWithT(t)
+
+	const owner = `
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-topic-owner
+  namespace: default
+spec:
+  functions:
+    - name: handler
+      module: oci://wasm-platform-registry.localhost:5001/demo-app-http@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      trigger:
+        topic: webhook.conflict.test
+`
+	const conflicting = `
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-topic-conflicting
+  namespace: default
+spec:
+  functions:
+    - name: handler
+      module: oci://wasm-platform-registry.localhost:5001/demo-app-http@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      trigger:
+        topic: webhook.conflict.test
+`
+
+	kubectlDelete(owner)
+	kubectlDelete(conflicting)
+	t.Cleanup(func() {
+		kubectlDelete(owner)
+		kubectlDelete(conflicting)
+	})
+
+	_, err := kubectlApply(owner)
+	g.Expect(err).NotTo(HaveOccurred(), "owner Application should be admitted")
+
+	out, err := kubectlApply(conflicting)
+	g.Expect(err).To(HaveOccurred(), "conflicting Application should be rejected at admission")
+	g.Expect(out).To(ContainSubstring("webhook.conflict.test"), "rejection message should name the conflicting topic")
+}
+
+// TestWebhookMetricConflictRejection verifies that applying an Application whose
+// metric name is already claimed by another Application is rejected at admission.
+func TestWebhookMetricConflictRejection(t *testing.T) {
+	g := NewWithT(t)
+
+	const owner = `
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-metric-owner
+  namespace: default
+spec:
+  functions:
+    - name: handler
+      module: oci://wasm-platform-registry.localhost:5001/demo-app-http@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      trigger:
+        topic: webhook.metric.owner.events
+  metrics:
+    - name: webhook_conflict_metric_total
+      type: counter
+`
+	const conflicting = `
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-metric-conflicting
+  namespace: default
+spec:
+  functions:
+    - name: handler
+      module: oci://wasm-platform-registry.localhost:5001/demo-app-http@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      trigger:
+        topic: webhook.metric.conflicting.events
+  metrics:
+    - name: webhook_conflict_metric_total
+      type: counter
+`
+
+	kubectlDelete(owner)
+	kubectlDelete(conflicting)
+	t.Cleanup(func() {
+		kubectlDelete(owner)
+		kubectlDelete(conflicting)
+	})
+
+	_, err := kubectlApply(owner)
+	g.Expect(err).NotTo(HaveOccurred(), "owner Application should be admitted")
+
+	out, err := kubectlApply(conflicting)
+	g.Expect(err).To(HaveOccurred(), "conflicting Application should be rejected at admission")
+	g.Expect(out).To(ContainSubstring("webhook_conflict_metric_total"), "rejection message should name the conflicting metric")
+}
+
+// TestWebhookInvalidIdentifierRejection verifies that applying an Application
+// with a name containing consecutive hyphens ("--") and spec.sql set is
+// rejected at admission.
+func TestWebhookInvalidIdentifierRejection(t *testing.T) {
+	g := NewWithT(t)
+
+	const invalid = `
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: bad--name
+  namespace: default
+spec:
+  sql: {}
+  functions:
+    - name: handler
+      module: oci://wasm-platform-registry.localhost:5001/demo-app-http@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      trigger:
+        topic: webhook.invalid.id.events
+`
+
+	kubectlDelete(invalid)
+	t.Cleanup(func() { kubectlDelete(invalid) })
+
+	out, err := kubectlApply(invalid)
+	g.Expect(err).To(HaveOccurred(), "Application with invalid identifier should be rejected at admission")
+	g.Expect(out).To(ContainSubstring("consecutive hyphens"), "rejection message should describe the identifier constraint")
 }

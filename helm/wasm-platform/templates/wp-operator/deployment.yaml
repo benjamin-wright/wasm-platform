@@ -29,6 +29,7 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
+            - --webhook-cert-dir=/etc/webhook/certs
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -47,6 +48,9 @@ spec:
               protocol: TCP
             - name: grpc
               containerPort: {{ .Values.wpOperator.grpc.port }}
+              protocol: TCP
+            - name: webhook
+              containerPort: 9443
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -67,3 +71,11 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /etc/webhook/certs
+              readOnly: true
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: wp-operator-webhook-tls

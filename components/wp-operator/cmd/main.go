@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
@@ -36,11 +38,13 @@ func main() {
 	var probeAddr string
 	var enableLeaderElection bool
 	var grpcPort int
+	var webhookCertDir string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address for the metrics endpoint.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address for health probes.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for high availability.")
 	flag.IntVar(&grpcPort, "grpc-port", 0, "Port for the gRPC ConfigSync server (overrides GRPC_PORT env).")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/etc/webhook/certs", "Directory containing tls.crt and tls.key for the validating webhook server.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -70,6 +74,12 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "wp-operator.wasm-platform.io",
+		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
+			CertDir:  webhookCertDir,
+			CertName: "tls.crt",
+			KeyName:  "tls.key",
+			Port:     9443,
+		}),
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
@@ -86,6 +96,16 @@ func main() {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "Application")
 		os.Exit(1)
 	}
+
+	mgr.GetWebhookServer().Register(
+		"/validate-wasm-platform-io-v1alpha1-application",
+		&admission.Webhook{
+			Handler: &controller.ApplicationValidator{
+				Client:  mgr.GetClient(),
+				Decoder: admission.NewDecoder(mgr.GetScheme()),
+			},
+		},
+	)
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")

@@ -36,6 +36,17 @@ def wp_operator(namespace='wasm-platform'):
         ],
     )
 
+    k8s_resource(
+        new_name = 'wp-webhook',
+        objects = [
+            'wasm-platform-selfsigned:ClusterIssuer',
+            'wp-operator-webhook-tls:Certificate:{}'.format(namespace),
+            'wasm-platform-application-validator:ValidatingWebhookConfiguration',
+        ],
+        labels = ['platform'],
+        resource_deps = ['cert-manager-ready'],
+    )
+
     local_resource(
         'wp: unit-tests',
         cmd = 'cd components/wp-operator && go test ./...',

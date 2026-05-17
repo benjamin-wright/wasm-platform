@@ -18,12 +18,13 @@ The webhook fires on `Application` create and update:
 
 ### Tasks
 
-- [ ] Add cert-manager as a Helm dependency; provision a self-signed `ClusterIssuer` and a `Certificate` for the webhook TLS endpoint.
-- [ ] Implement the validating webhook handler in wp-operator: validate `TopicConflict`, `MetricConflict`, and `InvalidIdentifier` on `Application` create/update.
-- [ ] Register a `ValidatingWebhookConfiguration` in the Helm chart with `failurePolicy: Fail`.
-- [ ] Remove `TopicConflict` and `MetricConflict` detection from the reconciler; retain `InvalidIdentifier` as defense-in-depth.
-- [ ] Update e2e tests: assert admission rejection (kubectl error) rather than status condition for conflict and identifier scenarios.
-- [ ] Update wp-operator README: document webhook scope, failure policy, and degraded-mode behaviour when the webhook is unavailable.
+- [x] Add a cert-manager deployment in the root tiltfile
+- [x] Provision a self-signed `ClusterIssuer` and a `Certificate` for the webhook TLS endpoint in the platform helm chart.
+- [x] Implement the validating webhook handler in wp-operator: validate `TopicConflict`, `MetricConflict`, and `InvalidIdentifier` on `Application` create/update.
+- [x] Register a `ValidatingWebhookConfiguration` in the Helm chart with `failurePolicy: Fail`.
+- [x] Remove `TopicConflict` and `MetricConflict` detection from the reconciler; retain `InvalidIdentifier` as defense-in-depth.
+- [x] Update e2e tests: assert admission rejection (kubectl error) rather than status condition for conflict and identifier scenarios.
+- [x] Update wp-operator README: document webhook scope, failure policy, and degraded-mode behaviour when the webhook is unavailable.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 ### Verification

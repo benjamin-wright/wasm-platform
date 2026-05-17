@@ -93,9 +93,11 @@ spec:
 | `trigger.http.methods` | []string | no | Allowed HTTP methods. Omit to accept all. Gateway returns `405` for unlisted methods. |
 | `sqlUser` | string | no | Name of the SQL user (from `spec.sql.users`) this function uses. Ignored when `spec.sql.users` is absent/empty (implicit `app` user). When `spec.sql.users` is non-empty, functions without this field have no SQL access. |
 
-**Topic uniqueness:** the operator enforces cluster-wide uniqueness per topic — the Application with the oldest `creationTimestamp` owns the topic (tiebreak: lexicographically lower `namespace/name`). A blocked Application receives `Ready: False` with reason `TopicConflict`. When the owner is deleted or changes topic, blocked Applications are automatically re-evaluated.
+**Topic uniqueness:** enforced cluster-wide at admission by the `ValidatingWebhookConfiguration`. A `kubectl apply` that would create a topic conflict is rejected immediately with an error message naming the conflicting topic. The Application with the oldest `creationTimestamp` owns the topic (tiebreak: lexicographically lower `namespace/name`).
 
-**Metric name uniqueness:** the operator enforces cluster-wide uniqueness per metric name across all Applications — same ownership rule as topics (oldest `creationTimestamp` wins, tiebreak: lexicographically lower `namespace/name`). A blocked Application receives `Ready: False` with reason `MetricConflict`. When the owner is deleted or removes the conflicting metric name, blocked Applications are automatically re-evaluated.
+**Metric name uniqueness:** enforced cluster-wide at admission by the `ValidatingWebhookConfiguration`. A `kubectl apply` that would create a metric name conflict is rejected immediately with an error message naming the conflicting metric. Ownership follows the same rule as topics.
+
+**Identifier constraint:** when `spec.sql` is set, the application name and namespace must not contain consecutive hyphens (`--`). This constraint is enforced at admission and also re-validated by the reconciler as defense-in-depth.
 
 **Internal NATS subjects:** `trigger.topic` functions get a `fn.` prefix; `trigger.http` functions get an auto-generated `http.<namespace>.<app-name>.<function-name>` subject. Both are invisible to the module author.
 
@@ -180,7 +182,7 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 
 **On create/update:**
 
-1. For each message-triggered function, checks cluster-wide topic uniqueness.
+1. The admission webhook has already enforced topic uniqueness, metric name uniqueness, and identifier constraints before the reconciler runs. The reconciler re-validates the identifier constraint as defense-in-depth.
 2. If `spec.sql` is set:
    a. Validates that namespace and app name contain no consecutive hyphens (`--`).
    b. Checks that `Config.PostgresDatabaseName` is configured and the named `PostgresDatabase` CR exists.
@@ -229,13 +231,27 @@ Requires `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc`, `controller-gen`.
 
 Generates: gRPC stubs → `internal/grpc/configsync/`, CRD deepcopy → `api/v1alpha1/`. All marked `DO NOT EDIT`.
 
+## Validating Webhook
+
+wp-operator exposes a validating admission webhook on port 9443, registered as `wasm-platform-application-validator` in Kubernetes. TLS is provided by a cert-manager self-signed `ClusterIssuer` (`wasm-platform-selfsigned`) and a `Certificate` (`wp-operator-webhook-tls`) whose Secret is mounted into the operator container.
+
+**Scope:** fires on `Application` create and update.
+
+**Checks performed:**
+
+| Check | Description |
+|-------|-------------|
+| `InvalidIdentifier` | When `spec.sql` is set, rejects names containing consecutive hyphens (`--`). |
+| `TopicConflict` | Rejects any function whose `trigger.topic` is already owned by another Application. |
+| `MetricConflict` | Rejects any metric name already owned by another Application. |
+
+**Failure policy:** `Fail` — if the webhook is unavailable, `Application` create and update requests are blocked. Existing execution hosts continue serving the last-known configuration while the operator is down; in-flight traffic is unaffected.
+
 ## Status
 
 | Condition | Description |
 |-----------|-------------|
 | `Ready` | `True` when config is pushed to all hosts. `False` while provisioning or on error. |
-| `TopicConflict` | Set when another Application owns a topic claimed by one of this app's functions. Cleared automatically on resolution. |
-| `MetricConflict` | Set when another Application owns a metric name claimed by this app. Cleared automatically on resolution. |
 | `DatabaseConfigMissing` | Set when `spec.sql` is present but `PostgresDatabaseName` is not configured. |
 | `DatabaseNotFound` | Set when the named `PostgresDatabase` CR does not exist. |
 | `InvalidIdentifier` | Set when namespace or app name contains consecutive hyphens, preventing PG identifier derivation. |
