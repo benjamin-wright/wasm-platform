@@ -28,6 +28,9 @@ pub struct FunctionEntry {
     /// The derived PG username this function uses, or None if the function has no SQL access.
     /// At invocation time, the pool map is looked up by (namespace, app_name, sql_username).
     pub sql_username: Option<String>,
+    /// Whether the application has KV (Redis) access enabled.
+    /// When false, KV host functions return an error even if Redis is globally configured.
+    pub kv_enabled: bool,
     /// User-defined Prometheus metrics declared by the application.
     pub metrics: Vec<configsync::MetricDefinition>,
 }
@@ -42,6 +45,11 @@ pub struct ConfigDiff {
     pub pools_to_create: Vec<(String, String, String, String)>,
     /// Applications whose SQL pools should all be evicted: `(namespace, app_name)`.
     pub pools_to_evict_apps: Vec<(String, String)>,
+    /// Updated Redis connection info, if the config carried a Redis field.
+    /// `Some(Some(...))` → new/updated credentials.
+    /// `Some(None)` → Redis no longer provisioned (disconnect).
+    /// `None` → not present in the update (no change).
+    pub redis_change: Option<Option<configsync::RedisConnectionConfig>>,
 }
 
 /// Shared, thread-safe registry of all known function entries, keyed by NATS topic.
@@ -120,7 +128,16 @@ impl AppRegistry {
             map.insert(topic, entry);
         }
 
-        Ok(ConfigDiff { modules_to_load, modules_to_evict, pools_to_create, pools_to_evict_apps })
+        // Extract infrastructure connection changes from the full config.
+        let redis_change = Some(full.redis);
+
+        Ok(ConfigDiff {
+            modules_to_load,
+            modules_to_evict,
+            pools_to_create,
+            pools_to_evict_apps,
+            redis_change,
+        })
     }
 
     /// Apply a list of incremental updates: upsert or delete each application's functions.
@@ -128,7 +145,7 @@ impl AppRegistry {
     ///
     /// On upsert, all existing entries for the application are replaced with the new
     /// function list.  This handles both additions and removals of individual functions.
-    pub fn apply_incremental(&self, updates: Vec<AppUpdate>) -> Result<ConfigDiff> {
+    pub fn apply_incremental(&self, incremental: configsync::IncrementalConfig) -> Result<ConfigDiff> {
         let mut map = self
             .inner
             .write()
@@ -139,7 +156,7 @@ impl AppRegistry {
         let mut pools_to_create: Vec<(String, String, String, String)> = Vec::new();
         let mut pools_to_evict_apps: Vec<(String, String)> = Vec::new();
 
-        for update in updates {
+        for update in incremental.updates {
             let Some(app) = update.app_config else {
                 if update.delete {
                     tracing::warn!("received delete update with no app_config; ignoring");
@@ -227,7 +244,16 @@ impl AppRegistry {
             }
         }
 
-        Ok(ConfigDiff { modules_to_load, modules_to_evict, pools_to_create, pools_to_evict_apps })
+        // Extract infrastructure connection changes.
+        let redis_change = Some(incremental.redis);
+
+        Ok(ConfigDiff {
+            modules_to_load,
+            modules_to_evict,
+            pools_to_create,
+            pools_to_evict_apps,
+            redis_change,
+        })
     }
 
     /// Returns the NATS topic for every function currently in the registry.
@@ -287,6 +313,7 @@ fn function_entry_from(
         http_config: fn_cfg.http_config.clone(),
         env: app.env.clone(),
         sql_username: fn_cfg.sql_username.clone(),
+        kv_enabled: app.key_value,
         metrics: app.metrics.clone(),
     }
 }

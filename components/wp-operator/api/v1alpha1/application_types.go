@@ -215,6 +215,12 @@ type ApplicationSpec struct {
 	// +optional
 	SQL *SQLSpec `json:"sql,omitempty"`
 
+	// KV enables key-value store access for this Application.
+	// When true, a cluster-wide RedisDatabase is provisioned and a per-app key prefix
+	// is assigned automatically. When false or absent, no KV access is provisioned.
+	// +optional
+	KV bool `json:"kv,omitempty"`
+
 	// Metrics is the list of user-defined Prometheus metrics declared by this Application.
 	// Names must be unique within the Application and cluster-wide; the operator enforces
 	// cluster-wide uniqueness at reconcile time (oldest Application wins).

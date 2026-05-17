@@ -6,7 +6,7 @@ allow_k8s_contexts('k3d-wasm-platform')
 
 namespace = 'wasm-platform'
 
-load('./components/wp-databases/Tiltfile', 'db_operator', 'wp_databases')
+load('./components/wp-databases/Tiltfile', 'db_operator')
 load('./components/execution-host/Tiltfile', 'execution_host')
 load('./components/gateway/Tiltfile', 'gateway')
 load('./components/module-cache/Tiltfile', 'module_cache')
@@ -34,7 +34,6 @@ k8s_yaml(helm(
 ))
 
 wp_operator()
-wp_databases(namespace)
 execution_host(resource_deps=['wp-operator'])
 gateway(resource_deps=['wp-operator'])
 module_cache()
@@ -43,10 +42,10 @@ module_cache()
 ## Example applications ##
 
 k8s_namespace('examples')
-demo_app('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
-counter_app('examples', resource_deps=['wp-operator', 'execution-host', 'gateway'])
-sql_hello('default', resource_deps=['wp-operator', 'execution-host', 'gateway'])
-sql_broken_migrations('default', resource_deps=['wp-operator', 'execution-host', 'gateway'])
+demo_app('examples', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
+counter_app('examples', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
+sql_hello('default', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
+sql_broken_migrations('default', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
 
 ## Tests ##
 

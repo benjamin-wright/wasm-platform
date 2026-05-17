@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,34 +30,52 @@ import (
 const applicationFinalizer = "wasm-platform.io/application-protection"
 
 // topicIndexField is the cache field index key for function topics within an Application.
-// Used by findTopicOwner and the topic-peer watch handler to avoid full-list scans.
 const topicIndexField = "spec.functions.topic"
 
 // metricNameIndexField is the cache field index key for metric names within an Application.
-// Used by findMetricOwner and the metric-peer watch handler to avoid full-list scans.
 const metricNameIndexField = "spec.metrics.name"
+
+// Infrastructure CR names. Postgres CRs (PostgresDatabase, PostgresCredential,
+// PostgresMigrationSet) are created in the application's namespace. Redis CRs
+// are created in the operator's own namespace (Config.PostgresCredentialNamespace).
+const (
+	redisDatabaseName       = "wasm-platform-redis"
+	redisCredExecHostName   = "wasm-platform-redis-execution-host"
+	redisExecHostSecretName = "execution-host-redis-credentials"
+)
+
+func postgresDatabaseCRName(appNamespace string) string {
+	return fmt.Sprintf("wasm-%s-postgres", appNamespace)
+}
 
 // Config holds environment-driven settings injected into the reconciler at
 // startup. Values are sourced from env vars (see cmd/main.go).
 type Config struct {
-	// PostgresDatabaseName is the name of the PostgresDatabase CR that
-	// PostgresCredential CRs will reference.
-	PostgresDatabaseName string
-	// PostgresCredentialNamespace is the namespace in which PostgresCredential
-	// CRs and their resulting Secrets are created. Defaults to POD_NAMESPACE.
+	// PostgresCredentialNamespace is the namespace in which Redis infrastructure
+	// CRs (RedisDatabase, RedisCredential) are created. Defaults to POD_NAMESPACE.
+	// Postgres CRs are always created in the application's own namespace.
 	PostgresCredentialNamespace string
+
+	// PostgresVersion is the PostgreSQL version for provisioned PostgresDatabase
+	// CRs (e.g. "16").
+	PostgresVersion string
+	// PostgresStorageSize is the PVC size for PostgresDatabase CRs (e.g. "1Gi").
+	PostgresStorageSize string
+
+	// RedisStorageSize is the PVC size for RedisDatabase CRs (e.g. "1Gi").
+	RedisStorageSize string
 }
 
-// ApplicationReconciler reconciles Application resources.
-//
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications,verbs=list;watch
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgrescredentials,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresdatabases,verbs=get;list;watch
+// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresdatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=postgresmigrationsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=redisdatabases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=rediscredentials,verbs=get;list;watch;create;update;patch;delete
 type ApplicationReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
@@ -65,7 +84,6 @@ type ApplicationReconciler struct {
 	Config     Config
 }
 
-// Reconcile is the main reconciliation loop for Application resources.
 func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -98,18 +116,17 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return result, err
 }
 
-// reconcileDelete removes the Application's config from the stores, broadcasts
-// delete updates to connected hosts and gateways, and strips the finalizer.
 func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
+	infraNS := app.Namespace
 
 	if app.Spec.SQL != nil {
 		for _, userName := range sqlUsersForApp(app.Spec.SQL) {
 			credName := K8sCredentialName(app.Namespace, app.Name, userName)
 			var cred dboperator.PostgresCredential
 			err := r.Get(ctx, types.NamespacedName{
-				Namespace: r.Config.PostgresCredentialNamespace,
+				Namespace: infraNS,
 				Name:      credName,
 			}, &cred)
 			if err == nil {
@@ -125,7 +142,7 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 			msName := MigrationSetName(app.Namespace, app.Name)
 			var ms dboperator.PostgresMigrationSet
 			err := r.Get(ctx, types.NamespacedName{
-				Namespace: r.Config.PostgresCredentialNamespace,
+				Namespace: infraNS,
 				Name:      msName,
 			}, &ms)
 			if err == nil {
@@ -136,10 +153,20 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 				return ctrl.Result{}, fmt.Errorf("getting PostgresMigrationSet %q for deletion: %w", msName, err)
 			}
 		}
+
+		if err := r.maybeDeletePostgresDatabase(ctx, app); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if app.Spec.KV {
+		if err := r.maybeDeleteRedisDatabase(ctx, app); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	r.Store.Delete(key)
-	r.Store.BroadcastUpdate(buildDeleteUpdate(app))
+	r.Store.BroadcastUpdate(buildDeleteUpdate(r.Store, app))
 
 	oldRoutes := r.RouteStore.Get(key)
 	if len(oldRoutes) > 0 {
@@ -156,12 +183,82 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-// reconcileUpsert builds the ApplicationConfig from the spec, pushes it to the
-// store, and broadcasts an incremental update.
+func (r *ApplicationReconciler) maybeDeletePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
+	var allApps wasmplatformv1alpha1.ApplicationList
+	if err := r.List(ctx, &allApps, client.InNamespace(app.Namespace)); err != nil {
+		return fmt.Errorf("listing applications in namespace %q for Postgres cleanup: %w", app.Namespace, err)
+	}
+	for i := range allApps.Items {
+		a := &allApps.Items[i]
+		if a.Name == app.Name {
+			continue
+		}
+		if a.DeletionTimestamp.IsZero() && a.Spec.SQL != nil {
+			return nil // still needed
+		}
+	}
+
+	pgdbName := postgresDatabaseCRName(app.Namespace)
+	var pgdb dboperator.PostgresDatabase
+	err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: pgdbName}, &pgdb)
+	if err == nil {
+		if delErr := r.Delete(ctx, &pgdb); delErr != nil && !apierrors.IsNotFound(delErr) {
+			return fmt.Errorf("deleting PostgresDatabase %q: %w", pgdbName, delErr)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("getting PostgresDatabase %q for deletion: %w", pgdbName, err)
+	}
+	return nil
+}
+
+func (r *ApplicationReconciler) maybeDeleteRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
+	var allApps wasmplatformv1alpha1.ApplicationList
+	if err := r.List(ctx, &allApps); err != nil {
+		return fmt.Errorf("listing applications for Redis cleanup: %w", err)
+	}
+	for i := range allApps.Items {
+		a := &allApps.Items[i]
+		if a.Namespace == app.Namespace && a.Name == app.Name {
+			continue
+		}
+		if a.DeletionTimestamp.IsZero() && a.Spec.KV {
+			return nil // still needed
+		}
+	}
+
+	infraNS := r.Config.PostgresCredentialNamespace
+
+	var cred dboperator.RedisCredential
+	err := r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisCredExecHostName}, &cred)
+	if err == nil {
+		if delErr := r.Delete(ctx, &cred); delErr != nil && !apierrors.IsNotFound(delErr) {
+			return fmt.Errorf("deleting RedisCredential %q: %w", redisCredExecHostName, delErr)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("getting RedisCredential %q for deletion: %w", redisCredExecHostName, err)
+	}
+
+	var rdb dboperator.RedisDatabase
+	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisDatabaseName}, &rdb)
+	if err == nil {
+		if delErr := r.Delete(ctx, &rdb); delErr != nil && !apierrors.IsNotFound(delErr) {
+			return fmt.Errorf("deleting RedisDatabase %q: %w", redisDatabaseName, delErr)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("getting RedisDatabase %q for deletion: %w", redisDatabaseName, err)
+	}
+
+	if r.Store.SetRedisConfig(nil) {
+		r.Store.BroadcastUpdate(buildInfraUpdate(r.Store))
+	}
+	return nil
+}
+
 func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
+	// ── Step 1: Ensure Postgres infrastructure (if spec.sql is set) ─────────────
 	if app.Spec.SQL != nil {
 		if err := ValidatePGInputs(app.Namespace, app.Name); err != nil {
 			msg := fmt.Sprintf("cannot derive PG identifiers: %s", err)
@@ -169,26 +266,32 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			_ = r.Status().Update(ctx, app)
 			return ctrl.Result{}, nil
 		}
-		if r.Config.PostgresDatabaseName == "" {
-			msg := "spec.sql is set but PostgresDatabaseName is not configured"
-			r.setReadyCondition(app, metav1.ConditionFalse, "DatabaseConfigMissing", msg)
-			_ = r.Status().Update(ctx, app)
-			return ctrl.Result{}, nil
+
+		pgdbRequeue, err := r.reconcilePostgresDatabase(ctx, app)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
-		var pgdb dboperator.PostgresDatabase
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: r.Config.PostgresCredentialNamespace,
-			Name:      r.Config.PostgresDatabaseName,
-		}, &pgdb); err != nil {
-			if apierrors.IsNotFound(err) {
-				msg := fmt.Sprintf("PostgresDatabase %q not found", r.Config.PostgresDatabaseName)
-				r.setReadyCondition(app, metav1.ConditionFalse, "DatabaseNotFound", msg)
-				_ = r.Status().Update(ctx, app)
-				return ctrl.Result{}, nil
-			}
-			return ctrl.Result{}, fmt.Errorf("getting PostgresDatabase %q: %w", r.Config.PostgresDatabaseName, err)
+		if pgdbRequeue {
+			r.setReadyCondition(app, metav1.ConditionFalse, "DatabaseProvisioningPending", "Waiting for PostgresDatabase to reach Ready phase.")
+			_ = r.Status().Update(ctx, app)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
+
+	// ── Step 2: Ensure Redis infrastructure (if spec.kv is set) ─────────────────
+	if app.Spec.KV {
+		kvRequeue, err := r.reconcileRedisDatabase(ctx, app)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if kvRequeue {
+			r.setReadyCondition(app, metav1.ConditionFalse, "KVProvisioningPending", "Waiting for RedisDatabase and credentials to reach Ready phase.")
+			_ = r.Status().Update(ctx, app)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+	}
+
+	// ── Step 3: Build function configs ───────────────────────────────────────────
 	functions := make([]*configsync.FunctionConfig, 0, len(app.Spec.Functions))
 	for i := range app.Spec.Functions {
 		fn := &app.Spec.Functions[i]
@@ -220,6 +323,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		Namespace: app.Namespace,
 		Functions: functions,
 		Env:       app.Spec.Env,
+		KeyValue:  app.Spec.KV,
 	}
 	cfg.Metrics = buildMetricDefs(app.Spec.Metrics)
 
@@ -229,7 +333,6 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			return ctrl.Result{}, err
 		}
 		if requeue {
-			// db-operator hasn't finished provisioning the Secrets yet.
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
@@ -262,7 +365,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	}
 
 	if r.Store.Set(key, cfg) {
-		r.Store.BroadcastUpdate(buildUpsertUpdate(cfg))
+		r.Store.BroadcastUpdate(buildUpsertUpdate(r.Store, cfg))
 	}
 
 	var httpRoutes []*routestore.RouteConfig
@@ -289,15 +392,149 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-// reconcileSQLBinding ensures one PostgresCredential CR exists per SQL user
-// (or the implicit 'app' user) and returns resolved SqlUserConfig entries once
-// all db-operator Secrets are available.
+// Returns (true, nil) when pending.
+func (r *ApplicationReconciler) reconcilePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
+	infraNS := app.Namespace
+	pgdbName := postgresDatabaseCRName(app.Namespace)
+	pgVersion := r.Config.PostgresVersion
+	if pgVersion == "" {
+		pgVersion = "16"
+	}
+	pgStorageSize := r.Config.PostgresStorageSize
+	if pgStorageSize == "" {
+		pgStorageSize = "1Gi"
+	}
+
+	var pgdb dboperator.PostgresDatabase
+	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: pgdbName}, &pgdb)
+	if apierrors.IsNotFound(err) {
+		desired := &dboperator.PostgresDatabase{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pgdbName,
+				Namespace: infraNS,
+				Labels:    infraLabels(),
+			},
+			Spec: dboperator.PostgresDatabaseSpec{
+				PostgresVersion: pgVersion,
+				StorageSize:     resource.MustParse(pgStorageSize),
+			},
+		}
+		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, fmt.Errorf("creating PostgresDatabase %q: %w", pgdbName, createErr)
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting PostgresDatabase %q: %w", pgdbName, err)
+	}
+	return pgdb.Status.Phase != dboperator.DatabasePhaseReady, nil
+}
+
+// Returns (true, nil) when pending.
+func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
+	infraNS := r.Config.PostgresCredentialNamespace
+	redisStorageSize := r.Config.RedisStorageSize
+	if redisStorageSize == "" {
+		redisStorageSize = "1Gi"
+	}
+
+	var rdb dboperator.RedisDatabase
+	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisDatabaseName}, &rdb)
+	if apierrors.IsNotFound(err) {
+		desired := &dboperator.RedisDatabase{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      redisDatabaseName,
+				Namespace: infraNS,
+				Labels:    infraLabels(),
+			},
+			Spec: dboperator.RedisDatabaseSpec{
+				StorageSize: resource.MustParse(redisStorageSize),
+			},
+		}
+		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, fmt.Errorf("creating RedisDatabase %q: %w", redisDatabaseName, createErr)
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting RedisDatabase %q: %w", redisDatabaseName, err)
+	}
+	if rdb.Status.Phase != dboperator.RedisDatabasePhaseReady {
+		return true, nil
+	}
+
+	var rcred dboperator.RedisCredential
+	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisCredExecHostName}, &rcred)
+	if apierrors.IsNotFound(err) {
+		desired := &dboperator.RedisCredential{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      redisCredExecHostName,
+				Namespace: infraNS,
+				Labels:    infraLabels(),
+			},
+			Spec: dboperator.RedisCredentialSpec{
+				DatabaseRef:   redisDatabaseName,
+				Username:      "execution-host",
+				SecretName:    redisExecHostSecretName,
+				KeyPatterns:   []string{"*"},
+				ACLCategories: []dboperator.RedisACLCategory{dboperator.RedisACLCategoryAll},
+			},
+		}
+		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return false, fmt.Errorf("creating RedisCredential %q: %w", redisCredExecHostName, createErr)
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting RedisCredential %q: %w", redisCredExecHostName, err)
+	}
+	if rcred.Status.Phase != dboperator.RedisCredentialPhaseReady {
+		return true, nil
+	}
+
+	var redisSecret corev1.Secret
+	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisExecHostSecretName}, &redisSecret)
+	if apierrors.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting Redis secret %q: %w", redisExecHostSecretName, err)
+	}
+
+	redisUser := string(redisSecret.Data["REDIS_USERNAME"])
+	redisPass := string(redisSecret.Data["REDIS_PASSWORD"])
+	redisHost := string(redisSecret.Data["REDIS_HOST"])
+	redisPort := string(redisSecret.Data["REDIS_PORT"])
+	if redisHost == "" || redisPort == "" {
+		return true, nil
+	}
+
+	redisURL := (&url.URL{
+		Scheme: "redis",
+		User:   url.UserPassword(redisUser, redisPass),
+		Host:   redisHost + ":" + redisPort,
+	}).String()
+
+	redisCfg := &configsync.RedisConnectionConfig{Url: redisURL}
+	if r.Store.SetRedisConfig(redisCfg) {
+		r.Store.BroadcastUpdate(buildInfraUpdate(r.Store))
+	}
+	return false, nil
+}
+
+func infraLabels() map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/managed-by": "wp-operator",
+	}
+}
+
 // Returns (nil, true, nil) when any credential or Secret is not yet ready.
 func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) ([]*configsync.SqlUserConfig, bool, error) {
-	credNS := r.Config.PostgresCredentialNamespace
+	credNS := app.Namespace
 	dbName := PGDatabaseName(app.Namespace, app.Name)
 	userNames := sqlUsersForApp(app.Spec.SQL)
 	userPermissions := sqlPermissionsForApp(app.Spec.SQL)
+	pgdbName := postgresDatabaseCRName(app.Namespace)
 
 	var sqlUsers []*configsync.SqlUserConfig
 
@@ -313,7 +550,7 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 				credName, credNS, secretName,
 				pgUsername, dbName,
 				userPermissions[userName],
-				r.Config.PostgresDatabaseName,
+				pgdbName,
 			)
 			if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
 				return nil, false, fmt.Errorf("creating PostgresCredential %q: %w", credName, createErr)
@@ -365,11 +602,11 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 // failMsg and no automatic requeue is performed — the user must correct the artifact.
 func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *wasmplatformv1alpha1.Application) (done bool, failMsg string, err error) {
 	msName := MigrationSetName(app.Namespace, app.Name)
-	msNS := r.Config.PostgresCredentialNamespace
+	msNS := app.Namespace
 	dbName := PGDatabaseName(app.Namespace, app.Name)
 
 	desiredSpec := dboperator.PostgresMigrationSetSpec{
-		DatabaseRef:    r.Config.PostgresDatabaseName,
+		DatabaseRef:    postgresDatabaseCRName(app.Namespace),
 		Database:       dbName,
 		Artifact:       app.Spec.SQL.Migrations.Artifact,
 		TargetRevision: app.Spec.SQL.Migrations.TargetRevision,
@@ -398,7 +635,6 @@ func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *
 		return false, "", fmt.Errorf("getting PostgresMigrationSet %q: %w", msName, err)
 	}
 
-	// Patch if the artifact or target revision changed.
 	if existing.Spec.Artifact != desiredSpec.Artifact || existing.Spec.TargetRevision != desiredSpec.TargetRevision {
 		patch := client.MergeFrom(existing.DeepCopy())
 		existing.Spec.Artifact = desiredSpec.Artifact
@@ -478,8 +714,6 @@ func sqlPermissionsForApp(sql *wasmplatformv1alpha1.SQLSpec) map[string][]wasmpl
 	return out
 }
 
-// buildPostgresCredentialForUser constructs a PostgresCredential for a single
-// Application SQL user.
 func buildPostgresCredentialForUser(
 	name, namespace, secretName, pgUsername, dbName string,
 	tablePerms []wasmplatformv1alpha1.SQLTablePermission,
@@ -558,7 +792,78 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
 			}),
 		).
+		// Re-enqueue Applications in the affected namespace when a PostgresDatabase changes.
+		Watches(
+			&dboperator.PostgresDatabase{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				return r.applicationsForPostgresDatabase(ctx, obj)
+			}),
+		).
+		// Re-enqueue all Applications with spec.kv when a RedisDatabase changes.
+		Watches(
+			&dboperator.RedisDatabase{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
+				return r.allKVApplicationRequests(ctx)
+			}),
+		).
+		// Re-enqueue all Applications with spec.kv when a RedisCredential changes.
+		Watches(
+			&dboperator.RedisCredential{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
+				return r.allKVApplicationRequests(ctx)
+			}),
+		).
 		Complete(r)
+}
+
+func (r *ApplicationReconciler) allKVApplicationRequests(ctx context.Context) []reconcile.Request {
+	var list wasmplatformv1alpha1.ApplicationList
+	if err := r.List(ctx, &list); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		if list.Items[i].Spec.KV {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: list.Items[i].Namespace,
+					Name:      list.Items[i].Name,
+				},
+			})
+		}
+	}
+	return reqs
+}
+
+// The CR name format is "wasm-<namespace>-postgres".
+func (r *ApplicationReconciler) applicationsForPostgresDatabase(ctx context.Context, obj client.Object) []reconcile.Request {
+	crName := obj.GetName()
+	const prefix = "wasm-"
+	const suffix = "-postgres"
+	if len(crName) <= len(prefix)+len(suffix) {
+		return nil
+	}
+	if crName[:len(prefix)] != prefix || crName[len(crName)-len(suffix):] != suffix {
+		return nil
+	}
+	namespace := crName[len(prefix) : len(crName)-len(suffix)]
+
+	var list wasmplatformv1alpha1.ApplicationList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		if list.Items[i].Spec.SQL != nil {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: list.Items[i].Namespace,
+					Name:      list.Items[i].Name,
+				},
+			})
+		}
+	}
+	return reqs
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -619,8 +924,6 @@ func topicOwnerLess(a, b *wasmplatformv1alpha1.Application) bool {
 
 // ── metric name ownership ─────────────────────────────────────────────────────
 
-// findMetricOwner returns the Application that rightfully owns the given metric
-// name, or nil if app itself is the rightful owner (or the sole claimant).
 // Ownership follows the same tiebreak as topics: oldest creationTimestamp wins;
 // ties break on namespace/name lexicographic order.
 func findMetricOwner(ctx context.Context, c client.Client, metricName string, self *wasmplatformv1alpha1.Application) (*wasmplatformv1alpha1.Application, error) {
@@ -643,16 +946,17 @@ func findMetricOwner(ctx context.Context, c client.Client, metricName string, se
 	return owner, nil
 }
 
-func buildUpsertUpdate(cfg *configsync.ApplicationConfig) *configsync.IncrementalConfig {
+func buildUpsertUpdate(store *configstore.Store, cfg *configsync.ApplicationConfig) *configsync.IncrementalConfig {
 	now := time.Now().UnixMilli()
 	return &configsync.IncrementalConfig{
 		Version:   fmt.Sprintf("%d", now),
 		Updates:   []*configsync.AppUpdate{{AppConfig: cfg, Delete: false}},
 		Timestamp: now,
+		Redis:     store.RedisConfig(),
 	}
 }
 
-func buildDeleteUpdate(app *wasmplatformv1alpha1.Application) *configsync.IncrementalConfig {
+func buildDeleteUpdate(store *configstore.Store, app *wasmplatformv1alpha1.Application) *configsync.IncrementalConfig {
 	now := time.Now().UnixMilli()
 	return &configsync.IncrementalConfig{
 		Version: fmt.Sprintf("%d", now),
@@ -666,6 +970,19 @@ func buildDeleteUpdate(app *wasmplatformv1alpha1.Application) *configsync.Increm
 			},
 		},
 		Timestamp: now,
+		Redis:     store.RedisConfig(),
+	}
+}
+
+// buildInfraUpdate constructs an incremental config carrying only the current
+// infrastructure connection state (no app updates).  Used when NATS or Redis
+// presence changes independently of any application reconcile.
+func buildInfraUpdate(store *configstore.Store) *configsync.IncrementalConfig {
+	now := time.Now().UnixMilli()
+	return &configsync.IncrementalConfig{
+		Version:   fmt.Sprintf("%d", now),
+		Timestamp: now,
+		Redis:     store.RedisConfig(),
 	}
 }
 

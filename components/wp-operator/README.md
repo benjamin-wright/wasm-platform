@@ -4,7 +4,7 @@ A Kubernetes operator that watches `Application` CRDs and reconciles platform re
 
 ## Application CRD
 
-Each `Application` declares one or more deployable WASM functions and their shared runtime requirements.  Functions are listed under `spec.functions`; each function has its own module reference and trigger (exactly one of `trigger.http` or `trigger.topic`).  Application-level fields (`spec.env`, `spec.sql`) are shared across all functions.  KV access is available to every application automatically, with no opt-in field required.
+Each `Application` declares one or more deployable WASM functions and their shared runtime requirements.  Functions are listed under `spec.functions`; each function has its own module reference and trigger (exactly one of `trigger.http` or `trigger.topic`).  Application-level fields (`spec.env`, `spec.sql`, `spec.kv`) are shared across all functions.
 
 ### Examples
 
@@ -72,6 +72,7 @@ spec:
 | `spec.sql.migrations` | MigrationsSpec | no | Database migrations configuration. When set, the operator creates a `PostgresMigrationSet` CR (managed by the db-operator) and withholds function activation until it reaches `Ready` phase. See [Application Authoring — Database Migrations](#database-migrations). |
 | `spec.sql.migrations.artifact` | string | yes (when `migrations` set) | ORAS artifact reference to a tar+gzip of SQL migration files. Media type `application/vnd.db-operator.migrations.v1.tar+gzip`. Use an immutable tag or digest. |
 | `spec.sql.migrations.targetRevision` | int64 | yes (when `migrations` set) | Numeric migration ID to converge the database to. Must match a revision present in the artifact. The db-operator runs all pending apply migrations up to and including this ID; if the database is currently at a higher revision, it runs rollbacks down to it. |
+| `spec.kv` | bool | no | Key-value store access. When `true`, the operator provisions a cluster-wide `RedisDatabase` and a `RedisCredential` for the execution host if they do not already exist. When `false` or absent, no KV access is provisioned. |
 | `spec.metrics` | []MetricDefinition | no | User-defined Prometheus metrics (max 50). Each metric has a `name`, `type` (`counter`/`gauge`), and optional `labels` (max 10). Names must follow `[a-zA-Z_:][a-zA-Z0-9_:]{0,63}$` and must not start with `__`. Labels must not include `app_name` or `app_namespace` (host-injected). |
 
 **`spec.sql.users[]` (when explicit users are listed):**
@@ -183,21 +184,39 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 **On create/update:**
 
 1. The admission webhook has already enforced topic uniqueness, metric name uniqueness, and identifier constraints before the reconciler runs. The reconciler re-validates the identifier constraint as defense-in-depth.
-2. If `spec.sql` is set:
+2. **NATS infrastructure (always):** ensures a `NatsCluster` CR (`wasm-platform-nats`) and two `NatsAccount` CRs (`wasm-platform-nats-execution-host` and `wasm-platform-nats-gateway`) exist in the operator namespace and are `Ready`. While any is pending, sets `Ready: False, reason: NatsProvisioningPending` and requeues every 5 s. Once ready, reads the execution-host NATS Secret and publishes the connection info to all connected execution hosts via configsync.
+3. If `spec.sql` is set:
    a. Validates that namespace and app name contain no consecutive hyphens (`--`).
-   b. Checks that `Config.PostgresDatabaseName` is configured and the named `PostgresDatabase` CR exists.
+   b. Derives the PostgresDatabase CR name as `wasm-<namespace>-postgres`; creates the CR (in the application's own namespace, using `databases.postgres.version` and `databases.postgres.storageSize` from Helm values) if not present. Returns `RequeueAfter: 5s` while the DB is provisioning.
    c. Creates one `PostgresCredential` CR per SQL user (including the implicit `app` user when `spec.sql.users` is absent). Each credential targets the derived PG username, derived database name, and declared privileges.
    d. Waits until all credentials reach `Ready` phase and their Secrets are available. Returns `RequeueAfter: 5s` while any credential or Secret is pending.
-   e. If `spec.sql.migrations` is set: creates (or patches) a `PostgresMigrationSet` CR named `wasm-<namespace>-<app_name>-migrations` with `spec.artifact` and `spec.targetRevision` from the Application. Returns `RequeueAfter: 5s` while the set is `Pending` or `Running`. If the set reports `Failed`, sets `Ready: False, reason: MigrationFailed` (with the failure message from the set's status conditions) and stops requeueing — update `spec.sql.migrations.artifact` or `targetRevision` to retry. The set is watched, so status changes re-enqueue the Application without polling.
-   f. Assembles per-user connection URLs from the db-operator Secrets (`PGUSER`, `PGPASSWORD`, `PGHOST`, `PGPORT`) and the derived database name.
-3. Pushes an incremental config update (with all functions) to all connected execution hosts via `PushIncrementalUpdate`.
-4. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
+   e. If `spec.sql.migrations` is set: creates (or patches) a `PostgresMigrationSet` CR named `wasm-<namespace>-<app_name>-migrations`. Returns `RequeueAfter: 5s` while pending/running; surfaces failures as `Ready: False, reason: MigrationFailed`.
+   f. Assembles per-user connection URLs from the db-operator Secrets and the derived database name.
+4. If `spec.kv` is set: ensures a `RedisDatabase` CR (`wasm-platform-redis`) and `RedisCredential` (`wasm-platform-redis-execution-host`) exist in the operator namespace. Returns `RequeueAfter: 5s` while pending. Once ready, reads the Redis Secret and publishes the connection URL to all connected execution hosts via configsync.
+5. Pushes an incremental config update (with all functions and current infra connection info) to all connected execution hosts via `PushIncrementalUpdate`.
+6. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
 
 **On delete:**
 
 1. Pushes a delete config update to execution hosts.
 2. Pushes route delete updates for all HTTP-triggered functions to gateways.
-3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs. The db-operator cleans up the PG users; the database itself persists until the `PostgresDatabase` CR is removed. If `spec.sql.migrations` was set, the `PostgresMigrationSet` CR is also deleted.
+3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs. The db-operator cleans up the PG users; the `PostgresDatabase` CR is also deleted (it is per-namespace; if another Application in the same namespace still uses SQL, the CR is preserved).
+4. If `spec.kv` is set and no other Application in the cluster has `spec.kv`, deletes the `RedisCredential` and `RedisDatabase` CRs.
+
+## Infrastructure CR Naming
+
+NATS and Redis CRs are created in the operator's own namespace (`POD_NAMESPACE`). PostgreSQL CRs are created in the same namespace as the Application that requested them.
+
+| Resource | CR name | Namespace |
+|---|---|---|
+| `NatsCluster` | `wasm-platform-nats` | operator namespace |
+| `NatsAccount` (execution host) | `wasm-platform-nats-execution-host` | operator namespace |
+| `NatsAccount` (gateway) | `wasm-platform-nats-gateway` | operator namespace |
+| `PostgresDatabase` | `wasm-<namespace>-postgres` | application namespace |
+| `RedisDatabase` | `wasm-platform-redis` | operator namespace |
+| `RedisCredential` (execution host) | `wasm-platform-redis-execution-host` | operator namespace |
+
+All operator-managed CRs carry the label `app.kubernetes.io/managed-by: wp-operator`.
 
 ## SQL Credential Lifecycle
 
@@ -205,7 +224,7 @@ For each SQL user (or the synthetic `app` user when `spec.sql: {}`):
 
 - **`PostgresCredential` name:** `wasm-<namespace>-<app_name>-<user_name>-pg` (Kubernetes-name-safe; hash-truncated at 238 chars to leave room for suffixes).
 - **Secret name:** `wasm-<namespace>-<app_name>-<user_name>-pg-creds` (created by db-operator).
-- **Namespace:** the operator's own namespace (`POD_NAMESPACE`).
+- **Namespace:** the same namespace as the Application.
 - **Privileges:** declared in `spec.sql.users[*].permissions`; defaults to `ALL` on all tables when permissions are absent.
 
 When `spec.sql.migrations` is set, the operator additionally creates a `PostgresMigrationSet` CR (one per Application) that the db-operator reconciles — see [Database Migrations](#database-migrations). The set is named `wasm-<namespace>-<app_name>-migrations` and is deleted alongside the user credentials on Application deletion. The migrations runner uses an internal db-operator-owned role; the wp-operator does not provision a separate `migrations` `PostgresCredential`.
@@ -252,8 +271,9 @@ wp-operator exposes a validating admission webhook on port 9443, registered as `
 | Condition | Description |
 |-----------|-------------|
 | `Ready` | `True` when config is pushed to all hosts. `False` while provisioning or on error. |
-| `DatabaseConfigMissing` | Set when `spec.sql` is present but `PostgresDatabaseName` is not configured. |
-| `DatabaseNotFound` | Set when the named `PostgresDatabase` CR does not exist. |
+| `NatsProvisioningPending` | Set while `NatsCluster` or `NatsAccount` CRs are not yet `Ready`. |
+| `PostgresProvisioningPending` | Set while the per-namespace `PostgresDatabase` CR is not yet `Ready`. |
+| `RedisProvisioningPending` | Set while the `RedisDatabase` or `RedisCredential` CR is not yet `Ready` (only when `spec.kv` is set). |
 | `InvalidIdentifier` | Set when namespace or app name contains consecutive hyphens, preventing PG identifier derivation. |
 | `MigrationsRunning` | Set while the `PostgresMigrationSet` is in `Pending` or `Running` phase. |
 | `MigrationFailed` | Set when the `PostgresMigrationSet` reports `Failed`. Message is copied from the set's status conditions. No automatic retry — update `spec.sql.migrations.artifact` or `targetRevision` to trigger a new run. |
@@ -264,4 +284,3 @@ wp-operator exposes a validating admission webhook on port 9443, registered as `
 |-------|-------------|
 | `status.sqlDatabaseName` | Derived PostgreSQL database name. Populated when `spec.sql` is set. |
 | `status.sqlUsernames` | Derived PostgreSQL usernames, one per provisioned user. Populated when `spec.sql` is set. |
-

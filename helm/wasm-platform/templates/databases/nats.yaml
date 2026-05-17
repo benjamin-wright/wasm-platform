@@ -1,54 +1,31 @@
 apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
 kind: NatsCluster
 metadata:
-  name: {{ .Release.Name }}-nats
+  name: wasm-platform-nats
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: wasm-platform
 spec:
   natsVersion: {{ .Values.databases.nats.version | quote }}
   jetStream:
-    storageSize: {{ .Values.databases.nats.jetStream.storageSize }}
+    storageSize: {{ .Values.databases.nats.jetStream.storageSize | quote }}
 ---
 apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
 kind: NatsAccount
 metadata:
-  name: {{ .Release.Name }}-nats-wp-operator
+  name: wasm-platform-nats-execution-host
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: wasm-platform
 spec:
-  clusterRef: {{ .Release.Name }}-nats
+  clusterRef: wasm-platform-nats
   users:
-    - username: {{ .Values.databases.nats.wpOperator.username }}
-      secretName: {{ .Values.databases.nats.wpOperator.secretName }}
-      permissions:
-        publish:
-          allow:
-            - ">"
-        subscribe:
-          allow:
-            - ">"
----
-apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
-kind: NatsAccount
-metadata:
-  name: {{ .Release.Name }}-nats-execution-host
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
-spec:
-  clusterRef: {{ .Release.Name }}-nats
-  users:
-    - username: {{ .Values.databases.nats.executionHost.username }}
-      secretName: {{ .Values.databases.nats.executionHost.secretName }}
-      permissions:
-        publish:
-          allow:
-            - ">"
-        subscribe:
-          allow:
-            - ">"
+    - username: execution-host
+      secretName: execution-host-nats-credentials
   exports:
     - subject: "http.>"
       type: service
@@ -58,23 +35,18 @@ spec:
 apiVersion: db-operator.benjamin-wright.github.com/v1alpha1
 kind: NatsAccount
 metadata:
-  name: {{ .Release.Name }}-nats-gateway
+  name: wasm-platform-nats-gateway
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "wasm-platform.databases.labels" . | nindent 4 }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: wasm-platform
 spec:
-  clusterRef: {{ .Release.Name }}-nats
+  clusterRef: wasm-platform-nats
   users:
-    - username: {{ .Values.databases.nats.gateway.username }}
-      secretName: {{ .Values.databases.nats.gateway.secretName }}
-      permissions:
-        publish:
-          allow:
-            - ">"
-        subscribe:
-          allow:
-            - ">"
+    - username: gateway
+      secretName: gateway-nats-credentials
   imports:
-    - account: {{ .Release.Name }}-nats-execution-host
+    - account: wasm-platform-nats-execution-host
       subject: "http.>"
       type: service

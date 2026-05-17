@@ -140,6 +140,12 @@ spec:
                 maxItems: 50
                 minItems: 1
                 type: array
+              kv:
+                description: |-
+                  KV enables key-value store access for this Application.
+                  When true, a cluster-wide RedisDatabase is provisioned and a per-app key prefix
+                  is assigned automatically. When false or absent, no KV access is provisioned.
+                type: boolean
               metrics:
                 description: |-
                   Metrics is the list of user-defined Prometheus metrics declared by this Application.
@@ -185,12 +191,6 @@ spec:
                       || l == ''app_namespace'')'
                 maxItems: 50
                 type: array
-              kv:
-                description: |-
-                  KV enables key-value store access for this Application.
-                  When true, a cluster-wide RedisDatabase is provisioned and a per-app key prefix
-                  is assigned automatically. When false or absent, no KV access is provisioned.
-                type: boolean
               sql:
                 description: |-
                   SQL configures optional SQL database access for this Application.

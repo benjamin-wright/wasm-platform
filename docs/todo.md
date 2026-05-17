@@ -38,27 +38,27 @@ Trigger the `e2e-tests` resource via the Tilt MCP server. The suite must pass wi
 The wp-operator currently relies on hand-provisioned database infrastructure: the Helm chart creates the `PostgresDatabase`, `NatsCluster`, and `RedisDatabase` CRs that the platform depends on, and the operator references the Postgres instance by a static config value. This phase transfers lifecycle ownership to wp-operator so that infrastructure is created and deleted in response to demand, removing the need for pre-provisioned instances and static Helm values.
 
 **Provisioning rules:**
-- **NATS:** one `NatsCluster` CR (`wasm-platform-nats`) created cluster-wide when the first `Application` is created; deleted when the last `Application` is deleted.
-- **Redis:** one `RedisDatabase` CR (`wasm-platform-redis`) created cluster-wide when the first `Application` with `spec.kv` set is created; deleted when no `Application` with `spec.kv` remains. Because Redis lifecycle is gated on an explicit opt-in, a `spec.kv: {}` field is added to `Application` (parallel to `spec.sql`). Existing apps using KV without `spec.kv` will need to add the field; key-prefix isolation continues to be applied automatically.
+- **NATS:** the `NatsCluster` CR (`wasm-platform-nats`) and both `NatsAccount` CRs (`wasm-platform-nats-execution-host`, `wasm-platform-nats-gateway`) are provisioned by the Helm chart and are always present. NATS is the platform's transport layer — execution-host and gateway both require it for readiness regardless of whether any Applications exist. The operator reads the `execution-host-nats-credentials` Secret (produced by db-operator from the NatsAccount) and distributes NATS connection info to execution hosts via configsync. The operator does not manage the NATS CR lifecycle.
+- **Redis:** one `RedisDatabase` CR (`wasm-platform-redis`) created cluster-wide when the first `Application` with `spec.kv: true` is created; deleted when no `Application` with `spec.kv` remains. Because Redis lifecycle is gated on an explicit opt-in, a `spec.kv: true` field is added to `Application` (parallel to `spec.sql`). Existing apps using KV without `spec.kv` will need to add the field; key-prefix isolation continues to be applied automatically.
 - **Postgres:** one `PostgresDatabase` CR per namespace (`wasm-<namespace>-postgres`) created when the first `Application` with `spec.sql` in that namespace is created; deleted when no `Application` with `spec.sql` remains in that namespace.
 
-NATS and Redis credentials use deterministically-named Secrets (e.g. `wasm-platform-nats-credentials`, `wasm-platform-redis-credentials`). wp-operator distributes connection info to execution hosts via the existing configsync gRPC stream — presence or absence of a connection type in an incremental update prompts the host to connect or disconnect accordingly. The `databases.postgresDatabaseName` Helm value and associated operator config are removed; the Postgres CR name is derived from the Application namespace.
+Redis credentials use a deterministically-named Secret (`execution-host-redis-credentials`). wp-operator distributes connection info to execution hosts via the existing configsync gRPC stream — presence or absence of a connection type in an incremental update prompts the host to connect or disconnect accordingly. The `databases.postgresDatabaseName` Helm value and associated operator config are removed; the Postgres CR name is derived from the Application namespace.
 
 ### Tasks
 
 - [ ] Add `spec.kv: true` opt-in field to `Application` CRD; update execution-host to conditionally connect to Redis based on config presence; document the migration path for existing apps.
-- [ ] wp-operator creates/deletes one `NatsCluster` CR cluster-wide in response to `Application` create/delete events.
+- [x] Add `NatsCluster` and both `NatsAccount` CRs to the Helm chart; remove all NATS lifecycle management from the operator and configsync proto — execution-host reads NATS credentials directly from the mounted `execution-host-nats-credentials` Secret volume (same pattern as gateway), eliminating the operator's role in NATS connection distribution entirely.
 - [ ] wp-operator creates/deletes one `PostgresDatabase` CR per namespace when Applications with `spec.sql` are created/deleted in that namespace; remove `databases.postgresDatabaseName` config value.
 - [ ] wp-operator creates/deletes one `RedisDatabase` CR cluster-wide when Applications with `spec.kv` are created/deleted.
 - [ ] Extend the configsync proto to carry NATS and Redis connection info; wp-operator sends presence/absence of each connection type in incremental updates; execution host connects/disconnects accordingly.
-- [ ] Remove database CR provisioning from the Helm chart; update Helm values and chart documentation.
+- [ ] Remove Postgres and Redis CR provisioning from the Helm chart; update Helm values and chart documentation.
 - [ ] Gate Application `Ready` on required infrastructure CRs reaching `Ready` phase; add status conditions for infrastructure provisioning state.
 - [ ] Update wp-operator README and `docs/architecture.md` to reflect the new ownership model.
 - [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
 
 ### Verification
 
-Trigger the `e2e-tests` resource via the Tilt MCP server. The suite must pass with tests confirming: (1) creating the first `Application` causes a `NatsCluster` CR to be provisioned; (2) creating an `Application` with `spec.sql` causes a `PostgresDatabase` CR to be provisioned in that namespace; (3) creating an `Application` with `spec.kv` causes a `RedisDatabase` CR to be provisioned; (4) deleting all Applications in a namespace results in the corresponding infrastructure CRs being deleted; (5) existing `Application` workflows (HTTP, SQL, KV) continue to function end-to-end.
+Trigger the `e2e-tests` resource via the Tilt MCP server. The suite must pass with tests confirming: (1) creating an `Application` with `spec.sql` causes a `PostgresDatabase` CR to be provisioned in that namespace; (2) creating an `Application` with `spec.kv` causes a `RedisDatabase` CR to be provisioned; (3) deleting all Applications in a namespace results in the corresponding Postgres and Redis infrastructure CRs being deleted; (4) existing `Application` workflows (HTTP, SQL, KV) continue to function end-to-end.
 
 ---
 

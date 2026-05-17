@@ -20,9 +20,10 @@ use metrics::MetricsRegistry;
 use modules::ModuleRegistry;
 use platform_common::health::{self, ReadyState};
 use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
+use platform_common::nats_client::NatsConnectionInfo;
 use runtime::{RuntimeState, invoke_on_message, invoke_on_request};
 use sql_pool::SqlPoolMap;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::{Arc, RwLock};
 use wasmtime::Engine;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -60,19 +61,11 @@ async fn main() -> Result<()> {
 
     let engine = Engine::new(&wasm_config)?;
 
-    let redis_client = match std::env::var("REDIS_URL") {
-        Ok(url) => {
-            tracing::info!(%url, "connecting to Redis");
-            Some(
-                redis::Client::open(url.as_str())
-                    .map_err(|e| anyhow::anyhow!("invalid REDIS_URL: {e}"))?,
-            )
-        }
-        Err(_) => {
-            tracing::warn!("REDIS_URL not set; kv host functions will be unavailable");
-            None
-        }
-    };
+    // Redis client is managed dynamically: configsync delivers the URL when
+    // the operator provisions the RedisDatabase; the watcher task keeps
+    // this shared cell up-to-date so invocations always use current creds.
+    let redis_client: Arc<RwLock<Option<redis::Client>>> = Arc::new(RwLock::new(None));
+    tracing::info!("Redis client will be configured via configsync");
 
     let metrics_registry = MetricsRegistry::new()?;
 
@@ -82,7 +75,7 @@ async fn main() -> Result<()> {
         .unwrap_or(5);
     let sql_pools = SqlPoolMap::new(pg_pool_max);
 
-    let state = Arc::new(RuntimeState::new(engine.clone(), redis_client, metrics_registry.clone(), Arc::clone(&sql_pools), fuel_limit, memory_limit_bytes)?);
+    let state = Arc::new(RuntimeState::new(engine.clone(), Arc::clone(&redis_client), metrics_registry.clone(), Arc::clone(&sql_pools), fuel_limit, memory_limit_bytes)?);
 
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
@@ -95,10 +88,6 @@ async fn main() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("CONFIG_SYNC_ADDR environment variable is required"))?;
     let host_id = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
 
-    let credentials_path = std::env::var("NATS_CREDENTIALS_PATH")
-        .map(PathBuf::from)
-        .map_err(|_| anyhow::anyhow!("NATS_CREDENTIALS_PATH environment variable is required"))?;
-
     let app_registry = AppRegistry::new();
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
     let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<async_nats::Message>(256);
@@ -107,6 +96,17 @@ async fn main() -> Result<()> {
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
 
     let (client_tx, client_rx) = tokio::sync::watch::channel::<Option<async_nats::Client>>(None);
+
+    // Channels that configsync populates with infrastructure connection info
+    // received from the operator's configsync gRPC stream.
+    let (redis_url_tx, mut redis_url_rx) = tokio::sync::watch::channel::<Option<String>>(None);
+
+    // NATS credentials are read once from the Secret volume mounted at
+    // NATS_CREDENTIALS_PATH.  The watch channel is initialised with the
+    // static value so run_nats_manager connects immediately on startup.
+    let nats_conn_info = read_nats_credentials()?;
+    let (_nats_conn_tx, nats_conn_rx) =
+        tokio::sync::watch::channel::<Option<NatsConnectionInfo>>(Some(nats_conn_info));
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
@@ -120,8 +120,34 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx_for_sigterm.send(());
     });
 
+    // Watch redis_url_rx and keep the shared redis_client cell up-to-date.
+    let redis_client_for_watcher = Arc::clone(&redis_client);
+    tokio::spawn(async move {
+        loop {
+            if redis_url_rx.changed().await.is_err() {
+                break;
+            }
+            let url_opt = redis_url_rx.borrow_and_update().clone();
+            let new_client = url_opt.and_then(|url| {
+                match redis::Client::open(url.as_str()) {
+                    Ok(c) => {
+                        tracing::info!(%url, "Redis client configured from configsync");
+                        Some(c)
+                    }
+                    Err(e) => {
+                        tracing::warn!("invalid Redis URL from configsync: {e}");
+                        None
+                    }
+                }
+            });
+            if let Ok(mut guard) = redis_client_for_watcher.write() {
+                *guard = new_client;
+            }
+        }
+    });
+
     tokio::spawn(nats::run_nats_manager(
-        credentials_path,
+        nats_conn_rx,
         client_tx,
         nats_ready_tx,
     ));
@@ -135,6 +161,7 @@ async fn main() -> Result<()> {
         topics_tx,
         synced_tx,
         sql_pools,
+        redis_url_tx,
     ));
     tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx, shutdown_tx.subscribe()));
 
@@ -250,6 +277,7 @@ async fn process_nats_messages(
         let function_name = fn_entry.function_name.clone();
         let world_type = fn_entry.world_type;
         let sql_username = fn_entry.sql_username.clone();
+        let kv_enabled = fn_entry.kv_enabled;
         let nats_for_invoke = client_snapshot.clone();
 
         let trigger = match world_type {
@@ -270,7 +298,7 @@ async fn process_nats_messages(
             let task = match world_type {
                 config::configsync::WorldType::Message => {
                     tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username)
+                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username, kv_enabled)
                     })
                 }
                 config::configsync::WorldType::Http => {
@@ -279,7 +307,7 @@ async fn process_nats_messages(
                             serde_json::from_slice(&payload).map_err(|e| {
                                 anyhow::anyhow!("failed to decode HTTP request payload: {e}")
                             })?;
-                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name, sql_username)?;
+                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name, sql_username, kv_enabled)?;
                         let bytes = serde_json::to_vec(&response).map_err(|e| {
                             anyhow::anyhow!("failed to encode HTTP response payload: {e}")
                         })?;
@@ -387,4 +415,28 @@ async fn metrics_handler(State(registry): State<MetricsRegistry>) -> impl IntoRe
             axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// Reads NATS connection credentials from the directory mounted at
+/// `NATS_CREDENTIALS_PATH`.  The directory is a Kubernetes Secret volume where
+/// each Secret key becomes a file: `NATS_HOST`, `NATS_PORT`, `NATS_USERNAME`,
+/// `NATS_PASSWORD`.
+fn read_nats_credentials() -> anyhow::Result<NatsConnectionInfo> {
+    let dir = std::env::var("NATS_CREDENTIALS_PATH")
+        .map_err(|_| anyhow::anyhow!("NATS_CREDENTIALS_PATH environment variable is required"))?;
+    let read = |key: &str| -> anyhow::Result<String> {
+        let path = std::path::Path::new(&dir).join(key);
+        std::fs::read_to_string(&path)
+            .map(|s| s.trim().to_string())
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))
+    };
+    let host = read("NATS_HOST")?;
+    let port = read("NATS_PORT")?;
+    let username = read("NATS_USERNAME")?;
+    let password = read("NATS_PASSWORD")?;
+    Ok(NatsConnectionInfo {
+        url: format!("nats://{}:{}", host, port),
+        username,
+        password,
+    })
 }

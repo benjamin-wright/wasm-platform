@@ -13,11 +13,6 @@ wpOperator:
   replicaCount: 1
   grpc:
     port: 50051
-  # databases configures how the reconciler discovers db-operator-provisioned
-  # credentials. Set postgresDatabaseName to the name of the PostgresDatabase CR,
-  # which by convention is <release-name>-postgres.
-  databases:
-    postgresDatabaseName: ""
 
 executionHost:
   image:
@@ -34,10 +29,6 @@ executionHost:
   replicaCount: 1
   wasmMemoryLimitMb: 64
   # wasmFuelLimit: 500000000  # Optional: set to enable fuel metering (max WASM instructions per invocation). Unset disables fuel metering.
-  nats:
-    secretName: execution-host-nats-credentials
-  redis:
-    secretName: execution-host-redis-credentials
   configSync:
     serverAddr: "http://wp-operator-grpc:50051"
   moduleCache:
@@ -84,28 +75,16 @@ moduleCache:
   replicaCount: 1
   logLevel: info
 
+# databases configures the resource sizes and versions for operator-provisioned infrastructure CRs
+# (PostgresDatabase, RedisDatabase) and for the Helm-provisioned NATS infrastructure
+# (NatsCluster, NatsAccount).
 databases:
   postgres:
     version: "16"
     storageSize: 1Gi
   redis:
     storageSize: 1Gi
-    wpOperator:
-      username: wp-operator
-      secretName: wp-operator-redis-credentials
-    executionHost:
-      username: execution-host
-      secretName: execution-host-redis-credentials
   nats:
     version: "2.10"
     jetStream:
       storageSize: 1Gi
-    wpOperator:
-      username: wp-operator
-      secretName: wp-operator-nats-credentials
-    executionHost:
-      username: execution-host
-      secretName: execution-host-nats-credentials
-    gateway:
-      username: gateway
-      secretName: gateway-nats-credentials

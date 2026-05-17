@@ -11,8 +11,7 @@ import (
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 )
 
-// ApplicationValidator is a validating admission webhook handler for Application resources.
-// It enforces TopicConflict, MetricConflict, and InvalidIdentifier constraints at admission
+// Enforces TopicConflict, MetricConflict, and InvalidIdentifier constraints at admission
 // time so that violations are rejected immediately on kubectl apply rather than surfacing
 // only as status conditions post-reconciliation.
 //
@@ -22,7 +21,6 @@ type ApplicationValidator struct {
 	Decoder admission.Decoder
 }
 
-// Handle validates an incoming Application create or update request.
 func (v *ApplicationValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	app := &wasmplatformv1alpha1.Application{}
 	if err := v.Decoder.Decode(req, app); err != nil {

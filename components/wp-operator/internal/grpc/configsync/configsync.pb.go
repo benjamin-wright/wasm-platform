@@ -231,6 +231,7 @@ type FullConfig struct {
 	Version       string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
 	Applications  []*ApplicationConfig   `protobuf:"bytes,2,rep,name=applications,proto3" json:"applications,omitempty"`
 	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	Redis         *RedisConnectionConfig `protobuf:"bytes,4,opt,name=redis,proto3,oneof" json:"redis,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -284,6 +285,13 @@ func (x *FullConfig) GetTimestamp() int64 {
 		return x.Timestamp
 	}
 	return 0
+}
+
+func (x *FullConfig) GetRedis() *RedisConnectionConfig {
+	if x != nil {
+		return x.Redis
+	}
+	return nil
 }
 
 type IncrementalUpdateRequest struct {
@@ -411,6 +419,7 @@ type IncrementalConfig struct {
 	Version       string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
 	Updates       []*AppUpdate           `protobuf:"bytes,2,rep,name=updates,proto3" json:"updates,omitempty"`
 	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	Redis         *RedisConnectionConfig `protobuf:"bytes,4,opt,name=redis,proto3,oneof" json:"redis,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -464,6 +473,13 @@ func (x *IncrementalConfig) GetTimestamp() int64 {
 		return x.Timestamp
 	}
 	return 0
+}
+
+func (x *IncrementalConfig) GetRedis() *RedisConnectionConfig {
+	if x != nil {
+		return x.Redis
+	}
+	return nil
 }
 
 type AppUpdate struct {
@@ -529,6 +545,7 @@ type ApplicationConfig struct {
 	Functions     []*FunctionConfig      `protobuf:"bytes,3,rep,name=functions,proto3" json:"functions,omitempty"`
 	Env           map[string]string      `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	SqlUsers      []*SqlUserConfig       `protobuf:"bytes,5,rep,name=sql_users,json=sqlUsers,proto3" json:"sql_users,omitempty"`
+	KeyValue      bool                   `protobuf:"varint,6,opt,name=key_value,json=keyValue,proto3" json:"key_value,omitempty"`
 	Metrics       []*MetricDefinition    `protobuf:"bytes,7,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -597,6 +614,13 @@ func (x *ApplicationConfig) GetSqlUsers() []*SqlUserConfig {
 		return x.SqlUsers
 	}
 	return nil
+}
+
+func (x *ApplicationConfig) GetKeyValue() bool {
+	if x != nil {
+		return x.KeyValue
+	}
+	return false
 }
 
 func (x *ApplicationConfig) GetMetrics() []*MetricDefinition {
@@ -866,6 +890,53 @@ func (x *MetricDefinition) GetLabelKeys() []string {
 	return nil
 }
 
+// RedisConnectionConfig carries the full Redis connection URL (including
+// credentials) for the execution-host account.  Absent means Redis is not
+// yet provisioned and the execution host should disconnect.
+type RedisConnectionConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RedisConnectionConfig) Reset() {
+	*x = RedisConnectionConfig{}
+	mi := &file_configsync_v1_configsync_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RedisConnectionConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RedisConnectionConfig) ProtoMessage() {}
+
+func (x *RedisConnectionConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_configsync_v1_configsync_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RedisConnectionConfig.ProtoReflect.Descriptor instead.
+func (*RedisConnectionConfig) Descriptor() ([]byte, []int) {
+	return file_configsync_v1_configsync_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RedisConnectionConfig) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
 var File_configsync_v1_configsync_proto protoreflect.FileDescriptor
 
 const file_configsync_v1_configsync_proto_rawDesc = "" +
@@ -878,12 +949,14 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\x12FullConfigResponse\x121\n" +
 	"\x06config\x18\x01 \x01(\v2\x19.configsync.v1.FullConfigR\x06config\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x8a\x01\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xd5\x01\n" +
 	"\n" +
 	"FullConfig\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12D\n" +
 	"\fapplications\x18\x02 \x03(\v2 .configsync.v1.ApplicationConfigR\fapplications\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"\x91\x01\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12?\n" +
+	"\x05redis\x18\x04 \x01(\v2$.configsync.v1.RedisConnectionConfigH\x00R\x05redis\x88\x01\x01B\b\n" +
+	"\x06_redis\"\x91\x01\n" +
 	"\x18IncrementalUpdateRequest\x12O\n" +
 	"\x12incremental_config\x18\x01 \x01(\v2 .configsync.v1.IncrementalConfigR\x11incrementalConfig\x12$\n" +
 	"\x0etarget_host_id\x18\x02 \x01(\tR\ftargetHostId\"\x8c\x01\n" +
@@ -891,21 +964,24 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x12'\n" +
 	"\x0fversion_applied\x18\x02 \x01(\tR\x0eversionApplied\x12\x18\n" +
 	"\asuccess\x18\x03 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x04 \x01(\tR\amessage\"\x7f\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"\xca\x01\n" +
 	"\x11IncrementalConfig\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x122\n" +
 	"\aupdates\x18\x02 \x03(\v2\x18.configsync.v1.AppUpdateR\aupdates\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"d\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12?\n" +
+	"\x05redis\x18\x04 \x01(\v2$.configsync.v1.RedisConnectionConfigH\x00R\x05redis\x88\x01\x01B\b\n" +
+	"\x06_redis\"d\n" +
 	"\tAppUpdate\x12?\n" +
 	"\n" +
 	"app_config\x18\x01 \x01(\v2 .configsync.v1.ApplicationConfigR\tappConfig\x12\x16\n" +
-	"\x06delete\x18\x02 \x01(\bR\x06delete\"\xed\x02\n" +
+	"\x06delete\x18\x02 \x01(\bR\x06delete\"\x8a\x03\n" +
 	"\x11ApplicationConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12;\n" +
 	"\tfunctions\x18\x03 \x03(\v2\x1d.configsync.v1.FunctionConfigR\tfunctions\x12;\n" +
 	"\x03env\x18\x04 \x03(\v2).configsync.v1.ApplicationConfig.EnvEntryR\x03env\x129\n" +
-	"\tsql_users\x18\x05 \x03(\v2\x1c.configsync.v1.SqlUserConfigR\bsqlUsers\x129\n" +
+	"\tsql_users\x18\x05 \x03(\v2\x1c.configsync.v1.SqlUserConfigR\bsqlUsers\x12\x1b\n" +
+	"\tkey_value\x18\x06 \x01(\bR\bkeyValue\x129\n" +
 	"\ametrics\x18\a \x03(\v2\x1f.configsync.v1.MetricDefinitionR\ametrics\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -934,7 +1010,9 @@ const file_configsync_v1_configsync_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x19.configsync.v1.MetricTypeR\x04type\x12\x1d\n" +
 	"\n" +
-	"label_keys\x18\x03 \x03(\tR\tlabelKeys*8\n" +
+	"label_keys\x18\x03 \x03(\tR\tlabelKeys\")\n" +
+	"\x15RedisConnectionConfig\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url*8\n" +
 	"\tWorldType\x12\x16\n" +
 	"\x12WORLD_TYPE_MESSAGE\x10\x00\x12\x13\n" +
 	"\x0fWORLD_TYPE_HTTP\x10\x01*<\n" +
@@ -960,7 +1038,7 @@ func file_configsync_v1_configsync_proto_rawDescGZIP() []byte {
 }
 
 var file_configsync_v1_configsync_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_configsync_v1_configsync_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_configsync_v1_configsync_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_configsync_v1_configsync_proto_goTypes = []any{
 	(WorldType)(0),                   // 0: configsync.v1.WorldType
 	(MetricType)(0),                  // 1: configsync.v1.MetricType
@@ -976,30 +1054,33 @@ var file_configsync_v1_configsync_proto_goTypes = []any{
 	(*SqlUserConfig)(nil),            // 11: configsync.v1.SqlUserConfig
 	(*HttpConfig)(nil),               // 12: configsync.v1.HttpConfig
 	(*MetricDefinition)(nil),         // 13: configsync.v1.MetricDefinition
-	nil,                              // 14: configsync.v1.ApplicationConfig.EnvEntry
+	(*RedisConnectionConfig)(nil),    // 14: configsync.v1.RedisConnectionConfig
+	nil,                              // 15: configsync.v1.ApplicationConfig.EnvEntry
 }
 var file_configsync_v1_configsync_proto_depIdxs = []int32{
 	4,  // 0: configsync.v1.FullConfigResponse.config:type_name -> configsync.v1.FullConfig
 	9,  // 1: configsync.v1.FullConfig.applications:type_name -> configsync.v1.ApplicationConfig
-	7,  // 2: configsync.v1.IncrementalUpdateRequest.incremental_config:type_name -> configsync.v1.IncrementalConfig
-	8,  // 3: configsync.v1.IncrementalConfig.updates:type_name -> configsync.v1.AppUpdate
-	9,  // 4: configsync.v1.AppUpdate.app_config:type_name -> configsync.v1.ApplicationConfig
-	10, // 5: configsync.v1.ApplicationConfig.functions:type_name -> configsync.v1.FunctionConfig
-	14, // 6: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
-	11, // 7: configsync.v1.ApplicationConfig.sql_users:type_name -> configsync.v1.SqlUserConfig
-	13, // 8: configsync.v1.ApplicationConfig.metrics:type_name -> configsync.v1.MetricDefinition
-	0,  // 9: configsync.v1.FunctionConfig.world_type:type_name -> configsync.v1.WorldType
-	12, // 10: configsync.v1.FunctionConfig.http_config:type_name -> configsync.v1.HttpConfig
-	1,  // 11: configsync.v1.MetricDefinition.type:type_name -> configsync.v1.MetricType
-	2,  // 12: configsync.v1.ConfigSync.RequestFullConfig:input_type -> configsync.v1.FullConfigRequest
-	6,  // 13: configsync.v1.ConfigSync.PushIncrementalUpdate:input_type -> configsync.v1.IncrementalUpdateAck
-	3,  // 14: configsync.v1.ConfigSync.RequestFullConfig:output_type -> configsync.v1.FullConfigResponse
-	5,  // 15: configsync.v1.ConfigSync.PushIncrementalUpdate:output_type -> configsync.v1.IncrementalUpdateRequest
-	14, // [14:16] is the sub-list for method output_type
-	12, // [12:14] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	14, // 2: configsync.v1.FullConfig.redis:type_name -> configsync.v1.RedisConnectionConfig
+	7,  // 3: configsync.v1.IncrementalUpdateRequest.incremental_config:type_name -> configsync.v1.IncrementalConfig
+	8,  // 4: configsync.v1.IncrementalConfig.updates:type_name -> configsync.v1.AppUpdate
+	14, // 5: configsync.v1.IncrementalConfig.redis:type_name -> configsync.v1.RedisConnectionConfig
+	9,  // 6: configsync.v1.AppUpdate.app_config:type_name -> configsync.v1.ApplicationConfig
+	10, // 7: configsync.v1.ApplicationConfig.functions:type_name -> configsync.v1.FunctionConfig
+	15, // 8: configsync.v1.ApplicationConfig.env:type_name -> configsync.v1.ApplicationConfig.EnvEntry
+	11, // 9: configsync.v1.ApplicationConfig.sql_users:type_name -> configsync.v1.SqlUserConfig
+	13, // 10: configsync.v1.ApplicationConfig.metrics:type_name -> configsync.v1.MetricDefinition
+	0,  // 11: configsync.v1.FunctionConfig.world_type:type_name -> configsync.v1.WorldType
+	12, // 12: configsync.v1.FunctionConfig.http_config:type_name -> configsync.v1.HttpConfig
+	1,  // 13: configsync.v1.MetricDefinition.type:type_name -> configsync.v1.MetricType
+	2,  // 14: configsync.v1.ConfigSync.RequestFullConfig:input_type -> configsync.v1.FullConfigRequest
+	6,  // 15: configsync.v1.ConfigSync.PushIncrementalUpdate:input_type -> configsync.v1.IncrementalUpdateAck
+	3,  // 16: configsync.v1.ConfigSync.RequestFullConfig:output_type -> configsync.v1.FullConfigResponse
+	5,  // 17: configsync.v1.ConfigSync.PushIncrementalUpdate:output_type -> configsync.v1.IncrementalUpdateRequest
+	16, // [16:18] is the sub-list for method output_type
+	14, // [14:16] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_configsync_v1_configsync_proto_init() }
@@ -1008,6 +1089,8 @@ func file_configsync_v1_configsync_proto_init() {
 		return
 	}
 	file_configsync_v1_configsync_proto_msgTypes[0].OneofWrappers = []any{}
+	file_configsync_v1_configsync_proto_msgTypes[2].OneofWrappers = []any{}
+	file_configsync_v1_configsync_proto_msgTypes[5].OneofWrappers = []any{}
 	file_configsync_v1_configsync_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1015,7 +1098,7 @@ func file_configsync_v1_configsync_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_configsync_v1_configsync_proto_rawDesc), len(file_configsync_v1_configsync_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
