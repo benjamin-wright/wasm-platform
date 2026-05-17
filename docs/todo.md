@@ -163,6 +163,47 @@ Trigger the `e2e-tests` resource via the Tilt MCP server. The suite must pass wi
 
 ---
 
+## Phase 16: Web UI
+
+### Design
+
+Add a browser-based UI that gives platform operators and developers a live view of the running platform. The UI is served as a single-page application by a new `wp-ui` component, backed by a lightweight Go API server that aggregates data from the Kubernetes API, Loki, and Prometheus.
+
+**Graph view (default):** renders all `Application` CRDs cluster-wide as a dependency graph — functions and middlewares are nodes; middleware chain membership and topic subscriber relationships are directed edges. Each node is colour-coded by readiness (`Ready: True` → green, degraded → amber, unknown/error → red). Hovering a node shows a tooltip with the function name, trigger type, and active feature flags (KV, SQL). This is the landing page.
+
+**Function / middleware detail panel:** clicking any node opens a right-hand panel with three tabs:
+
+- **Status:** current `Ready` condition, all other status conditions (e.g. `MetricConflict`, infrastructure state), and image metadata — module ref, OCI digest (when available from Phase OCI Digest Pinning), and module size reported by the module-cache.
+- **Logs:** a streaming Loki log view scoped to the selected function (`{namespace, app, function}` label set), expressed as a LogQL query. The UI sends the query to the `wp-ui` API server, which proxies it to the configured Loki HTTP endpoint.
+- **Metrics:** a PromQL-backed sparkline and table for the function's invocation count, error rate, and p99 latency. The UI sends the query to the `wp-ui` API server, which proxies it to the configured Prometheus HTTP endpoint.
+
+**Architecture:**
+- `components/wp-ui/` — a Go binary with two responsibilities: (1) serve the compiled SPA from an embedded `embed.FS`; (2) expose a JSON REST API (`/api/applications`, `/api/logs`, `/api/metrics`) that the SPA calls. The API server reads `Application` CRDs via an in-cluster Kubernetes client (same RBAC as wp-operator, read-only); it proxies Loki and Prometheus queries server-side to avoid CORS issues and to keep credentials out of the browser.
+- The SPA is built from a `web/` directory inside `components/wp-ui/` using a standard Node.js build step (Vite or similar). The build output is embedded at compile time via `go:embed`.
+- Helm chart: add `wp-ui` Deployment, Service, and a read-only `ClusterRole` / `ClusterRoleBinding` for `applications` resources. Loki and Prometheus endpoints are configurable via Helm values.
+
+### Tasks
+
+- [ ] Scaffold `components/wp-ui/`: Go module, `main.go`, `web/` SPA skeleton (Vite + TypeScript), Dockerfile, and Tiltfile resource.
+- [ ] Implement the `/api/applications` endpoint: list all `Application` CRDs cluster-wide, returning name, namespace, status conditions, trigger types, and feature flags (`spec.sql`, `spec.kv`).
+- [ ] Implement the graph view SPA page: render functions and middlewares as nodes, middleware chain and topic edges as directed edges; colour-code by readiness.
+- [ ] Show status and feature flags (KV, SQL) as node annotations in the graph.
+- [ ] Implement the detail panel — Status tab: display `Ready` and all other status conditions plus image metadata from the Application spec.
+- [ ] Implement the `/api/logs` proxy endpoint: accept `namespace`, `app`, `function`, and time-range parameters; construct and forward a LogQL query to the configured Loki endpoint; stream NDJSON responses to the browser.
+- [ ] Implement the Logs tab in the detail panel: call `/api/logs` and render a live-scrolling log view.
+- [ ] Implement the `/api/metrics` proxy endpoint: accept a PromQL expression and time-range; forward to the configured Prometheus endpoint; return JSON series data.
+- [ ] Implement the Metrics tab: display invocation count, error rate, and p99 latency sparklines and summary table via `/api/metrics`.
+- [ ] Add `wp-ui` Deployment, Service, `ClusterRole`, and `ClusterRoleBinding` to the Helm chart; add `wpUi.lokiEndpoint` and `wpUi.prometheusEndpoint` Helm values.
+- [ ] Update `docs/architecture.md` to document the `wp-ui` component, its data sources, and the server-side proxy pattern.
+- [ ] Add e2e test: deploy an Application, assert that `/api/applications` returns it with correct status; assert that the UI root (`/`) returns HTTP 200.
+- [ ] Trigger `e2e-tests` via the Tilt MCP server and confirm it passes.
+
+### Verification
+
+Trigger the `e2e-tests` resource via the Tilt MCP server. The suite must pass with tests confirming: (1) the `wp-ui` service returns HTTP 200 for the SPA root; (2) `/api/applications` returns all deployed Applications with correct names, namespaces, status conditions, and feature flags; (3) the Loki and Prometheus proxy endpoints return valid responses when the backing services are available; (4) all existing e2e tests continue to pass.
+
+---
+
 ## Future Work: OCI Digest Pinning
 
 The operator currently copies `spec.functions[].module` verbatim into `FunctionConfig.module_ref`. When a mutable tag (e.g. `:latest`) is used, different replicas may resolve different digests, updates are not detected on image push, and there is no audit trail of which digest is running.
