@@ -30,27 +30,20 @@ import (
 const applicationFinalizer = "wasm-platform.io/application-protection"
 
 // topicIndexField is the cache field index key for function topics within an Application.
-// Used by findTopicOwner and the topic-peer watch handler to avoid full-list scans.
 const topicIndexField = "spec.functions.topic"
 
 // metricNameIndexField is the cache field index key for metric names within an Application.
-// Used by findMetricOwner and the metric-peer watch handler to avoid full-list scans.
 const metricNameIndexField = "spec.metrics.name"
 
 // Infrastructure CR names. Postgres CRs (PostgresDatabase, PostgresCredential,
 // PostgresMigrationSet) are created in the application's namespace. Redis CRs
 // are created in the operator's own namespace (Config.PostgresCredentialNamespace).
 const (
-	// redisDatabaseName is the name of the cluster-wide RedisDatabase CR.
-	redisDatabaseName = "wasm-platform-redis"
-	// redisCredExecHostName is the RedisCredential CR for execution-host.
-	redisCredExecHostName = "wasm-platform-redis-execution-host"
-	// redisExecHostSecretName is the Secret produced by the execution-host RedisCredential.
+	redisDatabaseName       = "wasm-platform-redis"
+	redisCredExecHostName   = "wasm-platform-redis-execution-host"
 	redisExecHostSecretName = "execution-host-redis-credentials"
 )
 
-// postgresDatabaseCRName returns the name of the PostgresDatabase CR for a namespace.
-// The CR is created in the application namespace.
 func postgresDatabaseCRName(appNamespace string) string {
 	return fmt.Sprintf("wasm-%s-postgres", appNamespace)
 }
@@ -73,8 +66,6 @@ type Config struct {
 	RedisStorageSize string
 }
 
-// ApplicationReconciler reconciles Application resources.
-//
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications,verbs=list;watch
 // +kubebuilder:rbac:groups=wasm-platform.io,resources=applications/status,verbs=get;update;patch
@@ -93,7 +84,6 @@ type ApplicationReconciler struct {
 	Config     Config
 }
 
-// Reconcile is the main reconciliation loop for Application resources.
 func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -126,9 +116,6 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return result, err
 }
 
-// reconcileDelete removes the Application's config from the stores, broadcasts
-// delete updates to connected hosts and gateways, cleans up infra CRs when no
-// longer needed, and strips the finalizer.
 func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
@@ -167,13 +154,11 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 			}
 		}
 
-		// If this is the last Application with spec.sql in this namespace, delete the PostgresDatabase.
 		if err := r.maybeDeletePostgresDatabase(ctx, app); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	// If this is the last Application with spec.kv, delete the RedisDatabase and credentials.
 	if app.Spec.KV {
 		if err := r.maybeDeleteRedisDatabase(ctx, app); err != nil {
 			return ctrl.Result{}, err
@@ -198,8 +183,6 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-// maybeDeletePostgresDatabase deletes the PostgresDatabase for this app's namespace
-// if this is the last Application with spec.sql in that namespace.
 func (r *ApplicationReconciler) maybeDeletePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
 	var allApps wasmplatformv1alpha1.ApplicationList
 	if err := r.List(ctx, &allApps, client.InNamespace(app.Namespace)); err != nil {
@@ -228,8 +211,6 @@ func (r *ApplicationReconciler) maybeDeletePostgresDatabase(ctx context.Context,
 	return nil
 }
 
-// maybeDeleteRedisDatabase deletes the RedisDatabase and credentials if this is
-// the last Application with spec.kv being deleted.
 func (r *ApplicationReconciler) maybeDeleteRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
 	var allApps wasmplatformv1alpha1.ApplicationList
 	if err := r.List(ctx, &allApps); err != nil {
@@ -273,8 +254,6 @@ func (r *ApplicationReconciler) maybeDeleteRedisDatabase(ctx context.Context, ap
 	return nil
 }
 
-// reconcileUpsert builds the ApplicationConfig from the spec, pushes it to the
-// store, and broadcasts an incremental update.
 func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
@@ -413,8 +392,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-// reconcilePostgresDatabase ensures the PostgresDatabase CR for this app's
-// namespace exists and is Ready. Returns (true, nil) when pending.
+// Returns (true, nil) when pending.
 func (r *ApplicationReconciler) reconcilePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
 	infraNS := app.Namespace
 	pgdbName := postgresDatabaseCRName(app.Namespace)
@@ -452,8 +430,7 @@ func (r *ApplicationReconciler) reconcilePostgresDatabase(ctx context.Context, a
 	return pgdb.Status.Phase != dboperator.DatabasePhaseReady, nil
 }
 
-// reconcileRedisDatabase ensures the RedisDatabase and execution-host
-// RedisCredential exist and are Ready. Returns (true, nil) when pending.
+// Returns (true, nil) when pending.
 func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
 	infraNS := r.Config.PostgresCredentialNamespace
 	redisStorageSize := r.Config.RedisStorageSize
@@ -461,7 +438,6 @@ func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app 
 		redisStorageSize = "1Gi"
 	}
 
-	// Ensure RedisDatabase.
 	var rdb dboperator.RedisDatabase
 	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisDatabaseName}, &rdb)
 	if apierrors.IsNotFound(err) {
@@ -487,7 +463,6 @@ func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app 
 		return true, nil
 	}
 
-	// Ensure RedisCredential for execution-host.
 	var rcred dboperator.RedisCredential
 	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisCredExecHostName}, &rcred)
 	if apierrors.IsNotFound(err) {
@@ -517,7 +492,6 @@ func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app 
 		return true, nil
 	}
 
-	// Read Redis secret and update configstore.
 	var redisSecret corev1.Secret
 	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisExecHostSecretName}, &redisSecret)
 	if apierrors.IsNotFound(err) {
@@ -548,17 +522,12 @@ func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app 
 	return false, nil
 }
 
-// infraLabels returns the standard label set applied to all operator-managed
-// infrastructure CRs.
 func infraLabels() map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "wp-operator",
 	}
 }
 
-// reconcileSQLBinding ensures one PostgresCredential CR exists per SQL user
-// (or the implicit 'app' user) and returns resolved SqlUserConfig entries once
-// all db-operator Secrets are available.
 // Returns (nil, true, nil) when any credential or Secret is not yet ready.
 func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) ([]*configsync.SqlUserConfig, bool, error) {
 	credNS := app.Namespace
@@ -666,7 +635,6 @@ func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *
 		return false, "", fmt.Errorf("getting PostgresMigrationSet %q: %w", msName, err)
 	}
 
-	// Patch if the artifact or target revision changed.
 	if existing.Spec.Artifact != desiredSpec.Artifact || existing.Spec.TargetRevision != desiredSpec.TargetRevision {
 		patch := client.MergeFrom(existing.DeepCopy())
 		existing.Spec.Artifact = desiredSpec.Artifact
@@ -746,8 +714,6 @@ func sqlPermissionsForApp(sql *wasmplatformv1alpha1.SQLSpec) map[string][]wasmpl
 	return out
 }
 
-// buildPostgresCredentialForUser constructs a PostgresCredential for a single
-// Application SQL user.
 func buildPostgresCredentialForUser(
 	name, namespace, secretName, pgUsername, dbName string,
 	tablePerms []wasmplatformv1alpha1.SQLTablePermission,
@@ -850,8 +816,6 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// allKVApplicationRequests returns reconcile.Requests for every Application
-// that has spec.kv set.
 func (r *ApplicationReconciler) allKVApplicationRequests(ctx context.Context) []reconcile.Request {
 	var list wasmplatformv1alpha1.ApplicationList
 	if err := r.List(ctx, &list); err != nil {
@@ -871,8 +835,6 @@ func (r *ApplicationReconciler) allKVApplicationRequests(ctx context.Context) []
 	return reqs
 }
 
-// applicationsForPostgresDatabase returns reconcile.Requests for Applications
-// with spec.sql in the namespace derived from the PostgresDatabase CR name.
 // The CR name format is "wasm-<namespace>-postgres".
 func (r *ApplicationReconciler) applicationsForPostgresDatabase(ctx context.Context, obj client.Object) []reconcile.Request {
 	crName := obj.GetName()
@@ -962,8 +924,6 @@ func topicOwnerLess(a, b *wasmplatformv1alpha1.Application) bool {
 
 // ── metric name ownership ─────────────────────────────────────────────────────
 
-// findMetricOwner returns the Application that rightfully owns the given metric
-// name, or nil if app itself is the rightful owner (or the sole claimant).
 // Ownership follows the same tiebreak as topics: oldest creationTimestamp wins;
 // ties break on namespace/name lexicographic order.
 func findMetricOwner(ctx context.Context, c client.Client, metricName string, self *wasmplatformv1alpha1.Application) (*wasmplatformv1alpha1.Application, error) {

@@ -10,7 +10,6 @@ const pgMaxIdentifierLen = 63
 const pgTruncPrefixLen = 47
 const pgTruncHashLen = 15
 
-// k8sMaxNameLen is the maximum length of a Kubernetes resource name.
 const k8sMaxNameLen = 253
 
 // k8sTruncSuffixReserve is the number of characters reserved for suffixes
@@ -46,7 +45,6 @@ func pgTruncate(full string) string {
 	return full[:pgTruncPrefixLen] + "_" + fmt.Sprintf("%x", h)[:pgTruncHashLen]
 }
 
-// pgIdentifier builds and, if necessary, truncates a PG identifier.
 func pgIdentifier(full string) string {
 	if len(full) > pgMaxIdentifierLen {
 		return pgTruncate(full)
