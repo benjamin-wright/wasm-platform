@@ -2,12 +2,24 @@
 
 ## Prerequisites
 
-- Rust 1.89+ (with `wasm32-wasip2` target installed)
+Install these tools on the host and make them available on `PATH` before running `tilt up`:
+
+- Rust 1.91+ (with `wasm32-wasip2` target installed)
+- Go 1.25.1+ (for operator and end-to-end tests)
+- Docker with a running daemon and BuildKit support (for k3d and container builds)
+- Make and kubectl
 - [k3d](https://k3d.io)
 - [Tilt](https://tilt.dev)
 - Helm
-- [oras](https://oras.land) (`brew install oras`) — used to push WASM modules to the local OCI registry
+- [ORAS CLI](https://oras.land/docs/installation/) — required by Tilt's local builds to push WASM modules and SQL migration bundles to the local OCI registry
 - curl (for manual smoke tests)
+
+Install ORAS on macOS with Homebrew and verify it is available:
+
+```sh
+brew install oras
+oras version
+```
 
 Install the WASM target if you haven't already:
 

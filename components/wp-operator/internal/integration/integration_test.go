@@ -15,12 +15,14 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
@@ -273,11 +275,14 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 	// Drain the create broadcast before asserting the update broadcast.
 	cc.WaitForUpsert(t, ns, "my-app")
 
-	// Fetch the latest resource version before applying the update.
-	var fresh wasmplatformv1alpha1.Application
-	g.Expect(c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "my-app"}, &fresh)).To(Succeed())
-	fresh.Spec.Functions[0].Trigger.Topic = "itest.v2"
-	g.Expect(c.Update(context.Background(), &fresh)).To(Succeed())
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh wasmplatformv1alpha1.Application
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "my-app"}, &fresh); err != nil {
+			return err
+		}
+		fresh.Spec.Functions[0].Trigger.Topic = "itest.v2"
+		return c.Update(context.Background(), &fresh)
+	})).To(Succeed())
 
 	update := cc.WaitForUpsert(t, ns, "my-app")
 	g.Expect(update.GetFunctions()[0].GetTopic()).To(Equal("fn.itest.v2"))
@@ -322,32 +327,7 @@ func TestApplicationDelete_BroadcastsDelete(t *testing.T) {
 	cc.WaitForDelete(t, ns, "my-app")
 }
 
-// waitForCondition polls the Application until the named condition reaches the
-// expected True/False status.
-func waitForCondition(t *testing.T, c client.Client, ns, name, condType string, wantTrue bool) {
-	t.Helper()
-	g := NewWithT(t)
-	g.Eventually(func() bool {
-		var app wasmplatformv1alpha1.Application
-		if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, &app); err != nil {
-			return false
-		}
-		for _, cond := range app.Status.Conditions {
-			if cond.Type == condType {
-				return (cond.Status == "True") == wantTrue
-			}
-		}
-		return false
-	}, updateTimeout, 500*time.Millisecond).Should(BeTrue(),
-		"application %s/%s condition %s should have status %v", ns, name, condType, wantTrue)
-}
-
-// TestTopicConflict_BlockedAppHealsOnOwnerDelete verifies that:
-//   - When two Applications claim the same topic, the newer one is blocked with
-//     TopicConflict and Ready=False.
-//   - When the owning app is deleted, the blocked app wakes up, reconciles
-//     successfully, and becomes Ready=True.
-func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
+func TestTopicConflict_RejectedUntilOwnerDeleted(t *testing.T) {
 	g := NewWithT(t)
 	c := newK8sClient(t)
 	ns := createTestNamespace(t, c)
@@ -355,7 +335,6 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 
 	const sharedTopic = "itest.conflict.heal"
 
-	// Create the owner first so it has the older creationTimestamp.
 	owner := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "owner-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
@@ -373,19 +352,9 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 	g.Expect(c.Create(context.Background(), owner)).To(Succeed())
 	t.Cleanup(func() { _ = c.Delete(context.Background(), owner) })
 
-	// Owner must be Ready before we create the blocker; this also ensures the
-	// creationTimestamp ordering is deterministic.
 	waitForReady(t, c, ns, "owner-app")
 	cc.WaitForUpsert(t, ns, "owner-app")
 
-	// Sleep for a full second so that blocked-app receives a strictly later
-	// creationTimestamp. Kubernetes stores creationTimestamp at second
-	// granularity, so without this sleep both apps may land on the same
-	// second and the lexicographic tie-break ("blocked" < "owner") would
-	// incorrectly make blocked-app the topic owner.
-	time.Sleep(time.Second)
-
-	// Create the blocked app — it should pick up TopicConflict immediately.
 	blocked := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "blocked-app", Namespace: ns},
 		Spec: wasmplatformv1alpha1.ApplicationSpec{
@@ -401,21 +370,24 @@ func TestTopicConflict_BlockedAppHealsOnOwnerDelete(t *testing.T) {
 		},
 	}
 
-	g.Expect(c.Create(context.Background(), blocked)).To(Succeed())
 	t.Cleanup(func() { _ = c.Delete(context.Background(), blocked) })
+	err := c.Create(context.Background(), blocked.DeepCopy())
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "expected admission rejection, got %v", err)
+	g.Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf("topic %q is already claimed by %s/owner-app", sharedTopic, ns))))
 
-	// Blocked app must reach TopicConflict=True and Ready=False.
-	waitForCondition(t, c, ns, "blocked-app", "TopicConflict", true)
-	waitForCondition(t, c, ns, "blocked-app", "Ready", false)
+	var rejected wasmplatformv1alpha1.Application
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "blocked-app"}, &rejected)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "rejected application must not be persisted, got %v", err)
 
-	// Delete the owning app. The watch handler should enqueue the blocked app.
 	g.Expect(c.Delete(context.Background(), owner)).To(Succeed())
 	cc.WaitForDelete(t, ns, "owner-app")
 
-	// The blocked app should now heal: TopicConflict removed, Ready=True.
+	// Admission uses the informer cache, which may briefly retain the deleted owner.
+	g.Eventually(func() error {
+		return c.Create(context.Background(), blocked.DeepCopy())
+	}, updateTimeout, 500*time.Millisecond).Should(Succeed())
 	waitForReady(t, c, ns, "blocked-app")
 
-	// An upsert for the formerly-blocked app must be broadcast.
 	update := cc.WaitForUpsert(t, ns, "blocked-app")
 	g.Expect(update.GetFunctions()[0].GetTopic()).To(Equal("fn." + sharedTopic))
 }

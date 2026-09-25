@@ -19,10 +19,7 @@ A serverless application platform that runs WebAssembly guest modules on Kuberne
 
 ### Prerequisites
 
-- Rust 1.89+ with the `wasm32-wasip2` target:
-  ```sh
-  rustup target add wasm32-wasip2
-  ```
+Install the [local development prerequisites](docs/contributions.md#prerequisites) before starting the cluster. These include the ORAS CLI, which Tilt runs locally to push WASM modules and SQL migration bundles to the registry.
 
 ### Local Kubernetes Cluster
 

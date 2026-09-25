@@ -6,7 +6,7 @@ allow_k8s_contexts('k3d-wasm-platform')
 
 namespace = 'wasm-platform'
 
-load('./components/wp-databases/Tiltfile', 'db_operator')
+load('./components/wp-databases/Tiltfile', 'db_operator', 'wp_databases')
 load('./components/execution-host/Tiltfile', 'execution_host')
 load('./components/gateway/Tiltfile', 'gateway')
 load('./components/module-cache/Tiltfile', 'module_cache')
@@ -33,6 +33,7 @@ k8s_yaml(helm(
     namespace = namespace,
 ))
 
+wp_databases(namespace=namespace)
 wp_operator()
 execution_host(resource_deps=['wp-operator'])
 gateway(resource_deps=['wp-operator'])

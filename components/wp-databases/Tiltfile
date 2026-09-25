@@ -14,9 +14,26 @@ def db_operator(namespace):
     )
     local_resource(
         'db-operator-crds-ready',
-        cmd='kubectl rollout status deployment/db-operator -n {} --timeout=120s'.format(namespace),
+        cmd=(
+            'kubectl wait --for=condition=Established --timeout=120s' +
+            ' crd/natsclusters.db-operator.benjamin-wright.github.com' +
+            ' crd/natsaccounts.db-operator.benjamin-wright.github.com &&' +
+            ' kubectl rollout status deployment/db-operator -n {} --timeout=120s'.format(namespace)
+        ),
         resource_deps=['db-operator'],
         labels=['internal'],
     )
 
 
+def wp_databases(namespace='wasm-platform'):
+    k8s_resource(
+        new_name='wp-databases',
+        objects=[
+            'wasm-platform-nats:NatsCluster:{}'.format(namespace),
+            'wasm-platform-nats-execution-host:NatsAccount:{}'.format(namespace),
+            'wasm-platform-nats-gateway:NatsAccount:{}'.format(namespace),
+        ],
+        resource_deps=['db-operator-crds-ready'],
+        pod_readiness='ignore',
+        labels=['platform'],
+    )
