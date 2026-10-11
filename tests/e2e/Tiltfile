@@ -1,7 +1,8 @@
 def e2e_tests(resource_deps=[]):
     local_resource(
         'e2e-tests',
-        cmd = 'cd tests/e2e && GOWORK=off go test -tags integration -count=1 -v ./...',
-        resource_deps = ['demo-app', 'counter-app', 'log-error', 'sql-broken-migrations'] + resource_deps,
+        cmd = 'cd tests/e2e && GOWORK=off go vet -tags integration ./... && GOWORK=off go test -tags integration -count=1 -v ./...',
+        resource_deps = ['demo-app', 'counter-app', 'log-error', 'sql-hello', 'sql-broken-migrations', 'cancellation-app'] + resource_deps,
         labels = ['tests'],
+        trigger_mode = TRIGGER_MODE_MANUAL,
     )

@@ -1,129 +1,71 @@
-use redis::Commands;
+use redis::FromRedisValue;
 
+use crate::redis_client::{self, Mutation};
 use crate::runtime::{HostState, message_bindings};
 
-impl message_bindings::framework::runtime::kv::Host for HostState {
-    fn get(
-        &mut self,
-        key: String,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
+impl HostState {
+    async fn read_kv<T: FromRedisValue>(&mut self, key: &str) -> Result<Option<T>, String> {
+        self.invocation.check()?;
+        let client = self
+            .redis_client
+            .as_ref()
+            .ok_or_else(|| "KV host function unavailable: Redis not configured".to_string())?;
         let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let result: redis::RedisResult<Option<Vec<u8>>> = conn.get(&full_key);
-        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
-        result.map_err(|e| e.to_string())
+        let result = redis_client::read(client, &self.invocation, &full_key).await;
+        self.metrics_registry
+            .record_kv_read(&self.app_name, &self.app_namespace);
+        result
     }
 
-    fn set(
-        &mut self,
-        key: String,
-        value: Vec<u8>,
-    ) -> Result<(), String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
+    async fn mutate_kv(&mut self, key: &str, mutation: Mutation) -> Result<i64, String> {
+        self.invocation.check()?;
+        let client = self
+            .redis_client
+            .as_ref()
+            .ok_or_else(|| "KV host function unavailable: Redis not configured".to_string())?;
         let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let result: redis::RedisResult<()> = conn.set(&full_key, value);
-        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
-        result.map_err(|e| e.to_string())
-    }
-
-    fn delete(
-        &mut self,
-        key: String,
-    ) -> Result<bool, String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
-        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let count: redis::RedisResult<i64> = conn.del(&full_key);
-        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
-        count.map(|n| n > 0).map_err(|e| e.to_string())
-    }
-
-    fn get_int(
-        &mut self,
-        key: String,
-    ) -> Result<Option<i64>, String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
-        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let result: redis::RedisResult<Option<i64>> = conn.get(&full_key);
-        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
-        result.map_err(|e| e.to_string())
-    }
-
-    fn set_int(
-        &mut self,
-        key: String,
-        value: i64,
-    ) -> Result<(), String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
-        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let result: redis::RedisResult<()> = conn.set(&full_key, value);
-        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
-        result.map_err(|e| e.to_string())
-    }
-
-    fn incr(
-        &mut self,
-        key: String,
-    ) -> Result<i64, String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
-        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let result: redis::RedisResult<i64> = conn.incr(&full_key, 1);
-        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
-        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
-        result.map_err(|e| e.to_string())
-    }
-
-    fn decr(
-        &mut self,
-        key: String,
-    ) -> Result<i64, String> {
-        let Some(ref client) = self.redis_client else {
-            return Err("KV host function unavailable: REDIS_URL not configured".to_string());
-        };
-        let full_key = format!("{}/{}/{}", self.app_namespace, self.app_name, key);
-        let mut conn = match client.get_connection() {
-            Ok(c) => c,
-            Err(e) => return Err(format!("Redis connection failed: {e}")),
-        };
-        let result: redis::RedisResult<i64> = conn.decr(&full_key, 1);
-        self.metrics_registry.record_kv_read(&self.app_name, &self.app_namespace);
-        self.metrics_registry.record_kv_write(&self.app_name, &self.app_namespace);
-        result.map_err(|e| e.to_string())
+        let is_increment = matches!(mutation, Mutation::Increment(_));
+        let result = redis_client::mutate(client, &self.invocation, &full_key, mutation).await;
+        if is_increment {
+            self.metrics_registry
+                .record_kv_read(&self.app_name, &self.app_namespace);
+        }
+        self.metrics_registry
+            .record_kv_write(&self.app_name, &self.app_namespace);
+        result
     }
 }
 
+impl message_bindings::framework::runtime::kv::Host for HostState {
+    async fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, String> {
+        self.read_kv(&key).await
+    }
+
+    async fn set(&mut self, key: String, value: Vec<u8>) -> Result<(), String> {
+        self.mutate_kv(&key, Mutation::Set(value)).await.map(|_| ())
+    }
+
+    async fn delete(&mut self, key: String) -> Result<bool, String> {
+        self.mutate_kv(&key, Mutation::Delete)
+            .await
+            .map(|count| count > 0)
+    }
+
+    async fn get_int(&mut self, key: String) -> Result<Option<i64>, String> {
+        self.read_kv(&key).await
+    }
+
+    async fn set_int(&mut self, key: String, value: i64) -> Result<(), String> {
+        self.mutate_kv(&key, Mutation::Set(value.to_string().into_bytes()))
+            .await
+            .map(|_| ())
+    }
+
+    async fn incr(&mut self, key: String) -> Result<i64, String> {
+        self.mutate_kv(&key, Mutation::Increment(1)).await
+    }
+
+    async fn decr(&mut self, key: String) -> Result<i64, String> {
+        self.mutate_kv(&key, Mutation::Increment(-1)).await
+    }
+}

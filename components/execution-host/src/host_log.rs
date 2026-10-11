@@ -2,6 +2,9 @@ use crate::runtime::{HostState, message_bindings};
 
 impl message_bindings::framework::runtime::log::Host for HostState {
     fn emit(&mut self, level: message_bindings::framework::runtime::log::Level, message: String) {
+        if self.invocation.check().is_err() {
+            return;
+        }
         use message_bindings::framework::runtime::log::Level;
         let app_name = &self.app_name;
         let app_namespace = &self.app_namespace;

@@ -38,11 +38,16 @@ pub struct ModuleRegistry {
 }
 
 impl ModuleRegistry {
-    pub fn new(cache_base_url: String, engine: Engine, metrics: MetricsRegistry, fuel_enabled: bool) -> Self {
+    pub fn new(
+        cache_base_url: String,
+        engine: Engine,
+        metrics: MetricsRegistry,
+        fuel_enabled: bool,
+    ) -> Self {
         let version_key = if fuel_enabled {
-            format!("{WASMTIME_VERSION}+fuel")
+            format!("{WASMTIME_VERSION}+epoch+fuel")
         } else {
-            WASMTIME_VERSION.to_string()
+            format!("{WASMTIME_VERSION}+epoch")
         };
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
@@ -55,13 +60,22 @@ impl ModuleRegistry {
 
     /// Returns the compiled `Component` for `(namespace, app_name, function_name)`,
     /// or `None` if not yet loaded.
-    pub fn get(&self, namespace: &str, app_name: &str, fn_name: &str) -> Result<Option<Arc<Component>>> {
+    pub fn get(
+        &self,
+        namespace: &str,
+        app_name: &str,
+        fn_name: &str,
+    ) -> Result<Option<Arc<Component>>> {
         let map = self
             .inner
             .read()
             .map_err(|_| anyhow::anyhow!("ModuleRegistry lock poisoned"))?;
         Ok(map
-            .get(&(namespace.to_string(), app_name.to_string(), fn_name.to_string()))
+            .get(&(
+                namespace.to_string(),
+                app_name.to_string(),
+                fn_name.to_string(),
+            ))
             .cloned())
     }
 
@@ -73,62 +87,71 @@ impl ModuleRegistry {
     /// 3. If found, deserialize directly.
     /// 4. If not found, pull the raw `.wasm`, AOT-compile, push back to cache,
     ///    then store in the registry.
-    pub async fn load(&self, namespace: &str, app_name: &str, fn_name: &str, module_ref: &str) -> Result<()> {
+    pub async fn load(
+        &self,
+        namespace: &str,
+        app_name: &str,
+        fn_name: &str,
+        module_ref: &str,
+    ) -> Result<()> {
         let digest = oci::resolve_digest(module_ref).await?;
         let digest_key = digest.strip_prefix("sha256:").unwrap_or(&digest);
 
-        let component = if let Some(artifact) =
-            self.cache.get(digest_key, ARCH, &self.version_key).await?
-        {
-            tracing::debug!(
-                namespace,
-                app_name,
-                fn_name,
-                digest = digest_key,
-                "loading precompiled module from cache"
-            );
-            // Safety: the artifact was produced by a process using the same
-            // Engine configuration and Wasmtime version as this process (we key
-            // on WASMTIME_VERSION to enforce this).
-            unsafe { Component::deserialize(&self.engine, &artifact)? }
-        } else {
-            tracing::info!(
-                namespace,
-                app_name,
-                fn_name,
-                digest = digest_key,
-                "cache miss — pulling and compiling module"
-            );
-            let wasm = oci::pull_wasm_bytes(module_ref).await?;
-            match self.engine.precompile_component(&wasm) {
-                Ok(compiled) => {
-                    self.metrics.record_compilation(app_name, namespace, "ok");
+        let component =
+            if let Some(artifact) = self.cache.get(digest_key, ARCH, &self.version_key).await? {
+                tracing::debug!(
+                    namespace,
+                    app_name,
+                    fn_name,
+                    digest = digest_key,
+                    "loading precompiled module from cache"
+                );
+                // Safety: the artifact was produced by a process using the same
+                // Engine configuration and Wasmtime version as this process (we key
+                // on WASMTIME_VERSION to enforce this).
+                unsafe { Component::deserialize(&self.engine, &artifact)? }
+            } else {
+                tracing::info!(
+                    namespace,
+                    app_name,
+                    fn_name,
+                    digest = digest_key,
+                    "cache miss — pulling and compiling module"
+                );
+                let wasm = oci::pull_wasm_bytes(module_ref).await?;
+                match self.engine.precompile_component(&wasm) {
+                    Ok(compiled) => {
+                        self.metrics.record_compilation(app_name, namespace, "ok");
 
-                    if let Err(err) = self
-                        .cache
-                        .put(digest_key, ARCH, &self.version_key, compiled.clone())
-                        .await
-                    {
-                        // A failed cache write is non-fatal; we can still run.
-                        tracing::warn!("failed to push compiled module to cache: {err:#}");
+                        if let Err(err) = self
+                            .cache
+                            .put(digest_key, ARCH, &self.version_key, compiled.clone())
+                            .await
+                        {
+                            // A failed cache write is non-fatal; we can still run.
+                            tracing::warn!("failed to push compiled module to cache: {err:#}");
+                        }
+
+                        // Safety: same as above — just compiled with this engine.
+                        unsafe { Component::deserialize(&self.engine, &compiled)? }
                     }
-
-                    // Safety: same as above — just compiled with this engine.
-                    unsafe { Component::deserialize(&self.engine, &compiled)? }
+                    Err(err) => {
+                        self.metrics.record_compilation(app_name, namespace, "err");
+                        return Err(err.into());
+                    }
                 }
-                Err(err) => {
-                    self.metrics.record_compilation(app_name, namespace, "err");
-                    return Err(err.into());
-                }
-            }
-        };
+            };
 
         let mut map = self
             .inner
             .write()
             .map_err(|_| anyhow::anyhow!("ModuleRegistry lock poisoned"))?;
         map.insert(
-            (namespace.to_string(), app_name.to_string(), fn_name.to_string()),
+            (
+                namespace.to_string(),
+                app_name.to_string(),
+                fn_name.to_string(),
+            ),
             Arc::new(component),
         );
         tracing::info!(namespace, app_name, fn_name, "module registered");
@@ -141,7 +164,11 @@ impl ModuleRegistry {
             .inner
             .write()
             .map_err(|_| anyhow::anyhow!("ModuleRegistry lock poisoned"))?;
-        map.remove(&(namespace.to_string(), app_name.to_string(), fn_name.to_string()));
+        map.remove(&(
+            namespace.to_string(),
+            app_name.to_string(),
+            fn_name.to_string(),
+        ));
         Ok(())
     }
 }

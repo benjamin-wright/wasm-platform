@@ -24,12 +24,24 @@ On each message:
 1. **`message-application`** — payload is passed to the module's `on-message` export. If the NATS message has a reply subject, the response bytes are published back.
 2. **`http-application`** — the platform-private JSON payload is decoded into typed WIT records, passed to `on-request`, and the returned `HttpResponse` is serialised back to JSON for the NATS reply.
 
-Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURRENT_INVOCATIONS`).
+Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURRENT_INVOCATIONS`). Permits remain held until the guest has exited and SQL cleanup has finished, including timeout and panic paths.
+
+## Invocation Deadlines
+
+One `WASM_TIMEOUT_SECS` budget starts when the host receives a NATS message and covers channel/permit queueing, instantiation, guest execution, and host operations. Expired queued messages do not run. CPU loops and WASI waits stop on expiry; a timeout response is sent after execution exits. Guest stdout/stderr are discarded; use the `log` interface for application logs.
+
+Deadline checks use monotonic time. CPU execution yields at epoch checks, driven every 10 ms; this is cooperative interruption, subject to operating-system scheduling. SQL cleanup adds at most two bounded 2-second waits. Admission accounting includes this terminating work. These are scheduling and cleanup budgets, not a real-time scheduling guarantee.
+
+SQL calls accept one parsed statement: queries, INSERT/UPDATE/DELETE, CREATE TABLE/INDEX, ALTER TABLE, DROP, or TRUNCATE. Each call runs in a host-owned transaction and commits independently. Guest transaction control, standalone session-setting statements, procedures, prepared statements, and multi-statement input return an error. Cancellation before commit submission prevents transactional writes from committing; cleanup terminates the backend through a separate connection and closes the data connection. If termination cannot be confirmed, the host reports that uncertainty. PostgreSQL nontransactional effects, including sequence advancement, are not rolled back.
+
+KV mutations check a server-time deadline atomically with the mutation. A command delayed until that deadline is rejected. The deadline subtracts the TIME request round trip and assumes Redis wall time advances with host monotonic time; backward changes to the Redis clock can weaken the bound. Cancellation also drops the private client connection.
+
+Writes acknowledged before cancellation remain committed. A SQL COMMIT already submitted, a KV mutation admitted before its backend deadline, or a NATS publish already enqueued may complete despite cancellation; their outcome can be uncertain if the reply is lost. Timeout is not an undo operation, and retries must account for those submitted effects. No new guest operation starts after observed cancellation.
 
 ## Data Isolation
 
 - **PostgreSQL** — per-app, per-user connection pools keyed by `(namespace, app_name, username)`, created eagerly on config arrival. The operator assembles full connection URLs (with embedded credentials) and delivers them via the config stream; the host never reads PostgreSQL credentials separately. Each invocation receives the pool for its function's assigned SQL user, or `None` if the function has no SQL access — SQL calls return `Err` in that case.
-- **Redis** — single multiplexed connection to the shared instance. Keys are transparently prefixed with `<namespace>/<app>/` (derived automatically from the application identity — no CRD field required). The `store` parameter has been dropped from the `kv` WIT interface; apps that need sub-namespacing can prefix their own keys.
+- **Redis** — private asynchronous connection for each host call to the shared instance. Keys are transparently prefixed with `<namespace>/<app>/` (derived automatically from the application identity — no CRD field required). The `store` parameter has been dropped from the `kv` WIT interface; apps that need sub-namespacing can prefix their own keys.
 - **NATS** — each app is bound to its own subject. The `messaging` host function prefixes the caller-supplied topic with `fn.` and publishes to that subject; modules can send to any platform topic, not only their own.
 
 ## Logging
@@ -48,6 +60,7 @@ Connection diagnostics report the operation and error category without connectio
 | `REDIS_URL` | Shared Redis URL (e.g. `redis://redis:6379`). |
 | `PG_POOL_MAX_CONNECTIONS` | Maximum connections per per-user PostgreSQL pool (default `5`). |
 | `MAX_CONCURRENT_INVOCATIONS` | Concurrency limit per host (default `64`). |
+| `WASM_TIMEOUT_SECS` | Shared invocation deadline in seconds, including queueing (default `30`, must be positive). |
 | `WASM_FUEL_LIMIT` | Maximum fuel units per invocation; unset disables fuel metering (optional). |
 | `WASM_MEMORY_LIMIT_MB` | Maximum linear memory per module in MiB (default `64`). |
 | `HOSTNAME` | Used as `host_id` in gRPC (injected by downward API). |
@@ -81,5 +94,9 @@ On `SIGTERM` the execution host performs an ordered drain before exiting:
 1. A shutdown signal is broadcast to all subsystems.
 2. `manage_nats_subscriptions` receives the signal, drops all queue subscriptions (sending `UNSUB` to NATS and removing the pod from every queue group), and returns.
 3. The per-topic forwarding tasks exit and drop their senders on the message channel.
-4. `process_nats_messages` sees the channel close, waits for all in-flight WASM invocations to complete via a `JoinSet`, then returns.
-5. `main` exits cleanly within Kubernetes' termination grace period.
+4. Dispatch stops accepting work, including while waiting for a permit. Accepted executions retain their deadlines and permits while the host waits for guest exit and backend cleanup.
+5. `main` exits after the drain completes. Drain time follows invocation deadlines and SQL cleanup budgets; there is no separate process-wide shutdown deadline.
+
+## Regression Tests
+
+The `execution-host: regression-tests` and `execution-host: lint` Tilt resources validate host code. `execution-host: redis-cancellation-tests` checks delayed commands against the disposable Redis deployment on port 6391; trigger it after that deployment is ready. The `e2e-tests` resource exercises HTTP and message cancellation and reads back committed SQL/KV state through the cancellation fixture.

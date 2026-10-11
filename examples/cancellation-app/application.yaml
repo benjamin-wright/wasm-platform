@@ -1,0 +1,33 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: cancellation-app
+  namespace: default
+spec:
+  kv: true
+  sql:
+    migrations:
+      artifact: cancellation-app-migrations
+      targetRevision: 1
+    users:
+      - name: writer
+        permissions:
+          - tables: [cancellation_effects]
+            grant: [ALL]
+  metrics:
+    - name: cancellation_started_total
+      type: counter
+      labels: [world, mode]
+  functions:
+    - name: http
+      module: cancellation-app-http
+      sqlUser: writer
+      trigger:
+        http:
+          path: /cancellation
+          methods: [GET, POST]
+    - name: messages
+      module: cancellation-app-messages
+      sqlUser: writer
+      trigger:
+        topic: cancellation-app.events

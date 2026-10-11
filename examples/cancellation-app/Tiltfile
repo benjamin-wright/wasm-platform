@@ -1,0 +1,38 @@
+def cancellation_app(namespace, resource_deps=[]):
+    for module in ['http', 'messages']:
+        custom_build(
+            'cancellation-app-' + module,
+            command = (
+                'cargo build --locked --manifest-path examples/cancellation-app/' + module + '/Cargo.toml' +
+                ' --target wasm32-wasip2 --release --target-dir target &&' +
+                ' oras push $EXPECTED_REF target/wasm32-wasip2/release/cancellation_' + module + '.wasm' +
+                ' --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http'
+            ),
+            deps = [
+                'examples/cancellation-app/' + module,
+                'examples/cancellation-app/actions.rs',
+                'examples/cancellation-app/Cargo.toml',
+                'examples/cancellation-app/Cargo.lock',
+                'framework/runtime.wit',
+            ],
+            skips_local_docker = True,
+        )
+
+    custom_build(
+        'cancellation-app-migrations',
+        command = (
+            'mkdir -p examples/cancellation-app/bin &&' +
+            ' tar czf examples/cancellation-app/bin/migrations.tar.gz -C examples/cancellation-app/migrations . &&' +
+            ' oras push $EXPECTED_REF examples/cancellation-app/bin/migrations.tar.gz:application/vnd.db-operator.migrations.v1.tar+gzip' +
+            ' --artifact-type application/vnd.db-operator.migrations.v1.tar+gzip --plain-http'
+        ),
+        deps = ['examples/cancellation-app/migrations'],
+        skips_local_docker = True,
+    )
+
+    k8s_yaml('examples/cancellation-app/application.yaml')
+    k8s_resource(
+        'cancellation-app',
+        resource_deps = ['module-cache', 'wp-operator'] + resource_deps,
+        labels = ['example'],
+    )

@@ -7,6 +7,8 @@ use wasmtime::{
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+use crate::config::FunctionEntry;
+use crate::invocation::Invocation;
 use crate::metrics::MetricsRegistry;
 use crate::sql_pool::SqlPoolMap;
 
@@ -17,6 +19,12 @@ pub(crate) mod message_bindings {
     wasmtime::component::bindgen!({
         world: "message-application",
         path: "../../framework/runtime.wit",
+        imports: {
+            "framework:runtime/sql": async,
+            "framework:runtime/kv": async,
+            "framework:runtime/messaging": async,
+        },
+        exports: { default: async },
     });
 }
 
@@ -25,6 +33,12 @@ mod http_bindings {
     wasmtime::component::bindgen!({
         world: "http-application",
         path: "../../framework/runtime.wit",
+        imports: {
+            "framework:runtime/sql": async,
+            "framework:runtime/kv": async,
+            "framework:runtime/messaging": async,
+        },
+        exports: { default: async },
     });
 }
 
@@ -32,6 +46,7 @@ mod http_bindings {
 // One instance per request/call.
 
 pub(crate) struct HostState {
+    pub(crate) invocation: Invocation,
     wasi: WasiCtx,
     table: ResourceTable,
     store_limits: StoreLimits,
@@ -55,7 +70,7 @@ impl WasiView for HostState {
 
 // ── Shared (process-wide) state ───────────────────────────────────────────────
 // The Engine and Linker are expensive to create and safe to share across
-// threads.  Building the Linker once here avoids repeating add_to_linker_sync
+// threads.  Building the Linker once here avoids repeating add_to_linker_async
 // on every message invocation.
 //
 // `redis_client` is behind an Arc<RwLock<…>> so that it can be updated
@@ -71,6 +86,7 @@ pub struct RuntimeState {
     pub metrics_registry: MetricsRegistry,
     fuel_limit: Option<u64>,
     memory_limit_bytes: usize,
+    _epoch_ticker: EpochTicker,
 }
 
 impl RuntimeState {
@@ -83,7 +99,7 @@ impl RuntimeState {
         memory_limit_bytes: usize,
     ) -> Result<Self> {
         let mut linker: Linker<HostState> = Linker::new(&engine);
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         message_bindings::framework::runtime::kv::add_to_linker::<
             HostState,
             wasmtime::component::HasSelf<HostState>,
@@ -104,6 +120,7 @@ impl RuntimeState {
             HostState,
             wasmtime::component::HasSelf<HostState>,
         >(&mut linker, |h: &mut HostState| h)?;
+        let epoch_ticker = EpochTicker::new(engine.clone())?;
         Ok(Self {
             engine,
             linker,
@@ -112,99 +129,134 @@ impl RuntimeState {
             metrics_registry,
             fuel_limit,
             memory_limit_bytes,
+            _epoch_ticker: epoch_ticker,
         })
+    }
+}
+
+struct EpochTicker {
+    stop: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl EpochTicker {
+    fn new(engine: Engine) -> Result<Self> {
+        let (stop, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("wasm-epoch".to_owned())
+            .spawn(move || {
+                while matches!(
+                    rx.recv_timeout(std::time::Duration::from_millis(10)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    engine.increment_epoch();
+                }
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for EpochTicker {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
 // ── WASM invocations ──────────────────────────────────────────────────────────
 
-pub fn invoke_on_message(
+pub(crate) struct InvocationContext {
+    pub(crate) function: FunctionEntry,
+    pub(crate) nats_client: Option<async_nats::Client>,
+    pub(crate) invocation: Invocation,
+}
+
+impl RuntimeState {
+    fn invocation_store(&self, context: InvocationContext) -> Result<Store<HostState>> {
+        let InvocationContext {
+            function,
+            nats_client,
+            invocation,
+        } = context;
+        invocation.check().map_err(anyhow::Error::msg)?;
+        let sql_pool = function.sql_username.as_deref().and_then(|username| {
+            self.sql_pools
+                .get(&function.app_namespace, &function.app_name, username)
+        });
+        let redis_client = if function.kv_enabled {
+            self.redis_client
+                .read()
+                .ok()
+                .and_then(|client| client.clone())
+        } else {
+            None
+        };
+        let host_state = HostState {
+            invocation,
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+            store_limits: StoreLimitsBuilder::new()
+                .memory_size(self.memory_limit_bytes)
+                .build(),
+            redis_client,
+            nats_client,
+            sql_pool,
+            app_name: function.app_name,
+            app_namespace: function.app_namespace,
+            function_name: function.function_name,
+            metrics_registry: self.metrics_registry.clone(),
+        };
+        let mut store = Store::new(&self.engine, host_state);
+        store.limiter(|host| &mut host.store_limits);
+        store.set_epoch_deadline(1);
+        store.epoch_deadline_async_yield_and_update(1);
+        if let Some(fuel) = self.fuel_limit {
+            store.set_fuel(fuel)?;
+        }
+        Ok(store)
+    }
+}
+
+pub async fn invoke_on_message(
     state: &RuntimeState,
     component: &Component,
     payload: &[u8],
-    nats_client: Option<async_nats::Client>,
-    app_name: String,
-    app_namespace: String,
-    function_name: String,
-    sql_username: Option<String>,
-    kv_enabled: bool,
+    context: InvocationContext,
 ) -> Result<Option<Vec<u8>>> {
-    let sql_pool = sql_username
-        .as_deref()
-        .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
-    let redis_client = if kv_enabled {
-        state.redis_client.read().ok().and_then(|g| g.clone())
-    } else {
-        None
-    };
-    let host_state = HostState {
-        wasi: WasiCtxBuilder::new().inherit_stderr().build(),
-        table: ResourceTable::new(),
-        store_limits: StoreLimitsBuilder::new()
-            .memory_size(state.memory_limit_bytes)
-            .build(),
-        redis_client,
-        nats_client,
-        sql_pool,
-        app_name,
-        app_namespace,
-        function_name,
-        metrics_registry: state.metrics_registry.clone(),
-    };
-    let mut store = Store::new(&state.engine, host_state);
-    store.limiter(|h| &mut h.store_limits);
-    if let Some(fuel) = state.fuel_limit {
-        store.set_fuel(fuel)?;
-    }
+    let invocation = context.invocation.clone();
+    let mut store = state.invocation_store(context)?;
 
-    let app =
-        message_bindings::MessageApplication::instantiate(&mut store, component, &state.linker)?;
-
-    let result = app.call_on_message(&mut store, payload)?;
+    let result = invocation
+        .run(async {
+            let app = message_bindings::MessageApplication::instantiate_async(
+                &mut store,
+                component,
+                &state.linker,
+            )
+            .await?;
+            app.call_on_message(&mut store, payload).await
+        })
+        .await
+        .map_err(anyhow::Error::msg)??;
 
     result.map_err(|msg| anyhow::anyhow!("component returned error: {msg}"))
 }
 
-pub fn invoke_on_request(
+pub async fn invoke_on_request(
     state: &RuntimeState,
     component: &Component,
     request: HttpRequestPayload,
-    nats_client: Option<async_nats::Client>,
-    app_name: String,
-    app_namespace: String,
-    function_name: String,
-    sql_username: Option<String>,
-    kv_enabled: bool,
+    context: InvocationContext,
 ) -> Result<HttpResponsePayload> {
-    let sql_pool = sql_username
-        .as_deref()
-        .and_then(|u| state.sql_pools.get(&app_namespace, &app_name, u));
-    let redis_client = if kv_enabled {
-        state.redis_client.read().ok().and_then(|g| g.clone())
-    } else {
-        None
-    };
-    let host_state = HostState {
-        wasi: WasiCtxBuilder::new().inherit_stderr().build(),
-        table: ResourceTable::new(),
-        store_limits: StoreLimitsBuilder::new()
-            .memory_size(state.memory_limit_bytes)
-            .build(),
-        redis_client,
-        nats_client,
-        sql_pool,
-        app_name: app_name.clone(),
-        app_namespace: app_namespace.clone(),
-        function_name,
-        metrics_registry: state.metrics_registry.clone(),
-    };
-    let mut store = Store::new(&state.engine, host_state);
-    store.limiter(|h| &mut h.store_limits);
-    if let Some(fuel) = state.fuel_limit {
-        store.set_fuel(fuel)?;
-    }
-
-    let app = http_bindings::HttpApplication::instantiate(&mut store, component, &state.linker)?;
+    let invocation = context.invocation.clone();
+    let app_name = context.function.app_name.clone();
+    let app_namespace = context.function.app_namespace.clone();
+    let mut store = state.invocation_store(context)?;
 
     let wit_request = http_bindings::HttpRequest {
         method: request.method,
@@ -214,7 +266,18 @@ pub fn invoke_on_request(
         body: request.body,
     };
 
-    let result = app.call_on_request(&mut store, &wit_request)?;
+    let result = invocation
+        .run(async {
+            let app = http_bindings::HttpApplication::instantiate_async(
+                &mut store,
+                component,
+                &state.linker,
+            )
+            .await?;
+            app.call_on_request(&mut store, &wit_request).await
+        })
+        .await
+        .map_err(anyhow::Error::msg)??;
 
     match result {
         Ok(wit_response) => {

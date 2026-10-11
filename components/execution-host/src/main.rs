@@ -5,6 +5,7 @@ mod host_log;
 mod host_messaging;
 mod host_metrics;
 mod host_sql;
+mod invocation;
 mod metrics;
 mod module_cache;
 mod modules;
@@ -31,7 +32,7 @@ use modules::ModuleRegistry;
 use platform_common::health::{self, ReadyState};
 use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 use platform_common::nats_client::NatsConnectionInfo;
-use runtime::{RuntimeState, invoke_on_message, invoke_on_request};
+use runtime::{InvocationContext, RuntimeState, invoke_on_message, invoke_on_request};
 use sql_pool::SqlPoolMap;
 use std::sync::{Arc, RwLock};
 use tracing_subscriber::prelude::*;
@@ -53,6 +54,7 @@ async fn main() -> Result<()> {
 
     let mut wasm_config = wasmtime::Config::new();
     wasm_config.wasm_component_model(true);
+    wasm_config.epoch_interruption(true);
 
     let fuel_limit: Option<u64> = std::env::var("WASM_FUEL_LIMIT")
         .ok()
@@ -73,6 +75,7 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
+    anyhow::ensure!(wasm_timeout_secs > 0, "WASM_TIMEOUT_SECS must be positive");
     let wasm_timeout = std::time::Duration::from_secs(wasm_timeout_secs);
     tracing::info!(secs = wasm_timeout_secs, "wall-clock timeout configured");
 
@@ -119,7 +122,7 @@ async fn main() -> Result<()> {
 
     let app_registry = AppRegistry::new();
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
-    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<async_nats::Message>(256);
+    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<nats::InvocationMessage>(256);
 
     let (nats_ready_tx, nats_ready_rx) = tokio::sync::watch::channel(false);
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
@@ -186,12 +189,17 @@ async fn main() -> Result<()> {
         topics_rx,
         msg_tx,
         shutdown_tx.subscribe(),
+        wasm_timeout,
     ));
 
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(64);
+    anyhow::ensure!(
+        max_concurrent > 0,
+        "MAX_CONCURRENT_INVOCATIONS must be positive"
+    );
 
     tokio::spawn(health::watch_readiness(
         nats_ready_rx.clone(),
@@ -235,7 +243,7 @@ async fn main() -> Result<()> {
 // concurrently up to max_concurrent in-flight invocations.  On shutdown, drains
 // all in-flight tasks before returning.
 async fn process_nats_messages(
-    mut msg_rx: tokio::sync::mpsc::Receiver<async_nats::Message>,
+    mut msg_rx: tokio::sync::mpsc::Receiver<nats::InvocationMessage>,
     state: Arc<RuntimeState>,
     app_registry: AppRegistry,
     module_registry: ModuleRegistry,
@@ -259,9 +267,21 @@ async fn process_nats_messages(
             _ = shutdown_rx.recv() => break,
         };
 
-        let permit = match Arc::clone(&semaphore).acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => break,
+        let nats::InvocationMessage {
+            message,
+            invocation,
+        } = message;
+        let permit = tokio::select! {
+            biased;
+            _ = shutdown_rx.recv() => break,
+            permit = invocation.acquire_permit(Arc::clone(&semaphore)) => match permit {
+                Ok(permit) => permit,
+                Err(_) => {
+                    let client = client_rx.borrow().clone();
+                    send_timeout_reply(&message, client).await;
+                    continue;
+                },
+            },
         };
 
         let subject = message.subject.to_string();
@@ -306,8 +326,6 @@ async fn process_nats_messages(
         let app_namespace = fn_entry.app_namespace.clone();
         let function_name = fn_entry.function_name.clone();
         let world_type = fn_entry.world_type;
-        let sql_username = fn_entry.sql_username.clone();
-        let kv_enabled = fn_entry.kv_enabled;
         let nats_for_invoke = client_snapshot.clone();
 
         let trigger = match world_type {
@@ -317,69 +335,64 @@ async fn process_nats_messages(
         metrics_registry.record_event(&app_name, &app_namespace, trigger);
 
         join_set.spawn(async move {
-            let _permit = permit;
             let reply = message.reply.clone();
             let payload = message.payload.to_vec();
             let app_name_log = app_name.clone();
             let app_namespace_log = app_namespace.clone();
+            let function_name_log = function_name.clone();
+            let cancellation = invocation.clone();
 
-            // WASM execution is CPU-bound; run it on the blocking thread
-            // pool so the async runtime stays responsive.
-            let task = match world_type {
-                config::configsync::WorldType::Message => {
-                    tokio::task::spawn_blocking(move || {
-                        invoke_on_message(&state, &component, &payload, nats_for_invoke, app_name, app_namespace, function_name, sql_username, kv_enabled)
-                    })
-                }
-                config::configsync::WorldType::Http => {
-                    tokio::task::spawn_blocking(move || {
-                        let request: HttpRequestPayload =
-                            serde_json::from_slice(&payload).map_err(|e| {
-                                anyhow::anyhow!("failed to decode HTTP request payload: {e}")
-                            })?;
-                        let response = invoke_on_request(&state, &component, request, nats_for_invoke, app_name, app_namespace, function_name, sql_username, kv_enabled)?;
-                        let bytes = serde_json::to_vec(&response).map_err(|e| {
-                            anyhow::anyhow!("failed to encode HTTP response payload: {e}")
-                        })?;
-                        Ok(Some(bytes))
-                    })
-                }
-            };
-
-            let result = match tokio::time::timeout(wasm_timeout, task).await {
-                Ok(join_result) => join_result,
-                Err(_elapsed) => {
-                    tracing::error!(
-                        app_name = %app_name_log,
-                        app_namespace = %app_namespace_log,
-                        timeout_secs = wasm_timeout.as_secs(),
-                        "invocation timed out"
-                    );
-                    if let (
-                        config::configsync::WorldType::Http,
-                        Some(reply_subject),
-                        Some(client),
-                    ) = (world_type, reply, client_snapshot)
-                    {
-                        let error_response = HttpResponsePayload {
-                            status: 504,
-                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
-                            body: Some(b"invocation timed out".to_vec()),
-                        };
-                        if let Ok(bytes) = serde_json::to_vec(&error_response) {
-                            let _ = client.publish(reply_subject, bytes.into()).await;
+            let result = invocation::run_blocking(invocation, permit, move |invocation| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    invocation.check().map_err(anyhow::Error::msg)?;
+                    let context = InvocationContext {
+                        function: fn_entry,
+                        nats_client: nats_for_invoke,
+                        invocation,
+                    };
+                    match world_type {
+                        config::configsync::WorldType::Message => {
+                            invoke_on_message(&state, &component, &payload, context).await
+                        }
+                        config::configsync::WorldType::Http => {
+                            let request: HttpRequestPayload = serde_json::from_slice(&payload)?;
+                            let response = invoke_on_request(&state, &component, request, context).await?;
+                            Ok(Some(serde_json::to_vec(&response)?))
                         }
                     }
-                    return;
+                })
+            }).await;
+
+            tracing::info!(
+                app_name = %app_name_log,
+                app_namespace = %app_namespace_log,
+                function_name = %function_name_log,
+                cancelled = cancellation.check().is_err(),
+                expired = tokio::time::Instant::now() >= cancellation.deadline(),
+                "invocation stopped"
+            );
+            if result.is_ok() && cancellation.check().is_err() {
+                tracing::error!(
+                    app_name = %app_name_log,
+                    app_namespace = %app_namespace_log,
+                    timeout_secs = wasm_timeout.as_secs(),
+                    "invocation timed out"
+                );
+                if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
+                    publish_reply(&client, reply_subject, HttpResponsePayload {
+                        status: 504,
+                        headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+                        body: Some(b"invocation timed out".to_vec()),
+                    }).await;
                 }
-            };
+                return;
+            }
 
             match result {
                 Ok(Ok(Some(response_body))) => {
                     if let Some(reply_subject) = reply {
                         if let Some(client) = client_snapshot {
-                            if let Err(err) = client
-                                .publish(reply_subject.clone(), response_body.into())
+                            if let Err(err) = tokio::time::timeout(std::time::Duration::from_secs(2), client.publish(reply_subject.clone(), response_body.into()))
                                 .await
                             {
                                 tracing::error!(%reply_subject, "failed to publish reply: {err:#}");
@@ -405,7 +418,7 @@ async fn process_nats_messages(
                             body: Some(b"internal error: invocation failed".to_vec()),
                         };
                         if let Ok(bytes) = serde_json::to_vec(&error_response) {
-                            let _ = client.publish(reply_subject, bytes.into()).await;
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.publish(reply_subject, bytes.into())).await;
                         }
                     }
                 }
@@ -418,7 +431,7 @@ async fn process_nats_messages(
                             body: Some(b"internal error: execution panicked".to_vec()),
                         };
                         if let Ok(bytes) = serde_json::to_vec(&error_response) {
-                            let _ = client.publish(reply_subject, bytes.into()).await;
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.publish(reply_subject, bytes.into())).await;
                         }
                     }
                 }
@@ -429,6 +442,35 @@ async fn process_nats_messages(
     tracing::info!("message channel closed; draining in-flight invocations");
     join_set.join_all().await;
     tracing::info!("drain complete; exiting");
+}
+
+async fn send_timeout_reply(message: &async_nats::Message, client: Option<async_nats::Client>) {
+    if let (Some(reply), Some(client)) = (message.reply.clone(), client) {
+        publish_reply(
+            &client,
+            reply,
+            HttpResponsePayload {
+                status: 504,
+                headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
+                body: Some(b"invocation timed out".to_vec()),
+            },
+        )
+        .await;
+    }
+}
+
+async fn publish_reply(
+    client: &async_nats::Client,
+    reply: async_nats::Subject,
+    response: HttpResponsePayload,
+) {
+    if let Ok(bytes) = serde_json::to_vec(&response) {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.publish(reply, bytes.into()),
+        )
+        .await;
+    }
 }
 
 // ── Metrics endpoint ──────────────────────────────────────────────────────────

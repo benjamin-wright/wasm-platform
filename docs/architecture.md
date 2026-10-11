@@ -59,7 +59,7 @@ WASM is sandboxed by default; host functions break that sandbox deliberately. Gu
 - **Fuel metering** — prevents infinite loops / runaway computation.
 - **Memory limits** — cap linear memory per instance (e.g. 64 MB) via `InstanceLimits`.
 - **Capability scoping** — modules access only the databases and queues declared in their CRD `spec`.
-- **Wall-clock timeouts** — fuel doesn't cover host calls; each invocation is wrapped in an async timeout.
+- **Invocation deadlines** — one monotonic budget covers queueing, guest execution, and host operations. Async Wasmtime/WASI execution yields through epochs on the blocking pool, so cancellation drops a suspended invocation and its store. Admission permits survive until execution and backend cleanup finish; see the [execution-host contract](../components/execution-host/README.md#invocation-deadlines) for external-write outcomes.
 
 ### Data Layer
 
@@ -71,7 +71,7 @@ Three shared backing stores, all provisioned by the **[db-operator](https://gith
 | **Redis** | Single shared instance. Per-app key-prefix isolation (`<namespace>/<app>/`), assigned automatically — no CRD field required. |
 | **NATS** | Single shared instance. Per-app subject isolation (operator-assigned prefixed topics). |
 
-**Connection model:** execution hosts are configured once with shared infrastructure coordinates (`PG_HOST`/`PG_PORT`, `REDIS_URL` env vars). The `ConfigSync` service carries only the per-app delta: database name, username, and password for PostgreSQL. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **single multiplexed connection** — isolation is purely by key prefix, automatically derived from `(namespace, app)`.
+**Connection model:** execution hosts are configured once with shared infrastructure coordinates (`PG_HOST`/`PG_PORT`, `REDIS_URL` env vars). The `ConfigSync` service carries only the per-app delta: database name, username, and password for PostgreSQL. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **private asynchronous connection per host call** — isolation is purely by key prefix, automatically derived from `(namespace, app)`.
 
 The host functions translate WIT `sql.query` / `kv.get` calls into actual client calls, keeping WASM modules ignorant of the backing store.
 

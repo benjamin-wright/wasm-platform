@@ -16,6 +16,7 @@ load('./examples/counter-app/Tiltfile', 'counter_app')
 load('./examples/log-error/Tiltfile', 'log_error')
 load('./examples/sql-hello/Tiltfile', 'sql_hello')
 load('./examples/sql-broken-migrations/Tiltfile', 'sql_broken_migrations')
+load('./examples/cancellation-app/Tiltfile', 'cancellation_app')
 load('./tests/e2e/Tiltfile', 'e2e_tests')
 load('./tilt/workspace-deps.Tiltfile', 'workspace_deps')
 load('./tilt/cert-manager.Tiltfile', 'cert_manager')
@@ -49,6 +50,7 @@ counter_app('examples', resource_deps=['wp-operator', 'wp-webhook', 'execution-h
 log_error('examples', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
 sql_hello('default', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
 sql_broken_migrations('default', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
+cancellation_app('default', resource_deps=['wp-operator', 'wp-webhook', 'execution-host', 'gateway'])
 
 ## Tests ##
 

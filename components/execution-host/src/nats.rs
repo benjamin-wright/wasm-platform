@@ -2,6 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use futures_util::StreamExt as _;
 
+pub(crate) struct InvocationMessage {
+    pub(crate) message: async_nats::Message,
+    pub(crate) invocation: crate::invocation::Invocation,
+}
+
 pub use platform_common::nats_client::run_nats_manager;
 
 // Watches both the live NATS client and the desired topic set.  Whenever
@@ -14,8 +19,9 @@ pub use platform_common::nats_client::run_nats_manager;
 pub async fn manage_nats_subscriptions(
     mut client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
     mut topics_rx: tokio::sync::watch::Receiver<Vec<String>>,
-    msg_tx: tokio::sync::mpsc::Sender<async_nats::Message>,
+    msg_tx: tokio::sync::mpsc::Sender<InvocationMessage>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    timeout: std::time::Duration,
 ) {
     // Keys are topic strings; values are oneshot senders used to cancel the
     // per-topic forwarding task (dropping the sender signals the task to stop,
@@ -67,7 +73,8 @@ pub async fn manage_nats_subscriptions(
                             _ = cancel_rx => {}
                             _ = async move {
                                 while let Some(msg) = sub.next().await {
-                                    if tx.send(msg).await.is_err() {
+                                    let invocation = crate::invocation::Invocation::new(timeout);
+                                    if tx.send(InvocationMessage { message: msg, invocation }).await.is_err() {
                                         break;
                                     }
                                 }

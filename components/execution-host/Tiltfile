@@ -67,3 +67,19 @@ def execution_host(resource_deps=[]):
         port_forwards = ['3001:3000', '9090:9090'],
         resource_deps = resource_deps,
     )
+
+    k8s_yaml('components/execution-host/tests/redis-cancellation.yaml')
+    k8s_resource(
+        'redis-cancellation',
+        port_forwards = ['6391:6379'],
+        labels = ['execution-host'],
+    )
+    local_resource(
+        'execution-host: redis-cancellation-tests',
+        cmd = 'REDIS_TEST_URL=redis://localhost:6391 cargo test --locked -p execution-host redis_client::tests::queued_mutations -- --ignored',
+        deps = ['components/execution-host/src', 'components/execution-host/tests/redis-cancellation.yaml', 'components/execution-host/Cargo.toml', 'Cargo.lock'],
+        resource_deps = ['redis-cancellation'],
+        trigger_mode = TRIGGER_MODE_MANUAL,
+        auto_init = False,
+        labels = ['execution-host'],
+    )

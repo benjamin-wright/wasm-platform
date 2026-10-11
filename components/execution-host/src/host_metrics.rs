@@ -1,7 +1,4 @@
-use crate::{
-    metrics::DropReason,
-    runtime::{HostState, message_bindings},
-};
+use crate::runtime::{HostState, message_bindings};
 
 impl message_bindings::framework::runtime::metrics::Host for HostState {
     fn counter_increment(
@@ -9,6 +6,7 @@ impl message_bindings::framework::runtime::metrics::Host for HostState {
         name: String,
         labels: Vec<(String, String)>,
     ) -> Result<(), String> {
+        self.invocation.check()?;
         match self.metrics_registry.counter_increment(
             &name,
             &self.app_name,
@@ -26,8 +24,11 @@ impl message_bindings::framework::runtime::metrics::Host for HostState {
                     ?labels,
                     "guest metric call dropped",
                 );
-                self.metrics_registry
-                    .record_dropped_metric(&self.app_name, &self.app_namespace, reason);
+                self.metrics_registry.record_dropped_metric(
+                    &self.app_name,
+                    &self.app_namespace,
+                    reason,
+                );
                 // Silent drop from the guest's perspective.
                 Ok(())
             }
@@ -40,6 +41,7 @@ impl message_bindings::framework::runtime::metrics::Host for HostState {
         value: f64,
         labels: Vec<(String, String)>,
     ) -> Result<(), String> {
+        self.invocation.check()?;
         match self.metrics_registry.gauge_set(
             &name,
             value,
@@ -58,8 +60,11 @@ impl message_bindings::framework::runtime::metrics::Host for HostState {
                     ?labels,
                     "guest metric call dropped",
                 );
-                self.metrics_registry
-                    .record_dropped_metric(&self.app_name, &self.app_namespace, reason);
+                self.metrics_registry.record_dropped_metric(
+                    &self.app_name,
+                    &self.app_namespace,
+                    reason,
+                );
                 // Silent drop from the guest's perspective.
                 Ok(())
             }
