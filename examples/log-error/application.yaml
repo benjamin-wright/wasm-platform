@@ -1,0 +1,14 @@
+apiVersion: wasm-platform.io/v1alpha1
+kind: Application
+metadata:
+  name: log-error
+  namespace: examples
+spec:
+  functions:
+    - name: http-handler
+      module: log-error-http
+      trigger:
+        http:
+          path: /log-error
+          methods:
+            - POST

@@ -122,6 +122,8 @@ Log entries must use key-value fields, not interpolated message strings. Compone
 
 Credentials, connection strings with embedded passwords, tokens, and key material must never appear in log output at any level. Logging a struct that contains secret fields requires explicit exclusion of those fields — do not rely on the struct's default formatting.
 
+Rust log subscribers emit only platform-crate events. Dependency diagnostics are excluded even when `RUST_LOG` enables verbose dependency targets, because authentication exchanges can contain credentials. Panic diagnostics include the source location without the panic payload. Platform connection errors report safe operation/category metadata instead of external error chains.
+
 ### Prometheus Metrics
 
 Every component must expose a `/metrics` endpoint in Prometheus exposition format for scraping. Use this to surface request counts, error rates, latency histograms, and component-specific activity indicators. The wp-operator already exposes metrics via controller-runtime; Rust components must add an equivalent endpoint.

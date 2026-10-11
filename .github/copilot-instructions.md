@@ -2,6 +2,7 @@
 
 ## Documentation Map
 
+- [AGENTS.md](../AGENTS.md) — working expectations for agents. Read before making changes.
 - [README.md](../README.md) — project overview, component list, and quick start. Begin here for orientation.
 - [docs/architecture.md](../docs/architecture.md) — technology decisions, system design, component responsibilities, and design constraints. Read before making design-level changes.
 - [docs/contributions.md](../docs/contributions.md) — development setup, Make targets, project layout, and workflow guides. Read before making changes.

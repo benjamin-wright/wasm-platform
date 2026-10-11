@@ -14,7 +14,11 @@ def gateway(resource_deps=[]):
         deps = [
             'components/gateway/src',
             'components/gateway/Cargo.toml',
+            'components/gateway/Dockerfile',
+            'components/gateway/build.rs',
+            'lib/platform-common',
             'proto/gateway/v1/gateway.proto',
+            '.dockerignore',
         ],
         image_deps = ['workspace-deps'],
     )

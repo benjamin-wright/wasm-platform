@@ -36,6 +36,8 @@ Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURR
 
 Guest modules emit log entries via the `log` WIT interface (`log::emit(level, message)`). The host forwards each call to the platform's `tracing` subscriber with `app_name` and `app_namespace` as structured fields, making application log output distinguishable from platform infrastructure logs. Log calls are fire-and-forget from the guest's perspective.
 
+Connection diagnostics report the operation and error category without connection URLs, credentials, or remote error text. Configuration debug output excludes connection credentials and environment values; HTTP payload debug output excludes paths, query strings, headers, and bodies. Unexpected invocation failures log application identity and return HTTP `500` with `internal error: invocation failed`.
+
 ## Environment Variables
 
 | Variable | Description |

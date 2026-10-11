@@ -15,7 +15,7 @@ pub use configsync::{AppUpdate, ApplicationConfig, FullConfig};
 /// (shared env, sql, key_value, metrics) and function-level (module_ref, world_type, topic)
 /// fields.  The registry maps each NATS subject (topic) to one FunctionEntry so that
 /// message dispatch is a single O(1) map lookup.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FunctionEntry {
     pub app_name: String,
     pub app_namespace: String,
@@ -33,6 +33,63 @@ pub struct FunctionEntry {
     pub kv_enabled: bool,
     /// User-defined Prometheus metrics declared by the application.
     pub metrics: Vec<configsync::MetricDefinition>,
+}
+
+impl std::fmt::Debug for FunctionEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FunctionEntry")
+            .field("app_name", &self.app_name)
+            .field("app_namespace", &self.app_namespace)
+            .field("function_name", &self.function_name)
+            .field("module_ref", &"[REDACTED]")
+            .field("world_type", &self.world_type)
+            .field("env", &"[REDACTED]")
+            .field("sql_username", &self.sql_username)
+            .field("kv_enabled", &self.kv_enabled)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for configsync::SqlUserConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqlUserConfig")
+            .field("username", &self.username)
+            .field("connection_url", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for configsync::RedisConnectionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisConnectionConfig")
+            .field("url", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for configsync::ApplicationConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApplicationConfig")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("functions", &self.functions)
+            .field("env", &"[REDACTED]")
+            .field("sql_users", &self.sql_users)
+            .field("key_value", &self.key_value)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for configsync::FunctionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FunctionConfig")
+            .field("name", &self.name)
+            .field("module_ref", &"[REDACTED]")
+            .field("world_type", &self.world_type)
+            .field("topic", &self.topic)
+            .field("sql_username", &self.sql_username)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The result of applying a config update.
@@ -106,7 +163,13 @@ impl AppRegistry {
         let modules_to_evict: Vec<(String, String, String)> = map
             .iter()
             .filter(|(topic, _)| !incoming.contains_key(topic.as_str()))
-            .map(|(_, e)| (e.app_namespace.clone(), e.app_name.clone(), e.function_name.clone()))
+            .map(|(_, e)| {
+                (
+                    e.app_namespace.clone(),
+                    e.app_name.clone(),
+                    e.function_name.clone(),
+                )
+            })
             .collect();
 
         let mut pools_to_evict_apps: Vec<(String, String)> = modules_to_evict
@@ -145,7 +208,10 @@ impl AppRegistry {
     ///
     /// On upsert, all existing entries for the application are replaced with the new
     /// function list.  This handles both additions and removals of individual functions.
-    pub fn apply_incremental(&self, incremental: configsync::IncrementalConfig) -> Result<ConfigDiff> {
+    pub fn apply_incremental(
+        &self,
+        incremental: configsync::IncrementalConfig,
+    ) -> Result<ConfigDiff> {
         let mut map = self
             .inner
             .write()
@@ -167,9 +233,7 @@ impl AppRegistry {
             if update.delete {
                 let removed: Vec<String> = map
                     .iter()
-                    .filter(|(_, e)| {
-                        e.app_namespace == app.namespace && e.app_name == app.name
-                    })
+                    .filter(|(_, e)| e.app_namespace == app.namespace && e.app_name == app.name)
                     .map(|(topic, _)| topic.clone())
                     .collect();
                 for topic in removed {
@@ -190,9 +254,7 @@ impl AppRegistry {
                 }
                 let old_topics: Vec<String> = map
                     .iter()
-                    .filter(|(_, e)| {
-                        e.app_namespace == app.namespace && e.app_name == app.name
-                    })
+                    .filter(|(_, e)| e.app_namespace == app.namespace && e.app_name == app.name)
                     .map(|(topic, _)| topic.clone())
                     .collect();
                 for topic in old_topics {

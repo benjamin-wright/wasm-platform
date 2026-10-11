@@ -7,17 +7,27 @@ mod route_table;
 use anyhow::Result;
 use axum::{Router, routing::get};
 use http_server::GatewayState;
-use platform_common::{health::{self, ReadyState}, nats_client::NatsConnectionInfo};
+use platform_common::{
+    health::{self, ReadyState},
+    nats_client::NatsConnectionInfo,
+};
 use route_table::RouteTable;
 use std::sync::Arc;
+use tracing_subscriber::prelude::*;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(
+            tracing_subscriber::fmt::layer().with_filter(tracing_subscriber::filter::filter_fn(
+                platform_common::logging::is_platform_log,
+            )),
+        )
         .init();
+    platform_common::logging::install_panic_hook();
 
     let cfg = config::Config::from_env()?;
 
@@ -59,10 +69,16 @@ async fn main() -> Result<()> {
         synced_rx.clone(),
         "route sync",
     ));
-    let ready_state = ReadyState { nats_ready_rx, synced_rx };
+    let ready_state = ReadyState {
+        nats_ready_rx,
+        synced_rx,
+    };
     let app = Router::new()
         .route("/healthz", get(health::healthz_handler))
-        .route("/readyz", get(health::readyz_handler).with_state(ready_state))
+        .route(
+            "/readyz",
+            get(health::readyz_handler).with_state(ready_state),
+        )
         .merge(http_server::build_router(Arc::clone(&state)));
 
     let addr = format!("0.0.0.0:{}", cfg.http_port);
@@ -96,4 +112,3 @@ fn read_nats_credentials() -> anyhow::Result<NatsConnectionInfo> {
         password,
     })
 }
-

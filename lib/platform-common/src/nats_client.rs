@@ -1,14 +1,22 @@
 use std::time::Duration;
 
-use anyhow::Result;
-
 /// Connection information for a NATS server, pushed to the execution-host via
 /// the configsync gRPC stream instead of being read from a mounted Secret.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NatsConnectionInfo {
     pub url: String,
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for NatsConnectionInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NatsConnectionInfo")
+            .field("url", &"[REDACTED]")
+            .field("username", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Manages the NATS client lifecycle with credential rotation and automatic
@@ -74,7 +82,7 @@ pub async fn run_nats_manager(
 
         match opts.connect(&url).await {
             Ok(client) => {
-                tracing::info!(%url, "connected to NATS");
+                tracing::info!("connected to NATS");
                 backoff = Duration::from_secs(1);
                 let _ = ready_tx.send(true);
                 let _ = client_tx.send(Some(client));
@@ -96,7 +104,7 @@ pub async fn run_nats_manager(
                 let _ = client_tx.send(None);
             }
             Err(err) => {
-                tracing::warn!("failed to connect to NATS: {err:#}; retrying in {backoff:?}");
+                tracing::warn!(error_kind = ?err.kind(), retry_after_secs = backoff.as_secs(), "failed to connect to NATS");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }

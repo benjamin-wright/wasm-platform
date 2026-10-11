@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use oci_distribution::{
     Reference,
     client::{Client, ClientConfig, ClientProtocol},
@@ -14,12 +14,10 @@ pub async fn pull_wasm_bytes(image_ref: &str) -> Result<Vec<u8>> {
     let bare = image_ref.strip_prefix("oci://").unwrap_or(image_ref);
     let reference: Reference = bare
         .parse()
-        .with_context(|| format!("parsing OCI reference: {image_ref}"))?;
+        .map_err(|_| anyhow::anyhow!("invalid OCI reference"))?;
 
     let config = ClientConfig {
-        protocol: ClientProtocol::HttpsExcept(vec![
-            reference.registry().to_string(),
-        ]),
+        protocol: ClientProtocol::HttpsExcept(vec![reference.registry().to_string()]),
         ..Default::default()
     };
     let client = Client::new(config);
@@ -27,27 +25,27 @@ pub async fn pull_wasm_bytes(image_ref: &str) -> Result<Vec<u8>> {
     let (manifest, _) = client
         .pull_manifest(&reference, &RegistryAuth::Anonymous)
         .await
-        .with_context(|| format!("pulling manifest for {image_ref}"))?;
+        .map_err(|_| anyhow::anyhow!("OCI manifest pull failed"))?;
 
     use oci_distribution::manifest::OciManifest;
     let layers = match &manifest {
         OciManifest::Image(img) => &img.layers,
         OciManifest::ImageIndex(_) => {
             return Err(anyhow::anyhow!(
-                "OCI image index (multi-arch manifest) not supported for {image_ref}"
-            ))
+                "OCI image index (multi-arch manifest) not supported"
+            ));
         }
     };
 
     let layer = layers
         .first()
-        .ok_or_else(|| anyhow::anyhow!("OCI image {image_ref} has no layers"))?;
+        .ok_or_else(|| anyhow::anyhow!("OCI image has no layers"))?;
 
     let mut bytes = Vec::new();
     client
         .pull_blob(&reference, layer, &mut bytes)
         .await
-        .with_context(|| format!("pulling layer {} from {image_ref}", layer.digest))?;
+        .map_err(|_| anyhow::anyhow!("OCI layer pull failed"))?;
 
     Ok(bytes)
 }
@@ -61,12 +59,10 @@ pub async fn resolve_digest(image_ref: &str) -> Result<String> {
     let bare = image_ref.strip_prefix("oci://").unwrap_or(image_ref);
     let reference: Reference = bare
         .parse()
-        .with_context(|| format!("parsing OCI reference: {image_ref}"))?;
+        .map_err(|_| anyhow::anyhow!("invalid OCI reference"))?;
 
     let config = ClientConfig {
-        protocol: ClientProtocol::HttpsExcept(vec![
-            reference.registry().to_string(),
-        ]),
+        protocol: ClientProtocol::HttpsExcept(vec![reference.registry().to_string()]),
         ..Default::default()
     };
     let client = Client::new(config);
@@ -74,7 +70,36 @@ pub async fn resolve_digest(image_ref: &str) -> Result<String> {
     let (_, digest) = client
         .pull_manifest(&reference, &RegistryAuth::Anonymous)
         .await
-        .with_context(|| format!("resolving digest for {image_ref}"))?;
+        .map_err(|_| anyhow::anyhow!("OCI digest resolution failed"))?;
 
     Ok(digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn malformed_reference_errors_exclude_credentials_and_tokens() {
+        let image_ref = "oci://user:OCI_PASSWORD@invalid registry/app?token=OCI_TOKEN";
+        let errors = [
+            tokio::time::timeout(Duration::from_secs(3), pull_wasm_bytes(image_ref))
+                .await
+                .expect("OCI pull exceeded test deadline")
+                .unwrap_err(),
+            tokio::time::timeout(Duration::from_secs(3), resolve_digest(image_ref))
+                .await
+                .expect("OCI resolution exceeded test deadline")
+                .unwrap_err(),
+        ];
+        for error in errors {
+            let diagnostic = format!("{error:#}\n{error:?}");
+            assert_eq!(error.chain().count(), 1, "{diagnostic}");
+            assert!(!diagnostic.contains("OCI_PASSWORD"), "{diagnostic}");
+            assert!(!diagnostic.contains("OCI_TOKEN"), "{diagnostic}");
+            assert!(!diagnostic.contains(image_ref), "{diagnostic}");
+            assert_eq!(error.to_string(), "invalid OCI reference");
+        }
+    }
 }

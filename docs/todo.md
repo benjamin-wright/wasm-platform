@@ -2,11 +2,7 @@
 
 Active implementation plan for the wasm-platform project.
 
-Updated 11 October 2026 in response to the supplied **Wasm platform technical review**, dated 11 October 2026, covering commit `a61b1ae9f1afbb00c56f8a3ab7b6173ee19d7620`. Finding IDs below refer to that review. Its evidence is static inspection: it reports no executed builds, tests, benchmarks, deployed-cluster checks, or exploits. P1/P2 are engineering priorities, not vulnerability scores. Security consequences that depend on service reachability remain conditional.
-
-The planning baseline is checkout `f2565fd4bc538723d5e8efe8d595909185eacae9`. The reviewed commit is unavailable in the local Git history, so an exact comparison is outstanding; inspection of the current affected paths supports retaining these repairs. All work below remains open until its acceptance evidence is recorded.
-
-Priority mapping: F01–F11 are P1; F12 combines P1 correctness with P2 resilience; F13–F18 are P2. The early placement of CI, topology containment, and lifecycle tests supports the P1 repairs without changing those finding priorities.
+Finding IDs refer to the supplied Wasm platform technical review. F01–F11 are P1; F12 combines P1 correctness with P2 resilience; F13–F18 are P2. These are engineering priorities.
 
 ## Delivery order and readiness gates
 
@@ -17,18 +13,18 @@ Preserve the Rust/Wasmtime execution host, Go operator, WIT contracts, OCI distr
 | 1 | Contain execution and trust risks | Timed-out work stops; task records are reaped; credentials, compiled artifacts, and SQL policy have enforceable boundaries. |
 | 2 | Make desired state converge | Immutable generations, replayable configuration, owned routes, rotation, and migration fencing survive updates and reconnects. |
 | 3 | Bound failure and shutdown | Finite resource/deadline budgets, correct HTTP and guest configuration, and defined message/drain semantics. |
-| 4 | Prove the development and release path | Reproducible CI, failure-mode regressions, fresh-clone examples, and documentation supported by evidence. |
+| 4 | Verify the development and release path | Reproducible CI, failure-mode regressions, fresh-clone examples, and accurate documentation. |
 
-- **Trusted local prototype:** restrict authorship and service reachability to trusted participants. Verify fresh builds and exact-revision tests; fix secret logging, execution/task lifetime, stale build inputs, and setup instructions before calling it operational.
+- **Trusted local prototype:** restrict authorship and service reachability to trusted participants. Verify fresh builds and tests; fix execution/task lifetime, stale build inputs, and setup instructions before calling it operational.
 - **Shared internal pilot:** require every P1 repair, stages 1–4, tested credential rotation, dependency outage/restart recovery, migration and event-delivery policies, and a working CI gate. Keep configuration serving single-authority until stage 2 proves otherwise.
 - **External or mutually untrusted users:** additionally require a documented tenant threat model, workload identity and least-privilege authorization, SQL/metric isolation, quotas, secure registry policy, and negative security tests. Define whether guests may publish to any platform topic or only authorized topics; enforce the chosen policy end to end.
-- **Production:** additionally require recorded workload-specific load/soak/failover evidence, alerts and runbooks, backup/restore tests, release compatibility, upgrade/rollback procedures, and dependency/security maintenance. These are gates to demonstrate, not current readiness claims.
+- **Production:** additionally require workload-specific load/soak/failover tests, alerts and runbooks, backup/restore tests, release compatibility, upgrade/rollback procedures, and dependency/security maintenance.
 
-### Completion evidence
+### Verification
 
-For each remediation task, record the implementation revision, relevant image/module digests, test configuration, expected bounds, and actual result. Use deterministic clocks, controllable loaders, and barriers for ordering tests; use a disposable cluster for database, credential, routing, and rollout behavior. Tests must exercise the production component/dispatch path and use finite client deadlines. Primitive fuel/memory tests or successful CR updates alone do not establish the platform guarantees.
+Use deterministic clocks, controllable loaders, and barriers for ordering tests; use a disposable cluster for database, credential, routing, and rollout behavior. Tests must exercise the production component/dispatch path and use finite client deadlines. Primitive fuel/memory tests or successful CR updates alone do not establish the platform guarantees. Report results in the task conversation, following [AGENTS.md](../AGENTS.md).
 
-Keep existing `demo-app`, `counter-app`, and `sql-hello` fixtures passing. Follow the definition of done in [standards.md](standards.md): changed external behavior requires e2e coverage, current-state documentation, and a passing `e2e-tests` resource triggered through the Tilt MCP server. A plan edit does not establish that any implementation or test has passed.
+Keep existing `demo-app`, `counter-app`, and `sql-hello` fixtures passing. Follow the definition of done in [standards.md](standards.md): changed external behavior requires e2e coverage, current-state documentation, and a passing `e2e-tests` resource triggered through the Tilt MCP server.
 
 ---
 
@@ -40,7 +36,6 @@ Resolve F01–F06 and the immediate exposure/resource paths in F09/F11/F12. Reso
 
 ### Tasks
 
-- [ ] **F04 — Remove secret logging first.** Redact PostgreSQL/Redis URLs, tokens, and secret-bearing structures from every log/error path. Add log-capture tests. If deployed credentials appeared in logs, assess access/retention and rotate affected credentials through the deployment's incident process; this is conditional follow-up, not evidence of compromise.
 - [ ] **F01 — Make invocation cancellation real.** Give each invocation one deadline/cancellation state covering queueing, guest execution, and SQL/KV/messaging host operations. Use Wasmtime interruption and finite, cancellable host calls; retain permits and resource accounting until execution stops. Dropping or aborting an already-running blocking task is not termination. Prevent new side effects after cancellation; define backend cancellation/rollback and the outcome of already-submitted external writes separately from writes committed before the deadline. Use isolated worker processes when the promised execution hard-stop contract cannot be achieved in-process; process termination alone does not cancel a remote database operation.
 - [ ] **F02 — Reap invocation completions continuously.** Drain completed task records during dispatch, surface errors/panics promptly, and make permit acquisition and shutdown cancellation-aware. Bound queued, running, completed, and terminating work separately.
 - [ ] **F03 — Establish the compiled-artifact trust boundary.** Authenticate and authorize cache readers/writers, protect transport, restrict reachability with NetworkPolicy, and prohibit unverified replacement of artifacts. Before any unsafe deserialization, verify trusted provenance over artifact bytes, immutable source digest, and complete engine/CPU compatibility identity. Evaluate verified raw-Wasm sharing with local compilation as the simpler baseline; select and document the approach before implementing it. Reject unauthorized or modified native artifacts before deserialization; cache-key equality is not authentication.
@@ -58,7 +53,7 @@ Resolve F01–F06 and the immediate exposure/resource paths in F09/F11/F12. Reso
 - [ ] Sustained successful traffic keeps task bookkeeping bounded and memory stable after warm-up; panic and cancellation paths release resources only after termination; shutdown completes within its budget.
 - [ ] Anonymous/wrong-identity configuration and cache requests fail; tampered/untrusted compiled bytes never reach deserialization; captured logs contain no secrets.
 - [ ] Real database checks prove table isolation, narrowed table scopes, ALL-to-SELECT downgrade, sequence/default privilege limits, existing-session revocation, user removal, SQL removal, and deletion after edits. Failed downstream role deletion retains a retryable finalizer. Two apps using the `foo-bar`/`baz` and `foo`/`bar-baz` collision pair cannot share or delete each other's credentials; test both deletion orders.
-- [ ] Oversized/slow input and dependency results terminate or reject within finite limits; cross-app metric use is denied. The e2e suite and new negative security tests pass on recorded revisions.
+- [ ] Oversized/slow input and dependency results terminate or reject within finite limits; cross-app metric use is denied. The e2e suite and new negative security tests pass.
 
 ---
 
@@ -115,22 +110,22 @@ Complete F11–F17 after execution termination and generation convergence are de
 
 ---
 
-## Remediation stage 4: Reproducible development and release evidence
+## Remediation stage 4: Reproducible development and releases
 
 ### Tasks
 
 - [ ] **F18 — Make local builds track their real inputs.** Include shared Rust libraries, manifests/lockfiles, protobuf/WIT, and relevant Docker/build inputs in consumer Tilt dependencies. Verify a shared-source edit rebuilds every consumer. Establish one canonical CRD generation/deployment path and a generated-source/schema drift check; do not hand-edit generated outputs.
-- [ ] **F18 — Complete exact-revision CI.** Add formatting, Rust/Go build and static checks, unit/regression tests, reproducible generators, schema/protobuf drift checks, Helm render/validation, tagged real-cluster operator integration, and full-stack disposable-cluster tests. Reuse the existing Tilt separation of unit and tagged cluster resources; align Makefile/CI commands and remove misleading envtest/integration claims. Disable cached cluster test results and record tool/dependency versions and immutable commit/image/module identities.
-- [ ] **F01–F18 — Make failure tests release gates.** Include the acceptance cases above in automated regression coverage, prioritizing F01–F13 and F17. Capture load/soak, update/reconnect/rollout, secret redaction, SQL/metric isolation, migration status, and shutdown evidence. Do not substitute line-coverage percentages for verified failure contracts.
+- [ ] **F18 — Complete CI.** Add formatting, Rust/Go build and static checks, unit/regression tests, reproducible generators, schema/protobuf drift checks, Helm render/validation, tagged real-cluster operator integration, and full-stack disposable-cluster tests. Reuse the existing Tilt separation of unit and tagged cluster resources; align Makefile/CI commands and remove misleading envtest/integration claims. Disable cached cluster test results and pin tool/dependency versions so tests exercise the intended artifacts.
+- [ ] **F01–F18 — Make failure tests release gates.** Include the cases above in automated regression coverage, prioritizing F01–F13 and F17. Cover load/soak, update/reconnect/rollout, secret redaction, SQL/metric isolation, migration status, and shutdown. Do not substitute line-coverage percentages for verified failure contracts.
 - [ ] **Documentation — Reconcile claims with implementation.** Update the owning README/architecture/contribution/component docs as fixes land. Distinguish implemented guarantees, development-only defaults, planned features, and measured results. Correct credential rotation, gateway settings, SQL/Redis topology and connections, topic publish policy, admission, deletion/retention, migration rollback, and wire contracts; link to source schemas rather than duplicate them. Mark CLI commands unimplemented while the component is only a README. Remove unsupported cold-start/concurrency/pooling/mmap/HPA/KEDA claims from current-state docs; keep goals here until measured or implemented.
 - [ ] **Onboarding — Prove a fresh clone.** Provide one tested prerequisites/build/apply/wait/curl/expected-result/cleanup path for HTTP and SQL, including KUBECONFIG export, actual standalone guest target paths, pushed module and migration artifacts, troubleshooting, development security boundaries, and data retention. Align guest/component contribution guidance with the current workspace/umbrella chart. Resolve an explicit license before outside adoption.
-- [ ] **Performance and operations — Measure after correctness gates.** Define target workloads and deployment sizes, then record warm/cold latency distributions, throughput, aggregate memory, SQL connection fanout, and outage recovery with hardware/configuration identities. Test backup/restore and upgrade/rollback compatibility; prepare budget/readiness alerts, incident and rotation runbooks, and dependency/security maintenance before claiming production readiness.
+- [ ] **Performance and operations — Measure after correctness gates.** Define target workloads and deployment sizes, then measure warm/cold latency distributions, throughput, aggregate memory, SQL connection fanout, and outage recovery. Test backup/restore and upgrade/rollback compatibility; prepare budget/readiness alerts, incident and rotation runbooks, and dependency/security maintenance before claiming production readiness.
 
 ### Verification and exit gate
 
 - [ ] A clean clone completes the documented HTTP/SQL path with no hidden steps; shared edits rebuild consumers; regeneration is reproducible with no deployed-schema drift.
-- [ ] The release pipeline runs the production invocation path and required negative/race/transition tests on exact revisions; generated artifacts, Helm validation, tagged integration, and `e2e-tests` all pass with recorded results.
-- [ ] Current-state documentation matches demonstrated behavior. Any performance claim includes workload, hardware, configuration, and measured distributions; higher readiness claims have the evidence required by the readiness gates above.
+- [ ] The release pipeline runs the production invocation path and required negative/race/transition tests against the release artifacts; generated artifacts, Helm validation, tagged integration, and `e2e-tests` all pass.
+- [ ] Current-state documentation matches demonstrated behavior. Performance claims include workload, hardware, configuration, and measured distributions; readiness claims meet the gates above.
 
 ---
 

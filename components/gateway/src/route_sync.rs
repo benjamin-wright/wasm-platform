@@ -8,9 +8,7 @@ pub mod gateway {
     tonic::include_proto!("gateway.v1");
 }
 
-use gateway::{
-    FullRoutesRequest, RouteUpdateAck, gateway_routes_client::GatewayRoutesClient,
-};
+use gateway::{FullRoutesRequest, RouteUpdateAck, gateway_routes_client::GatewayRoutesClient};
 
 /// Loops forever: fetches a full route snapshot then maintains the incremental
 /// update stream.  On any error or clean stream close, backs off and retries.
@@ -30,7 +28,11 @@ pub async fn run_route_sync_loop(
                 backoff = Duration::from_secs(1);
             }
             Err(err) => {
-                tracing::warn!("route sync error: {err:#}; reconnecting in {backoff:?}");
+                tracing::warn!(
+                    error = %err,
+                    retry_after_secs = backoff.as_secs(),
+                    "route sync failed; reconnecting"
+                );
                 let _ = synced_tx.send(false);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -51,7 +53,9 @@ async fn run_route_sync(
     let _ = synced_tx.send(true);
 
     tracing::info!("opening incremental route update stream");
-    let mut client = GatewayRoutesClient::connect(addr.to_string()).await?;
+    let mut client = GatewayRoutesClient::connect(addr.to_string())
+        .await
+        .map_err(|_| anyhow::anyhow!("route update connection failed"))?;
     tracing::info!("gRPC client connected for route updates");
 
     // Bridge tokio mpsc → futures Stream so tonic can consume acks.
@@ -66,7 +70,8 @@ async fn run_route_sync(
     tracing::info!("calling push_route_update RPC");
     let mut update_stream = client
         .push_route_update(ack_stream)
-        .await?
+        .await
+        .map_err(|error| anyhow::anyhow!("route update RPC failed ({:?})", error.code()))?
         .into_inner();
     tracing::info!("push_route_update stream opened");
 
@@ -88,7 +93,11 @@ async fn run_route_sync(
     tracing::info!("initial gateway ack sent to mpsc channel");
 
     tracing::info!("waiting for first route update message");
-    while let Some(request) = update_stream.message().await? {
+    while let Some(request) = update_stream
+        .message()
+        .await
+        .map_err(|error| anyhow::anyhow!("route update stream failed ({:?})", error.code()))?
+    {
         if let Some(update_config) = request.update {
             let version = update_config.version.clone();
             let update_count = update_config.updates.len();
@@ -131,20 +140,20 @@ async fn run_route_sync(
 /// and applies it to the table.  Returns an error if the connection or RPC
 /// fails so that the process retries rather than silently running unconfigured.
 async fn fetch_full_routes(addr: String, gateway_id: String, table: &RouteTable) -> Result<()> {
-    tracing::info!(%addr, "connecting to operator for full routes");
-    let mut client = GatewayRoutesClient::connect(addr).await?;
+    tracing::info!("connecting to operator for full routes");
+    let mut client = GatewayRoutesClient::connect(addr)
+        .await
+        .map_err(|_| anyhow::anyhow!("route snapshot connection failed"))?;
     let response = client
         .request_full_routes(FullRoutesRequest {
             gateway_id: gateway_id.clone(),
         })
-        .await?
+        .await
+        .map_err(|error| anyhow::anyhow!("route snapshot RPC failed ({:?})", error.code()))?
         .into_inner();
 
     if !response.success {
-        return Err(anyhow::anyhow!(
-            "full routes request failed: {}",
-            response.message
-        ));
+        return Err(anyhow::anyhow!("operator rejected full routes request"));
     }
 
     let routes: Vec<_> = response
@@ -165,4 +174,30 @@ async fn fetch_full_routes(addr: String, gateway_id: String, table: &RouteTable)
     table.replace_all(routes)?;
     tracing::info!(routes = count, version = %response.version, "full route snapshot applied");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn invalid_operator_address_errors_exclude_credentials_and_tokens() {
+        let table = RouteTable::new();
+        let error = tokio::time::timeout(
+            Duration::from_secs(3),
+            fetch_full_routes(
+                "http://user:OPERATOR_PASSWORD@[invalid?token=OPERATOR_TOKEN".to_string(),
+                "gateway".to_string(),
+                &table,
+            ),
+        )
+        .await
+        .expect("route snapshot exceeded test deadline")
+        .unwrap_err();
+        let diagnostic = format!("{error:#}\n{error:?}");
+        assert_eq!(error.chain().count(), 1, "{diagnostic}");
+        assert!(!diagnostic.contains("OPERATOR_PASSWORD"), "{diagnostic}");
+        assert!(!diagnostic.contains("OPERATOR_TOKEN"), "{diagnostic}");
+        assert_eq!(error.to_string(), "route snapshot connection failed");
+    }
 }

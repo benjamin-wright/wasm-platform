@@ -10,8 +10,18 @@ mod module_cache;
 mod modules;
 mod nats;
 mod oci;
+mod redis_client;
 mod runtime;
 mod sql_pool;
+
+#[cfg(test)]
+mod logging_tests;
+
+#[cfg(test)]
+mod dependency_logging_tests;
+
+#[cfg(test)]
+mod panic_logging_tests;
 
 use anyhow::Result;
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
@@ -24,15 +34,22 @@ use platform_common::nats_client::NatsConnectionInfo;
 use runtime::{RuntimeState, invoke_on_message, invoke_on_request};
 use sql_pool::SqlPoolMap;
 use std::sync::{Arc, RwLock};
+use tracing_subscriber::prelude::*;
 use wasmtime::Engine;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(
+            tracing_subscriber::fmt::layer().with_filter(tracing_subscriber::filter::filter_fn(
+                platform_common::logging::is_platform_log,
+            )),
+        )
         .init();
+    platform_common::logging::install_panic_hook();
 
     let mut wasm_config = wasmtime::Config::new();
     wasm_config.wasm_component_model(true);
@@ -75,12 +92,24 @@ async fn main() -> Result<()> {
         .unwrap_or(5);
     let sql_pools = SqlPoolMap::new(pg_pool_max);
 
-    let state = Arc::new(RuntimeState::new(engine.clone(), Arc::clone(&redis_client), metrics_registry.clone(), Arc::clone(&sql_pools), fuel_limit, memory_limit_bytes)?);
+    let state = Arc::new(RuntimeState::new(
+        engine.clone(),
+        Arc::clone(&redis_client),
+        metrics_registry.clone(),
+        Arc::clone(&sql_pools),
+        fuel_limit,
+        memory_limit_bytes,
+    )?);
 
     let cache_addr = std::env::var("MODULE_CACHE_ADDR")
         .map_err(|_| anyhow::anyhow!("MODULE_CACHE_ADDR environment variable is required"))?;
 
-    let module_registry = ModuleRegistry::new(cache_addr, engine, metrics_registry.clone(), fuel_limit.is_some());
+    let module_registry = ModuleRegistry::new(
+        cache_addr,
+        engine,
+        metrics_registry.clone(),
+        fuel_limit.is_some(),
+    );
 
     tracing::info!("execution-host starting");
 
@@ -128,18 +157,7 @@ async fn main() -> Result<()> {
                 break;
             }
             let url_opt = redis_url_rx.borrow_and_update().clone();
-            let new_client = url_opt.and_then(|url| {
-                match redis::Client::open(url.as_str()) {
-                    Ok(c) => {
-                        tracing::info!(%url, "Redis client configured from configsync");
-                        Some(c)
-                    }
-                    Err(e) => {
-                        tracing::warn!("invalid Redis URL from configsync: {e}");
-                        None
-                    }
-                }
-            });
+            let new_client = url_opt.and_then(|url| redis_client::configured_client(&url));
             if let Ok(mut guard) = redis_client_for_watcher.write() {
                 *guard = new_client;
             }
@@ -163,7 +181,12 @@ async fn main() -> Result<()> {
         sql_pools,
         redis_url_tx,
     ));
-    tokio::spawn(nats::manage_nats_subscriptions(client_rx.clone(), topics_rx, msg_tx, shutdown_tx.subscribe()));
+    tokio::spawn(nats::manage_nats_subscriptions(
+        client_rx.clone(),
+        topics_rx,
+        msg_tx,
+        shutdown_tx.subscribe(),
+    ));
 
     let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
         .ok()
@@ -175,7 +198,10 @@ async fn main() -> Result<()> {
         synced_rx.clone(),
         "config sync",
     ));
-    let ready_state = ReadyState { nats_ready_rx, synced_rx };
+    let ready_state = ReadyState {
+        nats_ready_rx,
+        synced_rx,
+    };
     let health_app = Router::new()
         .route("/healthz", get(health::healthz_handler))
         .route("/readyz", get(health::readyz_handler))
@@ -251,7 +277,11 @@ async fn process_nats_messages(
             }
         };
 
-        let component = match module_registry.get(&fn_entry.app_namespace, &fn_entry.app_name, &fn_entry.function_name) {
+        let component = match module_registry.get(
+            &fn_entry.app_namespace,
+            &fn_entry.app_name,
+            &fn_entry.function_name,
+        ) {
             Ok(Some(c)) => c,
             Ok(None) => {
                 tracing::warn!(
@@ -360,15 +390,19 @@ async fn process_nats_messages(
                     }
                 }
                 Ok(Ok(None)) => {}
-                Ok(Err(err)) => {
-                    tracing::error!("invocation failed: {err:#}");
+                Ok(Err(_err)) => {
+                    tracing::error!(
+                        app_name = %app_name_log,
+                        app_namespace = %app_namespace_log,
+                        "invocation failed"
+                    );
                     // For HTTP functions, send a 500 back so the gateway can return
                     // a proper error response instead of timing out.
                     if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
                         let error_response = HttpResponsePayload {
                             status: 500,
                             headers: vec![("content-type".to_string(), "text/plain".to_string())],
-                            body: Some(format!("internal error: {err:#}").into_bytes()),
+                            body: Some(b"internal error: invocation failed".to_vec()),
                         };
                         if let Ok(bytes) = serde_json::to_vec(&error_response) {
                             let _ = client.publish(reply_subject, bytes.into()).await;
@@ -376,7 +410,7 @@ async fn process_nats_messages(
                     }
                 }
                 Err(join_err) => {
-                    tracing::error!("spawn_blocking panicked: {join_err}");
+                    tracing::error!(panicked = join_err.is_panic(), cancelled = join_err.is_cancelled(), "invocation task failed");
                     if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
                         let error_response = HttpResponsePayload {
                             status: 500,

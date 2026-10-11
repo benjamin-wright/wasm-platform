@@ -1,8 +1,8 @@
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
-use wasmtime::
-    {Engine, Store, StoreLimits, StoreLimitsBuilder,
+use wasmtime::{
+    Engine, Store, StoreLimits, StoreLimitsBuilder,
     component::{Component, Linker, ResourceTable},
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -84,27 +84,35 @@ impl RuntimeState {
     ) -> Result<Self> {
         let mut linker: Linker<HostState> = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
-        message_bindings::framework::runtime::kv::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-            &mut linker,
-            |h: &mut HostState| h,
-        )?;
-        message_bindings::framework::runtime::messaging::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-            &mut linker,
-            |h: &mut HostState| h,
-        )?;
-        message_bindings::framework::runtime::log::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-            &mut linker,
-            |h: &mut HostState| h,
-        )?;
-        message_bindings::framework::runtime::metrics::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-            &mut linker,
-            |h: &mut HostState| h,
-        )?;
-        message_bindings::framework::runtime::sql::add_to_linker::<HostState, wasmtime::component::HasSelf<HostState>>(
-            &mut linker,
-            |h: &mut HostState| h,
-        )?;
-        Ok(Self { engine, linker, redis_client, sql_pools, metrics_registry, fuel_limit, memory_limit_bytes })
+        message_bindings::framework::runtime::kv::add_to_linker::<
+            HostState,
+            wasmtime::component::HasSelf<HostState>,
+        >(&mut linker, |h: &mut HostState| h)?;
+        message_bindings::framework::runtime::messaging::add_to_linker::<
+            HostState,
+            wasmtime::component::HasSelf<HostState>,
+        >(&mut linker, |h: &mut HostState| h)?;
+        message_bindings::framework::runtime::log::add_to_linker::<
+            HostState,
+            wasmtime::component::HasSelf<HostState>,
+        >(&mut linker, |h: &mut HostState| h)?;
+        message_bindings::framework::runtime::metrics::add_to_linker::<
+            HostState,
+            wasmtime::component::HasSelf<HostState>,
+        >(&mut linker, |h: &mut HostState| h)?;
+        message_bindings::framework::runtime::sql::add_to_linker::<
+            HostState,
+            wasmtime::component::HasSelf<HostState>,
+        >(&mut linker, |h: &mut HostState| h)?;
+        Ok(Self {
+            engine,
+            linker,
+            redis_client,
+            sql_pools,
+            metrics_registry,
+            fuel_limit,
+            memory_limit_bytes,
+        })
     }
 }
 
@@ -149,11 +157,8 @@ pub fn invoke_on_message(
         store.set_fuel(fuel)?;
     }
 
-    let app = message_bindings::MessageApplication::instantiate(
-        &mut store,
-        component,
-        &state.linker,
-    )?;
+    let app =
+        message_bindings::MessageApplication::instantiate(&mut store, component, &state.linker)?;
 
     let result = app.call_on_message(&mut store, payload)?;
 
@@ -199,11 +204,7 @@ pub fn invoke_on_request(
         store.set_fuel(fuel)?;
     }
 
-    let app = http_bindings::HttpApplication::instantiate(
-        &mut store,
-        component,
-        &state.linker,
-    )?;
+    let app = http_bindings::HttpApplication::instantiate(&mut store, component, &state.linker)?;
 
     let wit_request = http_bindings::HttpRequest {
         method: request.method,
@@ -217,7 +218,11 @@ pub fn invoke_on_request(
 
     match result {
         Ok(wit_response) => {
-            state.metrics_registry.record_http_request(&app_name, &app_namespace, wit_response.status);
+            state.metrics_registry.record_http_request(
+                &app_name,
+                &app_namespace,
+                wit_response.status,
+            );
             Ok(HttpResponsePayload {
                 status: wit_response.status,
                 headers: wit_response.headers,
@@ -252,8 +257,11 @@ mod tests {
         store.set_fuel(10_000).unwrap();
         let err = Instance::new(&mut store, &module, &[]).unwrap_err();
         assert!(
-            err.to_string().contains("fuel"),
-            "expected fuel trap, got: {err}",
+            matches!(
+                err.downcast_ref::<wasmtime::Trap>(),
+                Some(wasmtime::Trap::OutOfFuel)
+            ),
+            "expected out-of-fuel trap, got: {err:#}",
         );
     }
 

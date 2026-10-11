@@ -70,7 +70,7 @@ func (s *Server) PushIncrementalUpdate(stream grpc.BidiStreamingServer[configsyn
 		log.Error(err, "failed to receive initial host ack")
 		return err
 	}
-	log.Info("received initial host ack", "ack", firstAck)
+	log.Info("received initial host ack", "host_id", firstAck.HostId, "success", firstAck.Success)
 	hostID := firstAck.HostId
 	if hostID == "" {
 		hostID = "unknown"

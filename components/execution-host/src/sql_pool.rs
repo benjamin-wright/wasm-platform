@@ -27,7 +27,11 @@ impl SqlPoolMap {
     /// no pool has been created for that identity yet.
     pub fn get(&self, namespace: &str, app_name: &str, username: &str) -> Option<PgPool> {
         self.pools
-            .get(&(namespace.to_owned(), app_name.to_owned(), username.to_owned()))
+            .get(&(
+                namespace.to_owned(),
+                app_name.to_owned(),
+                username.to_owned(),
+            ))
             .map(|r| r.value().clone())
     }
 
@@ -60,7 +64,8 @@ impl SqlPoolMap {
                     %namespace,
                     %app_name,
                     %username,
-                    "failed to create SQL pool: {e:#}",
+                    error_kind = sql_error_kind(&e),
+                    "failed to create SQL pool",
                 );
             }
         }
@@ -89,5 +94,18 @@ impl SqlPoolMap {
             to_close.into_iter().map(|p| async move { p.close().await }),
         )
         .await;
+    }
+}
+
+fn sql_error_kind(error: &sqlx::Error) -> &'static str {
+    match error {
+        sqlx::Error::Configuration(_) => "configuration",
+        sqlx::Error::Database(_) => "database",
+        sqlx::Error::Io(_) => "io",
+        sqlx::Error::Tls(_) => "tls",
+        sqlx::Error::Protocol(_) => "protocol",
+        sqlx::Error::PoolTimedOut => "pool_timeout",
+        sqlx::Error::PoolClosed => "pool_closed",
+        _ => "sql",
     }
 }

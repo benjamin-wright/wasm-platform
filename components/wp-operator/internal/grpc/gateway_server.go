@@ -71,7 +71,7 @@ func (s *GatewayServer) PushRouteUpdate(stream grpc.BidiStreamingServer[gateway.
 		log.Error(err, "failed to receive initial gateway ack")
 		return err
 	}
-	log.Info("received initial gateway ack", "ack", firstAck)
+	log.Info("received initial gateway ack", "gateway_id", firstAck.GatewayId, "success", firstAck.Success)
 	gatewayID := firstAck.GatewayId
 	if gatewayID == "" {
 		gatewayID = "unknown"

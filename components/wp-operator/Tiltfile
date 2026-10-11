@@ -61,6 +61,21 @@ def wp_operator(namespace='wasm-platform'):
     )
 
     local_resource(
+        'wp: lint',
+        cmd = 'cd components/wp-operator && go vet ./...',
+        deps = [
+            'components/wp-operator/cmd',
+            'components/wp-operator/api',
+            'components/wp-operator/internal',
+            'components/wp-operator/go.mod',
+            'components/wp-operator/go.sum',
+        ],
+        labels = ['wp-operator'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+
+    local_resource(
         'wp: integration-tests',
         cmd = 'cd components/wp-operator && go test -tags integration -v ./internal/integration/...',
         deps = [

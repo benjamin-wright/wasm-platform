@@ -14,6 +14,9 @@ def module_cache():
         deps = [
             'components/module-cache/src',
             'components/module-cache/Cargo.toml',
+            'components/module-cache/Dockerfile',
+            'lib/platform-common',
+            '.dockerignore',
         ],
         image_deps = ['workspace-deps'],
     )

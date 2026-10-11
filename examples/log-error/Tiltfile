@@ -1,0 +1,27 @@
+def log_error(namespace, resource_deps=[]):
+    custom_build(
+        'log-error-http',
+        command = (
+            'cargo build --manifest-path examples/log-error/Cargo.toml' +
+            ' --locked --target wasm32-wasip2 --release --target-dir target &&' +
+            ' oras push $EXPECTED_REF' +
+            ' target/wasm32-wasip2/release/log_error.wasm' +
+            ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
+            ' --plain-http'
+        ),
+        deps = [
+            'examples/log-error/lib.rs',
+            'examples/log-error/Cargo.toml',
+            'examples/log-error/Cargo.lock',
+            'framework/runtime.wit',
+        ],
+        skips_local_docker = True,
+    )
+
+    k8s_yaml('examples/log-error/application.yaml')
+
+    k8s_resource(
+        'log-error',
+        resource_deps = ['module-cache', 'wp-operator'] + resource_deps,
+        labels = ['example'],
+    )

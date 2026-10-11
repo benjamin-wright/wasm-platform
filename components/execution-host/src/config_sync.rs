@@ -7,7 +7,10 @@ use crate::sql_pool::SqlPoolMap;
 use crate::{
     config::{
         AppRegistry,
-        configsync::{FullConfigRequest, IncrementalUpdateAck, RedisConnectionConfig, config_sync_client::ConfigSyncClient},
+        configsync::{
+            FullConfigRequest, IncrementalUpdateAck, RedisConnectionConfig,
+            config_sync_client::ConfigSyncClient,
+        },
     },
     metrics::MetricsRegistry,
     modules::ModuleRegistry,
@@ -34,13 +37,19 @@ pub async fn run_config_sync_loop(
         match run_config_sync(
             &addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx, &sql_pools,
             &redis_tx,
-        ).await {
+        )
+        .await
+        {
             Ok(()) => {
                 tracing::warn!("config sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
             }
             Err(err) => {
-                tracing::warn!("config sync error: {err:#}; reconnecting in {backoff:?}");
+                tracing::warn!(
+                    error = %err,
+                    retry_after_secs = backoff.as_secs(),
+                    "config sync failed; reconnecting"
+                );
                 let _ = synced_tx.send(false);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -63,15 +72,32 @@ async fn run_config_sync(
     sql_pools: &Arc<SqlPoolMap>,
     redis_tx: &tokio::sync::watch::Sender<Option<String>>,
 ) -> Result<()> {
-    fetch_full_config(addr.to_string(), host_id.to_string(), registry, modules, sql_pools, redis_tx).await?;
-    if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
-        tracing::warn!("failed to sync user metrics after full config: {e:#}");
+    fetch_full_config(
+        addr.to_string(),
+        host_id.to_string(),
+        registry,
+        modules,
+        sql_pools,
+        redis_tx,
+    )
+    .await?;
+    if metrics
+        .sync_user_metrics(registry.all_app_metric_defs()?)
+        .is_err()
+    {
+        tracing::warn!(
+            stage = "full_config",
+            error_kind = "metric_definitions",
+            "failed to sync user metrics"
+        );
     }
     topics_tx.send(registry.topics()?).ok();
     let _ = synced_tx.send(true);
 
     tracing::info!("opening incremental update stream");
-    let mut client = ConfigSyncClient::connect(addr.to_string()).await?;
+    let mut client = ConfigSyncClient::connect(addr.to_string())
+        .await
+        .map_err(|_| anyhow::anyhow!("config update connection failed"))?;
     tracing::info!("gRPC client connected for config updates");
 
     // Bridge tokio mpsc → futures Stream so tonic can consume acks.
@@ -86,7 +112,8 @@ async fn run_config_sync(
     tracing::info!("calling push_incremental_update RPC");
     let mut update_stream = client
         .push_incremental_update(ack_stream)
-        .await?
+        .await
+        .map_err(|error| anyhow::anyhow!("config update RPC failed ({:?})", error.code()))?
         .into_inner();
     tracing::info!("push_incremental_update stream opened");
 
@@ -108,14 +135,25 @@ async fn run_config_sync(
     tracing::info!("initial host ack sent to mpsc channel");
 
     tracing::info!("waiting for first incremental update message");
-    while let Some(request) = update_stream.message().await? {
+    while let Some(request) = update_stream
+        .message()
+        .await
+        .map_err(|error| anyhow::anyhow!("config update stream failed ({:?})", error.code()))?
+    {
         if let Some(incremental) = request.incremental_config {
             let version = incremental.version.clone();
             let update_count = incremental.updates.len();
             apply_redis_config(&incremental.redis, redis_tx);
             let diff = registry.apply_incremental(incremental)?;
-            if let Err(e) = metrics.sync_user_metrics(registry.all_app_metric_defs()?) {
-                tracing::warn!("failed to sync user metrics after incremental config: {e:#}");
+            if metrics
+                .sync_user_metrics(registry.all_app_metric_defs()?)
+                .is_err()
+            {
+                tracing::warn!(
+                    stage = "incremental_config",
+                    error_kind = "metric_definitions",
+                    "failed to sync user metrics"
+                );
             }
             topics_tx.send(registry.topics()?).ok();
             tracing::debug!(version, update_count, "incremental config applied");
@@ -148,14 +186,17 @@ async fn fetch_full_config(
     sql_pools: &Arc<SqlPoolMap>,
     redis_tx: &tokio::sync::watch::Sender<Option<String>>,
 ) -> Result<()> {
-    tracing::info!(%addr, "connecting to operator for full config");
-    let mut client = ConfigSyncClient::connect(addr).await?;
+    tracing::info!("connecting to operator for full config");
+    let mut client = ConfigSyncClient::connect(addr)
+        .await
+        .map_err(|_| anyhow::anyhow!("config snapshot connection failed"))?;
     let response = client
         .request_full_config(FullConfigRequest {
             host_id,
             last_ack_timestamp: None,
         })
-        .await?
+        .await
+        .map_err(|error| anyhow::anyhow!("config snapshot RPC failed ({:?})", error.code()))?
         .into_inner();
     if let Some(full) = response.config {
         apply_redis_config(&full.redis, redis_tx);
@@ -208,19 +249,28 @@ async fn apply_module_changes(
     for (namespace, app_name, fn_name, module_ref) in to_load {
         let m = modules.clone();
         tokio::spawn(async move {
-            if let Err(err) = m.load(&namespace, &app_name, &fn_name, &module_ref).await {
+            if m.load(&namespace, &app_name, &fn_name, &module_ref)
+                .await
+                .is_err()
+            {
                 tracing::error!(
                     namespace = %namespace,
                     app_name = %app_name,
                     function_name = %fn_name,
-                    "failed to load module: {err:#}"
+                    error_kind = "module_load",
+                    "failed to load module"
                 );
             }
         });
     }
     for (namespace, app_name, fn_name) in to_evict {
         if let Err(err) = modules.remove(&namespace, &app_name, &fn_name) {
-            tracing::warn!(namespace, app_name, fn_name, "failed to evict module: {err:#}");
+            tracing::warn!(
+                namespace,
+                app_name,
+                fn_name,
+                "failed to evict module: {err:#}"
+            );
         }
     }
 }

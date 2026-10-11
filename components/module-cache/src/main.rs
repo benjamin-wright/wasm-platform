@@ -10,6 +10,7 @@ use axum::{
 use platform_common::health;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+use tracing_subscriber::prelude::*;
 
 // ── Cache state ───────────────────────────────────────────────────────────────
 // Keyed by (digest, architecture, wasmtime_version).  The value is the raw bytes
@@ -21,9 +22,15 @@ type Cache = Arc<RwLock<HashMap<(String, String, String), Bytes>>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(
+            tracing_subscriber::fmt::layer().with_filter(tracing_subscriber::filter::filter_fn(
+                platform_common::logging::is_platform_log,
+            )),
+        )
         .init();
+    platform_common::logging::install_panic_hook();
 
     let cache: Cache = Arc::new(RwLock::new(HashMap::new()));
 
@@ -73,4 +80,3 @@ async fn put_module(
     store.insert((digest, arch, version), body);
     StatusCode::NO_CONTENT
 }
-
