@@ -1,3 +1,4 @@
 **/target/
 **/bin/
 helm/wasm-platform/charts/
+.DS_Store
