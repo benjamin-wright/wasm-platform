@@ -10,6 +10,7 @@ load('./components/wp-databases/Tiltfile', 'db_operator', 'wp_databases')
 load('./components/execution-host/Tiltfile', 'execution_host')
 load('./components/gateway/Tiltfile', 'gateway')
 load('./components/module-cache/Tiltfile', 'module_cache')
+load('./components/monitoring/Tiltfile', 'monitoring')
 load('./components/wp-operator/Tiltfile', 'wp_operator')
 load('./examples/demo-app/Tiltfile', 'demo_app')
 load('./examples/counter-app/Tiltfile', 'counter_app')
@@ -40,6 +41,7 @@ wp_operator()
 execution_host(resource_deps=['wp-operator'])
 gateway(resource_deps=['wp-operator'])
 module_cache()
+monitoring(namespace=namespace)
 
 
 ## Example applications ##

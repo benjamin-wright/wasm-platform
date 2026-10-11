@@ -42,6 +42,14 @@ def execution_host(resource_deps=[]):
     ]
 
     local_resource(
+        'execution-host: update-dependencies',
+        cmd = 'cargo check -p execution-host',
+        labels = ['execution-host'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+
+    local_resource(
         'execution-host: regression-tests',
         cmd = 'cargo test --locked -p platform-common -p execution-host -p gateway',
         deps = regression_deps,

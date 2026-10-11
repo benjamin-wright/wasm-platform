@@ -255,12 +255,28 @@ func TestMetrics(t *testing.T) {
 		return scrapeMetricSum(metricsURL, "wasm_host_events_received_total")
 	}, routeTimeout, pollInterval).Should(BeNumerically(">", 0),
 		"wasm_host_events_received_total should be non-zero after invoking demo-app")
+
+	for _, name := range []string{
+		"wasm_host_dispatch_limit",
+		"wasm_host_dispatch_tasks_finished_total",
+		"wasm_host_dispatch_tasks_reaped_total",
+		"process_resident_memory_bytes",
+	} {
+		g.Eventually(func() (float64, error) {
+			return scrapeMetricSum(metricsURL, name)
+		}, routeTimeout, pollInterval).Should(BeNumerically(">", 0), name+" should be exposed after an invocation")
+	}
+	g.Eventually(func() (float64, error) {
+		return scrapeMetricSum(metricsURL, "wasm_host_dispatch_work")
+	}, routeTimeout, pollInterval).Should(Equal(float64(0)),
+		"dispatch work should return to zero after traffic finishes")
 }
 
 // scrapeMetricSum fetches the Prometheus text output at url and returns the sum
 // of all sample values whose metric base name equals name.
 func scrapeMetricSum(url, name string) (float64, error) {
-	resp, err := http.Get(url)
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return 0, err
 	}

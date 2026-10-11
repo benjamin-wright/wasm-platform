@@ -7,6 +7,7 @@ use anyhow::Result;
 use prometheus::{CounterVec, Encoder, GaugeVec, Opts, Registry, TextEncoder};
 
 use crate::config::configsync;
+use crate::dispatch_metrics::DispatchMetrics;
 
 // ── User-defined metric ───────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ struct UserMetricEntry {
 
 struct Inner {
     registry: Registry,
+    dispatch: DispatchMetrics,
     user_metrics: RwLock<HashMap<String, UserMetricEntry>>,
     // Platform counters
     compilations_total: CounterVec,
@@ -50,6 +52,11 @@ pub struct MetricsRegistry {
 impl MetricsRegistry {
     pub fn new() -> Result<Self> {
         let registry = Registry::new();
+        let dispatch = DispatchMetrics::new(&registry)?;
+        #[cfg(target_os = "linux")]
+        registry.register(Box::new(
+            prometheus::process_collector::ProcessCollector::for_self(),
+        ))?;
 
         let compilations_total = CounterVec::new(
             Opts::new(
@@ -112,6 +119,7 @@ impl MetricsRegistry {
         Ok(Self {
             inner: Arc::new(Inner {
                 registry,
+                dispatch,
                 user_metrics: RwLock::new(HashMap::new()),
                 compilations_total,
                 events_received_total,
@@ -122,6 +130,10 @@ impl MetricsRegistry {
                 dropped_metric_calls_total,
             }),
         })
+    }
+
+    pub(crate) fn dispatch(&self) -> DispatchMetrics {
+        self.inner.dispatch.clone()
     }
 
     /// Synchronise user-defined metric registrations with the current application set.
@@ -178,8 +190,8 @@ impl MetricsRegistry {
             let guest_refs: Vec<&str> = guest_label_keys.iter().map(|s| s.as_str()).collect();
             all_label_keys.extend(guest_refs.iter().copied());
 
-            let metric_type =
-                configsync::MetricType::try_from(def.r#type).unwrap_or(configsync::MetricType::Counter);
+            let metric_type = configsync::MetricType::try_from(def.r#type)
+                .unwrap_or(configsync::MetricType::Counter);
             let entry = match metric_type {
                 configsync::MetricType::Counter => {
                     let c = CounterVec::new(Opts::new(&name, &name), &all_label_keys)?;
@@ -220,9 +232,7 @@ impl MetricsRegistry {
             .user_metrics
             .read()
             .map_err(|_| DropReason::UnknownMetric)?;
-        let entry = user_metrics
-            .get(name)
-            .ok_or(DropReason::UnknownMetric)?;
+        let entry = user_metrics.get(name).ok_or(DropReason::UnknownMetric)?;
         let UserMetric::Counter(counter) = &entry.metric else {
             return Err(DropReason::WrongLabels);
         };
@@ -250,9 +260,7 @@ impl MetricsRegistry {
             .user_metrics
             .read()
             .map_err(|_| DropReason::UnknownMetric)?;
-        let entry = user_metrics
-            .get(name)
-            .ok_or(DropReason::UnknownMetric)?;
+        let entry = user_metrics.get(name).ok_or(DropReason::UnknownMetric)?;
         let UserMetric::Gauge(gauge) = &entry.metric else {
             return Err(DropReason::WrongLabels);
         };

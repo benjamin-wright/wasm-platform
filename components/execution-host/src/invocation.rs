@@ -10,6 +10,8 @@ use tokio::{
     time::Instant,
 };
 
+use crate::dispatch_metrics::{DispatchMetrics, Execution};
+
 /// One budget shared by queueing, guest execution and every host operation.
 #[derive(Clone)]
 pub(crate) struct Invocation {
@@ -20,15 +22,28 @@ struct InvocationState {
     deadline: Instant,
     cancelled: watch::Sender<bool>,
     cleanup: Mutex<Vec<JoinHandle<()>>>,
+    metrics: Option<DispatchMetrics>,
+    execution: Mutex<Option<Execution>>,
 }
 
 impl Invocation {
+    #[cfg(test)]
     pub(crate) fn new(timeout: Duration) -> Self {
+        Self::build(timeout, None)
+    }
+
+    pub(crate) fn with_metrics(timeout: Duration, metrics: DispatchMetrics) -> Self {
+        Self::build(timeout, Some(metrics))
+    }
+
+    fn build(timeout: Duration, metrics: Option<DispatchMetrics>) -> Self {
         Self {
             inner: Arc::new(InvocationState {
                 deadline: Instant::now() + timeout,
                 cancelled: watch::channel(false).0,
                 cleanup: Mutex::new(Vec::new()),
+                metrics,
+                execution: Mutex::new(None),
             }),
         }
     }
@@ -39,6 +54,27 @@ impl Invocation {
 
     pub(crate) fn cancel(&self) {
         self.inner.cancelled.send_replace(true);
+        if let Some(execution) = self
+            .inner
+            .execution
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            execution.terminating();
+        }
+    }
+
+    fn start_execution(&self) -> ExecutionOwnership {
+        if let Some(metrics) = &self.inner.metrics {
+            *self
+                .inner
+                .execution
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(metrics.execution_started());
+            let _ = self.check();
+        }
+        ExecutionOwnership(self.clone())
     }
 
     pub(crate) fn check(&self) -> Result<(), String> {
@@ -100,14 +136,29 @@ impl Invocation {
     }
 }
 
+struct ExecutionOwnership(Invocation);
+
+impl Drop for ExecutionOwnership {
+    fn drop(&mut self) {
+        self.0
+            .inner
+            .execution
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    }
+}
+
 /// Hold admission through execution exit, backend cleanup and panic unwinding.
 pub(crate) async fn run_blocking<T: Send + 'static>(
     invocation: Invocation,
     permit: OwnedSemaphorePermit,
     work: impl FnOnce(Invocation) -> T + Send + 'static,
 ) -> Result<T, tokio::task::JoinError> {
+    let execution = invocation.start_execution();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let _execution = execution;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(invocation.clone())));
         if result.is_err() {

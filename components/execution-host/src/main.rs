@@ -1,5 +1,6 @@
 mod config;
 mod config_sync;
+mod dispatch_metrics;
 mod host_kv;
 mod host_log;
 mod host_messaging;
@@ -79,6 +80,15 @@ async fn main() -> Result<()> {
     let wasm_timeout = std::time::Duration::from_secs(wasm_timeout_secs);
     tracing::info!(secs = wasm_timeout_secs, "wall-clock timeout configured");
 
+    let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64);
+    anyhow::ensure!(
+        max_concurrent > 0 && u32::try_from(max_concurrent).is_ok(),
+        "MAX_CONCURRENT_INVOCATIONS must be positive and fit in u32"
+    );
+
     let engine = Engine::new(&wasm_config)?;
 
     // Redis client is managed dynamically: configsync delivers the URL when
@@ -122,7 +132,11 @@ async fn main() -> Result<()> {
 
     let app_registry = AppRegistry::new();
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
-    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<nats::InvocationMessage>(256);
+    const QUEUE_CAPACITY: usize = 256;
+    let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<nats::InvocationMessage>(QUEUE_CAPACITY);
+    metrics_registry
+        .dispatch()
+        .configure(QUEUE_CAPACITY + 1, max_concurrent, max_concurrent);
 
     let (nats_ready_tx, nats_ready_rx) = tokio::sync::watch::channel(false);
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
@@ -184,22 +198,14 @@ async fn main() -> Result<()> {
         sql_pools,
         redis_url_tx,
     ));
-    tokio::spawn(nats::manage_nats_subscriptions(
+    let subscription_manager = tokio::spawn(nats::manage_nats_subscriptions(
         client_rx.clone(),
         topics_rx,
         msg_tx,
         shutdown_tx.subscribe(),
         wasm_timeout,
+        metrics_registry.dispatch(),
     ));
-
-    let max_concurrent = std::env::var("MAX_CONCURRENT_INVOCATIONS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(64);
-    anyhow::ensure!(
-        max_concurrent > 0,
-        "MAX_CONCURRENT_INVOCATIONS must be positive"
-    );
 
     tokio::spawn(health::watch_readiness(
         nats_ready_rx.clone(),
@@ -227,11 +233,28 @@ async fn main() -> Result<()> {
         }
     });
 
+    let dispatch = process_nats_messages(
+        msg_rx,
+        DispatchContext {
+            state: Arc::clone(&state),
+            app_registry,
+            module_registry,
+            metrics_registry,
+            client_rx,
+        },
+        shutdown_tx.subscribe(),
+        max_concurrent,
+        wasm_timeout,
+        subscription_manager,
+    );
+    tokio::pin!(dispatch);
     tokio::select! {
         result = health_server => {
+            let _ = shutdown_tx.send(());
+            dispatch.await;
             result?;
         }
-        _ = process_nats_messages(msg_rx, Arc::clone(&state), app_registry, module_registry, metrics_registry, client_rx, shutdown_tx.subscribe(), max_concurrent, wasm_timeout) => {}
+        _ = &mut dispatch => {}
     }
 
     Ok(())
@@ -239,59 +262,94 @@ async fn main() -> Result<()> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Receives NATS messages from all per-topic subscribers and dispatches them
-// concurrently up to max_concurrent in-flight invocations.  On shutdown, drains
-// all in-flight tasks before returning.
-async fn process_nats_messages(
-    mut msg_rx: tokio::sync::mpsc::Receiver<nats::InvocationMessage>,
+struct DispatchContext {
     state: Arc<RuntimeState>,
     app_registry: AppRegistry,
     module_registry: ModuleRegistry,
     metrics_registry: MetricsRegistry,
     client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
+}
+
+async fn process_nats_messages(
+    mut msg_rx: tokio::sync::mpsc::Receiver<nats::InvocationMessage>,
+    context: DispatchContext,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     max_concurrent: usize,
     wasm_timeout: std::time::Duration,
+    subscription_manager: tokio::task::JoinHandle<()>,
 ) {
+    let DispatchContext {
+        state,
+        app_registry,
+        module_registry,
+        metrics_registry,
+        client_rx,
+    } = context;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut join_set = tokio::task::JoinSet::new();
+    let dispatch_metrics = metrics_registry.dispatch();
 
-    loop {
-        let message = tokio::select! {
-            msg = msg_rx.recv() => {
-                match msg {
-                    Some(m) => m,
-                    None => break,
+    'dispatch: loop {
+        let message = loop {
+            tokio::select! {
+                biased;
+                _ = shutdown_rx.recv() => break 'dispatch,
+                Some(result) = join_set.join_next(), if !join_set.is_empty() => {
+                    reap_dispatch_task(result, &dispatch_metrics);
+                }
+                message = msg_rx.recv(), if join_set.len() < max_concurrent => {
+                    match message {
+                        Some(message) => break message,
+                        None => break 'dispatch,
+                    }
                 }
             }
-            _ = shutdown_rx.recv() => break,
         };
 
         let nats::InvocationMessage {
             message,
             invocation,
+            mut queued,
         } = message;
-        let permit = tokio::select! {
-            biased;
-            _ = shutdown_rx.recv() => break,
-            permit = invocation.acquire_permit(Arc::clone(&semaphore)) => match permit {
-                Ok(permit) => permit,
-                Err(_) => {
-                    let client = client_rx.borrow().clone();
+        let admission = {
+            let admission = invocation.acquire_permit(Arc::clone(&semaphore));
+            tokio::pin!(admission);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown_rx.recv() => break 'dispatch,
+                    Some(result) = join_set.join_next(), if !join_set.is_empty() => {
+                        reap_dispatch_task(result, &dispatch_metrics);
+                    }
+                    permit = &mut admission => break permit,
+                }
+            }
+        };
+        let permit = match admission {
+            Ok(permit) => permit,
+            Err(_) => {
+                queued.set_outcome("expired");
+                drop(queued);
+                let client = client_rx.borrow().clone();
+                let mut record = dispatch_metrics.task_started();
+                join_set.spawn(async move {
+                    record.set_outcome("timeout");
                     send_timeout_reply(&message, client).await;
-                    continue;
-                },
-            },
+                });
+                continue;
+            }
         };
 
         let subject = message.subject.to_string();
         let fn_entry = match app_registry.get_by_topic(&subject) {
             Ok(Some(entry)) => entry,
             Ok(None) => {
+                queued.set_outcome("unknown_route");
                 tracing::warn!(%subject, "received message for unknown topic; dropping");
                 continue;
             }
             Err(err) => {
+                queued.set_outcome("error");
                 tracing::error!(%subject, "app registry error: {err:#}");
                 continue;
             }
@@ -304,6 +362,7 @@ async fn process_nats_messages(
         ) {
             Ok(Some(c)) => c,
             Ok(None) => {
+                queued.set_outcome("module_unavailable");
                 tracing::warn!(
                     namespace = %fn_entry.app_namespace,
                     app_name = %fn_entry.app_name,
@@ -313,10 +372,13 @@ async fn process_nats_messages(
                 continue;
             }
             Err(err) => {
+                queued.set_outcome("error");
                 tracing::error!("module registry error: {err:#}");
                 continue;
             }
         };
+        queued.set_outcome("admitted");
+        drop(queued);
 
         let state = Arc::clone(&state);
         // Snapshot the current client.  If NATS is mid-reconnect the snapshot
@@ -334,6 +396,7 @@ async fn process_nats_messages(
         };
         metrics_registry.record_event(&app_name, &app_namespace, trigger);
 
+        let mut record = dispatch_metrics.task_started();
         join_set.spawn(async move {
             let reply = message.reply.clone();
             let payload = message.payload.to_vec();
@@ -362,6 +425,14 @@ async fn process_nats_messages(
                     }
                 })
             }).await;
+
+            record.set_outcome(match &result {
+                Ok(_) if cancellation.check().is_err() => "timeout",
+                Ok(Ok(_)) => "success",
+                Ok(Err(_)) => "error",
+                Err(error) if error.is_panic() => "panic",
+                Err(_) => "cancelled",
+            });
 
             tracing::info!(
                 app_name = %app_name_log,
@@ -439,9 +510,50 @@ async fn process_nats_messages(
         });
     }
 
-    tracing::info!("message channel closed; draining in-flight invocations");
-    join_set.join_all().await;
+    dispatch_metrics.dispatch_stopped();
+    msg_rx.close();
+    if let Err(error) = subscription_manager.await {
+        tracing::error!(
+            panicked = error.is_panic(),
+            cancelled = error.is_cancelled(),
+            "NATS intake task failed"
+        );
+    }
+    while let Ok(message) = msg_rx.try_recv() {
+        message.invocation.cancel();
+    }
+    tracing::info!("dispatch stopped; draining in-flight invocations");
+    while let Some(result) = join_set.join_next().await {
+        reap_dispatch_task(result, &dispatch_metrics);
+    }
+    // An outer task failure cannot establish that its blocking execution has exited.
+    if let Ok(limit) = u32::try_from(max_concurrent) {
+        let _all_execution_permits = semaphore.acquire_many(limit).await;
+    }
+    dispatch_metrics.drain_finished();
     tracing::info!("drain complete; exiting");
+}
+
+fn reap_dispatch_task(
+    result: Result<(), tokio::task::JoinError>,
+    metrics: &dispatch_metrics::DispatchMetrics,
+) {
+    let outcome = match result {
+        Ok(()) => "ok",
+        Err(error) => {
+            tracing::error!(
+                panicked = error.is_panic(),
+                cancelled = error.is_cancelled(),
+                "dispatch task failed"
+            );
+            if error.is_panic() {
+                "panic"
+            } else {
+                "cancelled"
+            }
+        }
+    };
+    metrics.task_reaped(outcome);
 }
 
 async fn send_timeout_reply(message: &async_nats::Message, client: Option<async_nats::Client>) {

@@ -24,11 +24,13 @@ On each message:
 1. **`message-application`** — payload is passed to the module's `on-message` export. If the NATS message has a reply subject, the response bytes are published back.
 2. **`http-application`** — the platform-private JSON payload is decoded into typed WIT records, passed to `on-request`, and the returned `HttpResponse` is serialised back to JSON for the NATS reply.
 
-Concurrency is bounded by a semaphore (default 64, configurable via `MAX_CONCURRENT_INVOCATIONS`). Permits remain held until the guest has exited and SQL cleanup has finished, including timeout and panic paths.
+`MAX_CONCURRENT_INVOCATIONS` bounds both execution slots and retained task records (default 64 each). Execution slots cover scheduled guest work through actual guest exit and backend cleanup, including timeout and panic paths. Task records also include reply publication and finished tasks awaiting collection, so slow replies can reduce execution throughput. Reply publication has a two-second timeout.
+
+Completed records are collected continuously, including while idle or waiting for an execution slot. Task failures and panics are reported as records are collected. The host-owned waiting backlog is bounded at 257 messages: a 256-entry channel and one message waiting for admission. This excludes buffering inside NATS clients and the broker.
 
 ## Invocation Deadlines
 
-One `WASM_TIMEOUT_SECS` budget starts when the host receives a NATS message and covers channel/permit queueing, instantiation, guest execution, and host operations. Expired queued messages do not run. CPU loops and WASI waits stop on expiry; a timeout response is sent after execution exits. Guest stdout/stderr are discarded; use the `log` interface for application logs.
+One `WASM_TIMEOUT_SECS` budget starts when a message is forwarded from its NATS subscription into the dispatch queue and covers channel/permit queueing, instantiation, guest execution, and host operations. Expired queued messages do not run. CPU loops and WASI waits stop on expiry; a timeout response is sent after execution exits. Guest stdout/stderr are discarded; use the `log` interface for application logs.
 
 Deadline checks use monotonic time. CPU execution yields at epoch checks, driven every 10 ms; this is cooperative interruption, subject to operating-system scheduling. SQL cleanup adds at most two bounded 2-second waits. Admission accounting includes this terminating work. These are scheduling and cleanup budgets, not a real-time scheduling guarantee.
 
@@ -59,7 +61,7 @@ Connection diagnostics report the operation and error category without connectio
 | `NATS_CREDENTIALS_PATH` | Directory containing NATS credential files (required). |
 | `REDIS_URL` | Shared Redis URL (e.g. `redis://redis:6379`). |
 | `PG_POOL_MAX_CONNECTIONS` | Maximum connections per per-user PostgreSQL pool (default `5`). |
-| `MAX_CONCURRENT_INVOCATIONS` | Concurrency limit per host (default `64`). |
+| `MAX_CONCURRENT_INVOCATIONS` | Execution and retained-task limits per host (default `64`, must be positive and fit in `u32`). |
 | `WASM_TIMEOUT_SECS` | Shared invocation deadline in seconds, including queueing (default `30`, must be positive). |
 | `WASM_FUEL_LIMIT` | Maximum fuel units per invocation; unset disables fuel metering (optional). |
 | `WASM_MEMORY_LIMIT_MB` | Maximum linear memory per module in MiB (default `64`). |
@@ -87,16 +89,40 @@ Two classes of metrics are served:
 
 Invalid guest metric calls (unknown name or mismatched label keys) are silently dropped and logged at error level; `wasm_host_dropped_metric_calls_total` is incremented with the appropriate `reason`.
 
+Dispatch metrics describe host-owned lifetimes, using only fixed labels. Their names have the prefix `wasm_host_dispatch_`:
+
+| Suffix | Type | Meaning and labels |
+|---|---|---|
+| `work` | Gauge | `state`: `queued`, `tracked`, `completed_uncollected`, `running`, or `terminating`. |
+| `limit` | Gauge | Configured capacity; `kind`: `queued`, `execution`, or `tracked`. |
+| `high_water` | Gauge | Highest lifetime occupancy; same `kind` values. `execution` combines running and terminating work. |
+| `capacity_breaches_total` | Counter | Occupancy above its configured limit on admission or configuration; `kind` as above. |
+| `accounting_errors_total` | Counter | Unbalanced lifetime accounting; `state` as for `work`. |
+| `admissions_after_stop_total` | Counter | Task admissions after intake has stopped. |
+| `tasks_finished_total` | Counter | Task wrappers that exited; `outcome`: `success`, `timeout`, `error`, `panic`, `cancelled`, `rejected`, or `other`. |
+| `tasks_reaped_total` | Counter | Records collected by dispatch; `outcome`: `ok`, `panic`, `cancelled`, or `other`. |
+| `queue_exits_total` | Counter | Messages leaving the waiting backlog; `outcome`: `admitted`, `expired`, `unknown_route`, `module_unavailable`, `error`, `shutdown`, or `other`. |
+| `queue_wait_seconds` | Histogram | Waiting lifetime through admission, rejection, or dropping. |
+| `execution_seconds` | Histogram | Execution lifetime through guest exit and backend cleanup. |
+| `cancellation_to_exit_seconds` | Histogram | Time from observed cancellation until guest and cleanup exit. |
+| `drain_seconds` | Histogram | Time from stopping intake until subscriptions, tasks, and execution drain finish. |
+| `draining` | Gauge | `1` while intake is stopped and drain is unfinished; otherwise `0`. |
+
+Queue, task, and execution ownership update the counts when their lifetimes end, including panic and cancellation paths. `tracked` includes execution, reply publication, and completed records; it overlaps the other states. `running` includes scheduled execution and cleanup before cancellation is observed; `terminating` retains cancelled or panicking execution until exit. A collected wrapper with `outcome="ok"` can contain a failed invocation; invocation outcomes are recorded by `tasks_finished_total`.
+
+Counters and high-water marks retain brief events between scrapes while the process is alive and reset on restart. A final event can be missed if the process exits before another scrape. Linux deployments also expose Prometheus process metrics, including `process_resident_memory_bytes`. See [monitoring](../monitoring/README.md) for collection, retained history, and review queries.
+
 ## Graceful Shutdown
 
-On `SIGTERM` the execution host performs an ordered drain before exiting:
+On `SIGTERM` the execution host broadcasts shutdown and stops intake, including an admission wait. It closes the dispatch queue, waits for the subscription manager to remove its subscriptions, and drops queued messages without invoking them. Accepted executions retain their deadlines and permits through guest exit and backend cleanup.
 
-1. A shutdown signal is broadcast to all subsystems.
-2. `manage_nats_subscriptions` receives the signal, drops all queue subscriptions (sending `UNSUB` to NATS and removing the pod from every queue group), and returns.
-3. The per-topic forwarding tasks exit and drop their senders on the message channel.
-4. Dispatch stops accepting work, including while waiting for a permit. Accepted executions retain their deadlines and permits while the host waits for guest exit and backend cleanup.
-5. `main` exits after the drain completes. Drain time follows invocation deadlines and SQL cleanup budgets; there is no separate process-wide shutdown deadline.
+Dispatch collects each remaining task record and reports errors without interrupting the drain. It then waits for every execution slot to return before reporting completion. A health-server exit also initiates this drain. Drain time follows invocation deadlines, SQL cleanup budgets, and reply timeouts; there is no separate process-wide shutdown deadline.
 
 ## Regression Tests
 
-The `execution-host: regression-tests` and `execution-host: lint` Tilt resources validate host code. `execution-host: redis-cancellation-tests` checks delayed commands against the disposable Redis deployment on port 6391; trigger it after that deployment is ready. The `e2e-tests` resource exercises HTTP and message cancellation and reads back committed SQL/KV state through the cancellation fixture.
+Use Tilt to build, deploy, and validate the host:
+
+- `execution-host: regression-tests` checks host code, including small metric lifetime/accounting tests; `execution-host: lint` runs Clippy.
+- `execution-host: redis-cancellation-tests` checks delayed commands against the disposable Redis deployment on port 6391; trigger it after that deployment is ready.
+- `e2e-tests` exercises dispatch through HTTP and message requests, reads back committed SQL/KV state through the cancellation fixture, and checks dispatch accounting after traffic.
+- `execution-host: update-dependencies` is a manual dependency-resolution/build check that can update `Cargo.lock`; trigger it when host dependency declarations change, before the locked regression resources.

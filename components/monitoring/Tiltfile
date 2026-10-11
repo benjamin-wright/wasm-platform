@@ -1,0 +1,37 @@
+def monitoring(namespace):
+    k8s_yaml(helm(
+        'components/monitoring/helm',
+        name = 'monitoring',
+        namespace = namespace,
+    ))
+    k8s_resource(
+        'monitoring',
+        labels = ['monitoring'],
+        port_forwards = ['9091:9090'],
+    )
+    local_resource(
+        'monitoring: config-check',
+        cmd = 'kubectl exec -n {} deployment/monitoring -- /bin/promtool check config /etc/prometheus/prometheus.yaml'.format(namespace),
+        resource_deps = ['monitoring'],
+        labels = ['monitoring'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+    local_resource(
+        'monitoring: traffic',
+        cmd = 'python3 components/monitoring/review.py traffic',
+        deps = ['components/monitoring/review.py'],
+        resource_deps = ['monitoring', 'demo-app'],
+        labels = ['monitoring'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+    local_resource(
+        'monitoring: review-history',
+        cmd = 'python3 components/monitoring/review.py review',
+        deps = ['components/monitoring/review.py'],
+        resource_deps = ['monitoring'],
+        labels = ['monitoring'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )

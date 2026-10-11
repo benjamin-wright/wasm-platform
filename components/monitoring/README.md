@@ -1,0 +1,57 @@
+# monitoring
+
+Local development Prometheus records execution-host dispatch health and Linux process metrics. The root Tiltfile deploys it alongside the platform; the production platform chart does not deploy monitoring.
+
+Open [Prometheus](http://localhost:9091) while Tilt is running. Use **Query** to graph an expression over a chosen historical range, and **Status → Target health** to inspect scrapes. [The configuration](helm/prometheus.yaml) scrapes each execution-host pod directly on its named metrics port, retaining `namespace`, `pod`, and `pod_uid` labels. Replicas have independent counters; a load-balanced Service is not a scrape target. Discovery has read-only access to pods in the deployment namespace.
+
+## History
+
+[The deployment](helm/templates/monitoring.yaml) retains seven days of samples or 1 GiB of retained storage, whichever removes older data first, using a 2 GiB persistent volume. Retention runs in the background; the write-ahead log, head chunks, and compaction need additional disk space. The size setting is not a hard total-disk limit. See [Prometheus storage](https://prometheus.io/docs/prometheus/latest/storage/) for those limits.
+
+History survives Prometheus pod and Tilt process restarts while the PVC remains. Deleting the PVC or local cluster removes history. A local storage provisioner is required; the development k3d cluster provides one. This collector has one replica and no backup or remote storage.
+
+Only dispatch and process metrics are retained from hosts. Prometheus also records its own health metrics. Scrape interval and metric selection are owned by [the scrape configuration](helm/prometheus.yaml); host metric meanings are documented in [execution-host](../execution-host/README.md#metrics).
+
+## Tilt review resources
+
+Trigger these manual resources in Tilt:
+
+- `monitoring: config-check` validates the deployed scrape configuration with Prometheus's `promtool`.
+- `monitoring: traffic` sends up to 32 requests per second to the demo application's `/hello` route for one minute, using eight workers and finite request timeouts. It prints response counts and exercises both HTTP and message invocations.
+- `monitoring: review-history` reports active scrape targets and each pod's current work counts, configured limits, lifetime high-water marks, invariant counters, task totals, and five-minute sampled work peaks. RSS minimum, maximum, latest value, sample count, and timestamps come from retained samples. Missing data is reported as unavailable.
+
+The [review helper](review.py) uses only the Python standard library and bounds query duration, returned series, response bytes, and printed pods. Run traffic separately from e2e tests: both use the demo application's counters. Review history after traffic ends and another scrape completes to compare activity with idle occupancy and memory.
+
+## Review queries
+
+Paste these expressions into Prometheus and select a range containing the traffic or shutdown under review. Keep pod identities separate when comparing capacity and memory; aggregate rates only after calculating each counter's rate.
+
+| Question | PromQL |
+|---|---|
+| How much work is waiting, running, cleaning up, or awaiting collection? | `wasm_host_dispatch_work` |
+| What were the largest observed work counts in the last hour? | `max_over_time(wasm_host_dispatch_work[1h])` |
+| How close has each bounded pool come to its configured limit since process start? | `wasm_host_dispatch_high_water / wasm_host_dispatch_limit` |
+| Have capacity or accounting invariants failed? | `increase(wasm_host_dispatch_capacity_breaches_total[1h])` and `increase(wasm_host_dispatch_accounting_errors_total[1h])` |
+| Has dispatch admitted work after stopping? | `increase(wasm_host_dispatch_admissions_after_stop_total[1h])` |
+| Are finished task records staying uncollected? | `min_over_time(wasm_host_dispatch_work{state="completed_uncollected"}[1m])` |
+| What outcomes occurred? | `increase(wasm_host_dispatch_tasks_finished_total[1h])` |
+| Were task crashes collected? | `increase(wasm_host_dispatch_tasks_reaped_total{outcome="panic"}[1h])` |
+| Why did requests leave the waiting queue? | `increase(wasm_host_dispatch_queue_exits_total[1h])` |
+| What is the 99th percentile queue wait? | `histogram_quantile(0.99, sum by (namespace, pod, pod_uid, le) (rate(wasm_host_dispatch_queue_wait_seconds_bucket[5m])))` |
+| What is the 99th percentile execution lifetime? | `histogram_quantile(0.99, sum by (namespace, pod, pod_uid, le) (rate(wasm_host_dispatch_execution_seconds_bucket[5m])))` |
+| How long does cancelled work take to exit? | `histogram_quantile(0.99, sum by (namespace, pod, pod_uid, le) (rate(wasm_host_dispatch_cancellation_to_exit_seconds_bucket[5m])))` |
+| Is the host draining? | `wasm_host_dispatch_draining` |
+| What drain durations were recorded? | `increase(wasm_host_dispatch_drain_seconds_sum[1h]) / increase(wasm_host_dispatch_drain_seconds_count[1h])` |
+| Does resident memory settle after traffic stops? | `process_resident_memory_bytes{job="execution-host"}` |
+| Is any host failing scrapes? | `up{job="execution-host"} == 0` |
+| How many series does the collector retain in memory? | `prometheus_tsdb_head_series{job="prometheus"}` |
+
+Work states overlap: tracked tasks include active, replying, and completed tasks, so adding every state does not produce a total. Compare the execution high-water mark with its limit to review running plus terminating work. A brief nonzero completed count is normal; a count remaining positive after traffic ends deserves investigation. Resident memory includes runtime caches and allocator retention as well as task records, so compare memory with work counts and similar traffic periods.
+
+Capacity breaches, accounting errors, and admissions after stop should remain zero. Historical occupancy, queue wait, cancellation latency, failure rates, and scrape availability provide baselines for operational thresholds. No alert rules or notification service are configured.
+
+## Observation limits
+
+Gauges are sampled and can miss events shorter than a scrape interval. Counters and high-water marks preserve brief events while a process remains alive, but reset when it restarts. `rate` and `increase` account for resets; estimates over small windows need multiple samples. Histogram quantiles are estimates and are undefined when no observations occurred.
+
+A process may exit before its final counters or drain observation are scraped. An absent series is not a zero; check target health and historical scrape gaps before interpreting it. Queue metrics cover dispatch-owned waiting messages, not buffers inside NATS clients or the broker. Process metrics are available in Linux deployments. History reveals trends and anomalies; it does not prove every cancellation or shutdown interleaving.
