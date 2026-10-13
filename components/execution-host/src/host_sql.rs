@@ -87,11 +87,10 @@ async fn run_sql(
     validate_statement(&sql)?;
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     let worker_invocation = invocation.clone();
-    let task = tokio::spawn(async move {
+    invocation.spawn_cleanup(async move {
         let result = sql_job(worker_invocation, pool, sql, params, operation).await;
         let _ = result_tx.send(result);
     });
-    invocation.track(task);
     invocation
         .run(result_rx)
         .await?
@@ -365,7 +364,7 @@ mod tests {
             .await
             .is_err()
         );
-        invocation.finish().await;
+        invocation.finish().await.unwrap();
         assert_eq!(pool.size(), 0);
     }
 }

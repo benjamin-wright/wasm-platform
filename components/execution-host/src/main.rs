@@ -7,6 +7,7 @@ mod host_messaging;
 mod host_metrics;
 mod host_sql;
 mod invocation;
+mod invocation_supervisor;
 mod metrics;
 mod module_cache;
 mod modules;
@@ -28,12 +29,12 @@ mod panic_logging_tests;
 use anyhow::Result;
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use config::AppRegistry;
+use invocation_supervisor::{DispatchContext, InvocationSupervisor};
 use metrics::MetricsRegistry;
 use modules::ModuleRegistry;
 use platform_common::health::{self, ReadyState};
-use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 use platform_common::nats_client::NatsConnectionInfo;
-use runtime::{InvocationContext, RuntimeState, invoke_on_message, invoke_on_request};
+use runtime::RuntimeState;
 use sql_pool::SqlPoolMap;
 use std::sync::{Arc, RwLock};
 use tracing_subscriber::prelude::*;
@@ -134,9 +135,6 @@ async fn main() -> Result<()> {
     let (topics_tx, topics_rx) = tokio::sync::watch::channel(Vec::<String>::new());
     const QUEUE_CAPACITY: usize = 256;
     let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<nats::InvocationMessage>(QUEUE_CAPACITY);
-    metrics_registry
-        .dispatch()
-        .configure(QUEUE_CAPACITY + 1, max_concurrent, max_concurrent);
 
     let (nats_ready_tx, nats_ready_rx) = tokio::sync::watch::channel(false);
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
@@ -233,8 +231,13 @@ async fn main() -> Result<()> {
         }
     });
 
-    let dispatch = process_nats_messages(
+    let mut supervisor = InvocationSupervisor::new(
+        max_concurrent,
+        metrics_registry.dispatch(),
         msg_rx,
+        subscription_manager,
+    );
+    let dispatch = supervisor.run(
         DispatchContext {
             state: Arc::clone(&state),
             app_registry,
@@ -243,9 +246,6 @@ async fn main() -> Result<()> {
             client_rx,
         },
         shutdown_tx.subscribe(),
-        max_concurrent,
-        wasm_timeout,
-        subscription_manager,
     );
     tokio::pin!(dispatch);
     tokio::select! {
@@ -258,331 +258,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-struct DispatchContext {
-    state: Arc<RuntimeState>,
-    app_registry: AppRegistry,
-    module_registry: ModuleRegistry,
-    metrics_registry: MetricsRegistry,
-    client_rx: tokio::sync::watch::Receiver<Option<async_nats::Client>>,
-}
-
-async fn process_nats_messages(
-    mut msg_rx: tokio::sync::mpsc::Receiver<nats::InvocationMessage>,
-    context: DispatchContext,
-    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-    max_concurrent: usize,
-    wasm_timeout: std::time::Duration,
-    subscription_manager: tokio::task::JoinHandle<()>,
-) {
-    let DispatchContext {
-        state,
-        app_registry,
-        module_registry,
-        metrics_registry,
-        client_rx,
-    } = context;
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-    let mut join_set = tokio::task::JoinSet::new();
-    let dispatch_metrics = metrics_registry.dispatch();
-
-    'dispatch: loop {
-        let message = loop {
-            tokio::select! {
-                biased;
-                _ = shutdown_rx.recv() => break 'dispatch,
-                Some(result) = join_set.join_next(), if !join_set.is_empty() => {
-                    reap_dispatch_task(result, &dispatch_metrics);
-                }
-                message = msg_rx.recv(), if join_set.len() < max_concurrent => {
-                    match message {
-                        Some(message) => break message,
-                        None => break 'dispatch,
-                    }
-                }
-            }
-        };
-
-        let nats::InvocationMessage {
-            message,
-            invocation,
-            mut queued,
-        } = message;
-        let admission = {
-            let admission = invocation.acquire_permit(Arc::clone(&semaphore));
-            tokio::pin!(admission);
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = shutdown_rx.recv() => break 'dispatch,
-                    Some(result) = join_set.join_next(), if !join_set.is_empty() => {
-                        reap_dispatch_task(result, &dispatch_metrics);
-                    }
-                    permit = &mut admission => break permit,
-                }
-            }
-        };
-        let permit = match admission {
-            Ok(permit) => permit,
-            Err(_) => {
-                queued.set_outcome("expired");
-                drop(queued);
-                let client = client_rx.borrow().clone();
-                let mut record = dispatch_metrics.task_started();
-                join_set.spawn(async move {
-                    record.set_outcome("timeout");
-                    send_timeout_reply(&message, client).await;
-                });
-                continue;
-            }
-        };
-
-        let subject = message.subject.to_string();
-        let fn_entry = match app_registry.get_by_topic(&subject) {
-            Ok(Some(entry)) => entry,
-            Ok(None) => {
-                queued.set_outcome("unknown_route");
-                tracing::warn!(%subject, "received message for unknown topic; dropping");
-                continue;
-            }
-            Err(err) => {
-                queued.set_outcome("error");
-                tracing::error!(%subject, "app registry error: {err:#}");
-                continue;
-            }
-        };
-
-        let component = match module_registry.get(
-            &fn_entry.app_namespace,
-            &fn_entry.app_name,
-            &fn_entry.function_name,
-        ) {
-            Ok(Some(c)) => c,
-            Ok(None) => {
-                queued.set_outcome("module_unavailable");
-                tracing::warn!(
-                    namespace = %fn_entry.app_namespace,
-                    app_name = %fn_entry.app_name,
-                    function_name = %fn_entry.function_name,
-                    "module not yet loaded; dropping message"
-                );
-                continue;
-            }
-            Err(err) => {
-                queued.set_outcome("error");
-                tracing::error!("module registry error: {err:#}");
-                continue;
-            }
-        };
-        queued.set_outcome("admitted");
-        drop(queued);
-
-        let state = Arc::clone(&state);
-        // Snapshot the current client.  If NATS is mid-reconnect the snapshot
-        // is None; replies will be silently dropped and the caller will time out.
-        let client_snapshot = client_rx.borrow().clone();
-        let app_name = fn_entry.app_name.clone();
-        let app_namespace = fn_entry.app_namespace.clone();
-        let function_name = fn_entry.function_name.clone();
-        let world_type = fn_entry.world_type;
-        let nats_for_invoke = client_snapshot.clone();
-
-        let trigger = match world_type {
-            config::configsync::WorldType::Http => "http",
-            config::configsync::WorldType::Message => "topic",
-        };
-        metrics_registry.record_event(&app_name, &app_namespace, trigger);
-
-        let mut record = dispatch_metrics.task_started();
-        join_set.spawn(async move {
-            let reply = message.reply.clone();
-            let payload = message.payload.to_vec();
-            let app_name_log = app_name.clone();
-            let app_namespace_log = app_namespace.clone();
-            let function_name_log = function_name.clone();
-            let cancellation = invocation.clone();
-
-            let result = invocation::run_blocking(invocation, permit, move |invocation| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    invocation.check().map_err(anyhow::Error::msg)?;
-                    let context = InvocationContext {
-                        function: fn_entry,
-                        nats_client: nats_for_invoke,
-                        invocation,
-                    };
-                    match world_type {
-                        config::configsync::WorldType::Message => {
-                            invoke_on_message(&state, &component, &payload, context).await
-                        }
-                        config::configsync::WorldType::Http => {
-                            let request: HttpRequestPayload = serde_json::from_slice(&payload)?;
-                            let response = invoke_on_request(&state, &component, request, context).await?;
-                            Ok(Some(serde_json::to_vec(&response)?))
-                        }
-                    }
-                })
-            }).await;
-
-            record.set_outcome(match &result {
-                Ok(_) if cancellation.check().is_err() => "timeout",
-                Ok(Ok(_)) => "success",
-                Ok(Err(_)) => "error",
-                Err(error) if error.is_panic() => "panic",
-                Err(_) => "cancelled",
-            });
-
-            tracing::info!(
-                app_name = %app_name_log,
-                app_namespace = %app_namespace_log,
-                function_name = %function_name_log,
-                cancelled = cancellation.check().is_err(),
-                expired = tokio::time::Instant::now() >= cancellation.deadline(),
-                "invocation stopped"
-            );
-            if result.is_ok() && cancellation.check().is_err() {
-                tracing::error!(
-                    app_name = %app_name_log,
-                    app_namespace = %app_namespace_log,
-                    timeout_secs = wasm_timeout.as_secs(),
-                    "invocation timed out"
-                );
-                if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
-                    publish_reply(&client, reply_subject, HttpResponsePayload {
-                        status: 504,
-                        headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
-                        body: Some(b"invocation timed out".to_vec()),
-                    }).await;
-                }
-                return;
-            }
-
-            match result {
-                Ok(Ok(Some(response_body))) => {
-                    if let Some(reply_subject) = reply {
-                        if let Some(client) = client_snapshot {
-                            if let Err(err) = tokio::time::timeout(std::time::Duration::from_secs(2), client.publish(reply_subject.clone(), response_body.into()))
-                                .await
-                            {
-                                tracing::error!(%reply_subject, "failed to publish reply: {err:#}");
-                            }
-                        } else {
-                            tracing::warn!(%reply_subject, "NATS unavailable; dropping reply (caller will time out)");
-                        }
-                    }
-                }
-                Ok(Ok(None)) => {}
-                Ok(Err(_err)) => {
-                    tracing::error!(
-                        app_name = %app_name_log,
-                        app_namespace = %app_namespace_log,
-                        "invocation failed"
-                    );
-                    // For HTTP functions, send a 500 back so the gateway can return
-                    // a proper error response instead of timing out.
-                    if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
-                        let error_response = HttpResponsePayload {
-                            status: 500,
-                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
-                            body: Some(b"internal error: invocation failed".to_vec()),
-                        };
-                        if let Ok(bytes) = serde_json::to_vec(&error_response) {
-                            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.publish(reply_subject, bytes.into())).await;
-                        }
-                    }
-                }
-                Err(join_err) => {
-                    tracing::error!(panicked = join_err.is_panic(), cancelled = join_err.is_cancelled(), "invocation task failed");
-                    if let (Some(reply_subject), Some(client)) = (reply, client_snapshot) {
-                        let error_response = HttpResponsePayload {
-                            status: 500,
-                            headers: vec![("content-type".to_string(), "text/plain".to_string())],
-                            body: Some(b"internal error: execution panicked".to_vec()),
-                        };
-                        if let Ok(bytes) = serde_json::to_vec(&error_response) {
-                            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.publish(reply_subject, bytes.into())).await;
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    dispatch_metrics.dispatch_stopped();
-    msg_rx.close();
-    if let Err(error) = subscription_manager.await {
-        tracing::error!(
-            panicked = error.is_panic(),
-            cancelled = error.is_cancelled(),
-            "NATS intake task failed"
-        );
-    }
-    while let Ok(message) = msg_rx.try_recv() {
-        message.invocation.cancel();
-    }
-    tracing::info!("dispatch stopped; draining in-flight invocations");
-    while let Some(result) = join_set.join_next().await {
-        reap_dispatch_task(result, &dispatch_metrics);
-    }
-    // An outer task failure cannot establish that its blocking execution has exited.
-    if let Ok(limit) = u32::try_from(max_concurrent) {
-        let _all_execution_permits = semaphore.acquire_many(limit).await;
-    }
-    dispatch_metrics.drain_finished();
-    tracing::info!("drain complete; exiting");
-}
-
-fn reap_dispatch_task(
-    result: Result<(), tokio::task::JoinError>,
-    metrics: &dispatch_metrics::DispatchMetrics,
-) {
-    let outcome = match result {
-        Ok(()) => "ok",
-        Err(error) => {
-            tracing::error!(
-                panicked = error.is_panic(),
-                cancelled = error.is_cancelled(),
-                "dispatch task failed"
-            );
-            if error.is_panic() {
-                "panic"
-            } else {
-                "cancelled"
-            }
-        }
-    };
-    metrics.task_reaped(outcome);
-}
-
-async fn send_timeout_reply(message: &async_nats::Message, client: Option<async_nats::Client>) {
-    if let (Some(reply), Some(client)) = (message.reply.clone(), client) {
-        publish_reply(
-            &client,
-            reply,
-            HttpResponsePayload {
-                status: 504,
-                headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
-                body: Some(b"invocation timed out".to_vec()),
-            },
-        )
-        .await;
-    }
-}
-
-async fn publish_reply(
-    client: &async_nats::Client,
-    reply: async_nats::Subject,
-    response: HttpResponsePayload,
-) {
-    if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            client.publish(reply, bytes.into()),
-        )
-        .await;
-    }
 }
 
 // ── Metrics endpoint ──────────────────────────────────────────────────────────

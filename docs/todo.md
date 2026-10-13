@@ -56,7 +56,6 @@ Use these policies and slices to implement the [architecture proposal](proposal.
 
 Deliver each slice through its production entry points, add regressions for its changed external behavior, and pass the full existing `e2e-tests` resource through Tilt MCP. Run all builds, deployments and tests through Tilt MCP. Preserve the permanent fixtures and the additional fixtures already required by that resource; report validation evidence in the task conversation.
 
-- [ ] **2 — Invocation ownership.** Give supervisors ownership through execution, cancellation, task collection and backend cleanup; release capacity after actual termination.
 - [ ] **3 — Gateway request ownership.** Reject unknown routes and disallowed methods before body reads; bound intake, body size/read time and waiting work.
 - [ ] **4 — Verified raw-Wasm artifacts.** Enforce approved origins and immutable digest integrity, remove untrusted native sharing, compile locally and bound artifact storage/preparation.
 - [ ] **5 — Protected identity and startup authority.** Implement ServiceAccount authentication, Istio ambient transport protection, recipient authorization and rejection of uninitialized configuration.

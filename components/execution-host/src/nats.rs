@@ -4,6 +4,46 @@ use futures_util::{Stream, StreamExt as _, stream::SelectAll};
 
 use crate::dispatch_metrics::{DispatchMetrics, QueuedWork};
 
+pub(crate) struct ReplyTarget {
+    subject: Option<async_nats::Subject>,
+    client: Option<async_nats::Client>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReplyOutcome {
+    Sent,
+    NotRequested,
+    Unavailable,
+    Failed,
+    TimedOut,
+}
+
+impl ReplyTarget {
+    pub(crate) fn new(
+        subject: Option<async_nats::Subject>,
+        client: Option<async_nats::Client>,
+    ) -> Self {
+        Self { subject, client }
+    }
+
+    pub(crate) async fn publish(self, body: Option<Vec<u8>>) -> ReplyOutcome {
+        let (Some(subject), Some(body)) = (self.subject, body) else {
+            return ReplyOutcome::NotRequested;
+        };
+        let Some(client) = self.client else {
+            tracing::warn!(%subject, "NATS unavailable; dropping reply");
+            return ReplyOutcome::Unavailable;
+        };
+        match tokio::time::timeout(Duration::from_secs(2), client.publish(subject, body.into()))
+            .await
+        {
+            Ok(Ok(())) => ReplyOutcome::Sent,
+            Ok(Err(_)) => ReplyOutcome::Failed,
+            Err(_) => ReplyOutcome::TimedOut,
+        }
+    }
+}
+
 pub(crate) struct InvocationMessage {
     pub(crate) message: async_nats::Message,
     pub(crate) invocation: crate::invocation::Invocation,

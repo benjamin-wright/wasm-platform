@@ -28,6 +28,8 @@ On each message:
 
 Completed records are collected continuously, including while idle or waiting for an execution slot. Task failures and panics are reported as records are collected. The host-owned waiting backlog is bounded at 257 messages: a 256-entry channel and one message waiting for admission. This excludes buffering inside NATS clients and the broker.
 
+The invocation supervisor owns accepted jobs and tracks blocking executions directly through guest exit and backend cleanup. Reply publication continues under the same task record after the execution slot returns. A failed or timed-out publication is reported; a successful invocation whose reply fails is counted as an error. Cancelling a collection wait preserves the owned execution and its record.
+
 ## Invocation Deadlines
 
 One `WASM_TIMEOUT_SECS` budget starts when a message is forwarded from its NATS subscription into the dispatch queue and covers channel/permit queueing, instantiation, guest execution, and host operations. Expired queued messages do not run. CPU loops and WASI waits stop on expiry; a timeout response is sent after execution exits. Guest stdout/stderr are discarded; use the `log` interface for application logs.
@@ -35,6 +37,8 @@ One `WASM_TIMEOUT_SECS` budget starts when a message is forwarded from its NATS 
 Deadline checks use monotonic time. CPU execution yields at epoch checks, driven every 10 ms; this is cooperative interruption, subject to operating-system scheduling. SQL cleanup adds at most two bounded 2-second waits. Admission accounting includes this terminating work. These are scheduling and cleanup budgets, not a real-time scheduling guarantee.
 
 SQL calls accept one parsed statement: queries, INSERT/UPDATE/DELETE, CREATE TABLE/INDEX, ALTER TABLE, DROP, or TRUNCATE. Each call runs in a host-owned transaction and commits independently. Guest transaction control, standalone session-setting statements, procedures, prepared statements, and multi-statement input return an error. Cancellation before commit submission prevents transactional writes from committing; cleanup terminates the backend through a separate connection and closes the data connection. If termination cannot be confirmed, the host reports that uncertainty. PostgreSQL nontransactional effects, including sequence advancement, are not rolled back.
+
+Completed backend task records are collected as subsequent operations start. A backend task panic or cancellation fails the invocation after all remaining cleanup exits.
 
 KV mutations check a server-time deadline atomically with the mutation. A command delayed until that deadline is rejected. The deadline subtracts the TIME request round trip and assumes Redis wall time advances with host monotonic time; backward changes to the Redis clock can weaken the bound. Cancellation also drops the private client connection.
 
@@ -116,7 +120,7 @@ Counters and high-water marks retain brief events between scrapes while the proc
 
 On `SIGTERM` the execution host broadcasts shutdown and stops intake, including an admission wait. It closes the dispatch queue, waits for the subscription manager to remove its subscriptions, and drops queued messages without invoking them. Accepted executions retain their deadlines and permits through guest exit and backend cleanup.
 
-Dispatch collects each remaining task record and reports errors without interrupting the drain. It then waits for every execution slot to return before reporting completion. A health-server exit also initiates this drain. Drain time follows invocation deadlines, SQL cleanup budgets, and reply timeouts; there is no separate process-wide shutdown deadline.
+The supervisor collects each remaining blocking execution and reply record, reporting errors without interrupting the drain. It reports completion after all guest work, backend cleanup and replies exit. A health-server exit also initiates this drain. Drain time follows invocation deadlines, SQL cleanup budgets, and reply timeouts; there is no separate process-wide shutdown deadline.
 
 ## Regression Tests
 

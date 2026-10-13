@@ -63,8 +63,10 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 		})
 	}
 
-	startedBefore := cancellationStarts(t, t.Context(), client)
-	stoppedBefore := cancellationStops(t, t.Context())
+	hostsBefore := cancellationHostSnapshots(t, t.Context())
+	startedBefore := cancellationStarts(t, hostsBefore)
+	stoppedBefore := cancellationStops(t, t.Context(), hostsBefore)
+	exitsBefore := cancellationMetricTotal(t, hostsBefore, "wasm_host_dispatch_cancellation_to_exit_seconds_count")
 	type result struct {
 		action action
 		status int
@@ -96,7 +98,7 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 				want++
 			}
 			cancellationEventually(t, startedAt.Add(15*time.Second), func(ctx context.Context) bool {
-				return cancellationStarts(t, ctx, client)[world+":"+mode] >= want
+				return cancellationStarts(t, cancellationHostSnapshots(t, ctx))[world+":"+mode] >= want
 			}, world+" "+mode+" never entered the production guest")
 		}
 	}
@@ -112,7 +114,7 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 
 	for _, world := range []string{"http", "message"} {
 		cancellationEventually(t, startedAt.Add(timeout+10*time.Second), func(ctx context.Context) bool {
-			return cancellationStops(t, ctx)[world] >= stoppedBefore[world]+5
+			return cancellationStops(t, ctx, hostsBefore)[world] >= stoppedBefore[world]+5
 		}, world+" executions did not actually exit within the cancellation bound")
 	}
 
@@ -148,6 +150,27 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 		if err != nil || status != http.StatusOK || body != want {
 			t.Errorf("%s %s stored effects: HTTP %d body=%q err=%v; want %q", a.world, a.mode, status, body, err, want)
 		}
+	}
+	hostsAfter := cancellationHostSnapshots(t, t.Context())
+	if len(hostsAfter) != len(hostsBefore) {
+		t.Fatal("execution-host pod set changed during cancellation checks")
+	}
+	for pod, before := range hostsBefore {
+		after, ok := hostsAfter[pod]
+		if !ok || after.identity != before.identity {
+			t.Fatalf("execution-host process changed during cancellation checks: %s", pod)
+		}
+	}
+	for _, name := range []string{
+		"wasm_host_dispatch_capacity_breaches_total",
+		"wasm_host_dispatch_accounting_errors_total",
+	} {
+		if total := cancellationMetricTotal(t, hostsAfter, name); total != 0 {
+			t.Errorf("%s = %g after cancellation workload; want zero", name, total)
+		}
+	}
+	if exits := cancellationMetricTotal(t, hostsAfter, "wasm_host_dispatch_cancellation_to_exit_seconds_count"); exits-exitsBefore < float64(len(actions)) {
+		t.Errorf("cancellation exit observations increased by %g; want at least %d", exits-exitsBefore, len(actions))
 	}
 }
 
@@ -187,19 +210,77 @@ func cancellationHostTimeout(t *testing.T) time.Duration {
 	return 30 * time.Second
 }
 
-func cancellationStarts(t *testing.T, ctx context.Context, client *http.Client) map[string]int {
+type cancellationHostSnapshot struct {
+	identity string
+	metrics  string
+}
+
+func cancellationHostSnapshots(t *testing.T, ctx context.Context) map[string]cancellationHostSnapshot {
 	t.Helper()
-	status, body, err := cancellationRequest(ctx, client, http.MethodGet, metricsURL, "")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("could not read execution-host metrics: HTTP %d err=%v", status, err)
+	data := kubectlForLogRegression(t, ctx, "get", "pods", "-n", "wasm-platform",
+		"-l", "app.kubernetes.io/name=execution-host", "-o", "json")
+	var pods struct {
+		Items []struct {
+			Metadata struct{ Name, UID string }
+			Status   struct {
+				ContainerStatuses []struct {
+					Name         string
+					RestartCount int
+				}
+			}
+		}
 	}
-	if _, err := metricSum(body, "cancellation_started_total"); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal(data, &pods); err != nil {
+		t.Fatal("could not decode execution-host pod list")
 	}
+	if len(pods.Items) == 0 {
+		t.Fatal("no execution-host pods found")
+	}
+	hosts := make(map[string]cancellationHostSnapshot)
+	for _, pod := range pods.Items {
+		var identity string
+		for _, container := range pod.Status.ContainerStatuses {
+			if container.Name == "execution-host" {
+				identity = fmt.Sprintf("%s/%d", pod.Metadata.UID, container.RestartCount)
+			}
+		}
+		if identity == "" {
+			t.Fatalf("execution-host process status is unavailable: %s", pod.Metadata.Name)
+		}
+		endpoint := fmt.Sprintf("/api/v1/namespaces/wasm-platform/pods/%s:9090/proxy/metrics", pod.Metadata.Name)
+		metrics := kubectlForLogRegression(t, ctx, "get", "--raw", endpoint)
+		hosts[pod.Metadata.Name] = cancellationHostSnapshot{identity: identity, metrics: string(metrics)}
+	}
+	return hosts
+}
+
+func cancellationMetricTotal(t *testing.T, hosts map[string]cancellationHostSnapshot, name string) float64 {
+	t.Helper()
+	var total float64
+	for pod, host := range hosts {
+		value, err := metricSum(host.metrics, name)
+		if err != nil {
+			t.Fatalf("execution-host %s: %v", pod, err)
+		}
+		total += value
+	}
+	return total
+}
+
+func cancellationStarts(t *testing.T, hosts map[string]cancellationHostSnapshot) map[string]int {
+	t.Helper()
 	counts := make(map[string]int)
 	worldLabel := regexp.MustCompile(`world="([^"]+)"`)
 	modeLabel := regexp.MustCompile(`mode="([^"]+)"`)
-	for _, line := range strings.Split(body, "\n") {
+	var metrics strings.Builder
+	for _, host := range hosts {
+		metrics.WriteString(host.metrics)
+		metrics.WriteByte('\n')
+	}
+	if _, err := metricSum(metrics.String(), "cancellation_started_total"); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(metrics.String(), "\n") {
 		if !strings.HasPrefix(line, "cancellation_started_total{") || !strings.Contains(line, `app_name="cancellation-app"`) || !strings.Contains(line, `app_namespace="default"`) {
 			continue
 		}
@@ -216,11 +297,16 @@ func cancellationStarts(t *testing.T, ctx context.Context, client *http.Client) 
 	return counts
 }
 
-func cancellationStops(t *testing.T, ctx context.Context) map[string]int {
+func cancellationStops(t *testing.T, ctx context.Context, hosts map[string]cancellationHostSnapshot) map[string]int {
 	t.Helper()
-	logs := kubectlForLogRegression(t, ctx, "logs", "deployment/execution-host", "-n", "wasm-platform", "--tail=-1")
+	var logs strings.Builder
+	for pod := range hosts {
+		data := kubectlForLogRegression(t, ctx, "logs", "pod/"+pod, "-n", "wasm-platform", "-c", "execution-host", "--tail=-1")
+		logs.Write(data)
+		logs.WriteByte('\n')
+	}
 	counts := make(map[string]int)
-	plainLogs := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(string(logs), "")
+	plainLogs := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(logs.String(), "")
 	for _, line := range strings.Split(plainLogs, "\n") {
 		if !strings.Contains(line, "invocation stopped") || !strings.Contains(line, "cancellation-app") || !strings.Contains(line, "cancelled=true") || !strings.Contains(line, "expired=true") {
 			continue

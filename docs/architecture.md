@@ -59,7 +59,7 @@ WASM is sandboxed by default; host functions break that sandbox deliberately. Gu
 - **Fuel metering** — prevents infinite loops / runaway computation.
 - **Memory limits** — cap linear memory per instance (e.g. 64 MB) via `InstanceLimits`.
 - **Capability scoping** — modules access only the databases and queues declared in their CRD `spec`.
-- **Invocation deadlines** — one monotonic budget covers queueing, guest execution, and host operations. Async Wasmtime/WASI execution yields through epochs on the blocking pool, so cancellation drops a suspended invocation and its store. Admission permits survive until execution and backend cleanup finish; see the [execution-host contract](../components/execution-host/README.md#invocation-deadlines) for external-write outcomes.
+- **Invocation ownership and deadlines** — the invocation supervisor owns admission, blocking executions, replies, collection and drain. One monotonic budget covers queueing, guest execution, and host operations. Async Wasmtime/WASI execution yields through epochs on the blocking pool, so cancellation drops a suspended invocation and its store. Admission permits survive until execution and backend cleanup finish; see the [execution-host contract](../components/execution-host/README.md#invocation-deadlines) for external-write outcomes.
 
 ### Data Layer
 
@@ -246,4 +246,3 @@ Key message types:
 - **`FunctionConfig`** — `name`, `module_ref`, `world_type` (`WorldType`), `topic` (optional string), `http_config` (optional `HttpConfig`).
 - **`MetricDefinition`** — `name`, `type` (`MetricType`), `label_keys` (`repeated string`).
 - **`MetricType`** enum — `METRIC_TYPE_COUNTER = 0`, `METRIC_TYPE_GAUGE = 1`.
-
