@@ -1,4 +1,5 @@
 load('./tilt/namespace.Tiltfile', 'k8s_namespace')
+load('./tilt/ci.Tiltfile', 'ci')
 
 allow_k8s_contexts('k3d-wasm-platform')
 
@@ -57,3 +58,4 @@ cancellation_app('default', resource_deps=['wp-operator', 'wp-webhook', 'executi
 ## Tests ##
 
 e2e_tests()
+ci()

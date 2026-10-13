@@ -3,11 +3,10 @@
 package e2e_test
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,19 +24,21 @@ func TestMain(m *testing.M) {
 		{"counter-app", "examples"},
 		{"sql-hello", "default"},
 	} {
-		cmd := exec.Command("kubectl", "wait", "application", app.name,
+		out, err := kubectlOutput(context.Background(), 125*time.Second, nil, true,
+			"wait", "application", app.name,
 			"-n", app.namespace,
 			"--for=condition=Ready",
 			"--timeout=120s",
 		)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+		fmt.Fprint(os.Stdout, string(out))
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s not ready: %v\n", app.name, err)
 			os.Exit(1)
 		}
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	testHTTPClient.CloseIdleConnections()
+	os.Exit(code)
 }
 
 const (
@@ -64,8 +65,8 @@ func TestHelloWorldEndToEnd(t *testing.T) {
 	// assert counter increments against it without a separate bare fetch that
 	// could race during startup.
 	var first counters
-	g.Eventually(func() (counters, error) {
-		c, err := fetch(baseURL)
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (counters, error) {
+		c, err := fetch(ctx, baseURL)
 		if err != nil {
 			return counters{}, err
 		}
@@ -77,8 +78,8 @@ func TestHelloWorldEndToEnd(t *testing.T) {
 	// The messages counter is incremented asynchronously by the message-counter
 	// module after each request. Poll until both requests and messages have
 	// advanced beyond the first call's values.
-	g.Eventually(func() (bool, error) {
-		second, err := fetch(baseURL)
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (bool, error) {
+		second, err := fetch(ctx, baseURL)
 		if err != nil {
 			return false, err
 		}
@@ -90,18 +91,13 @@ func TestHelloWorldEndToEnd(t *testing.T) {
 // fetch makes a GET request and returns the parsed counters from the
 // hello-world response body. Returns an error if the request fails, the
 // status is not 200, or the body does not contain the expected counters.
-func fetch(url string) (counters, error) {
-	resp, err := http.Get(url)
+func fetch(ctx context.Context, url string) (counters, error) {
+	status, bodyBytes, err := requestHTTP(ctx, testHTTPClient, http.MethodGet, url, "", nil)
 	if err != nil {
 		return counters{}, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return counters{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return counters{}, fmt.Errorf("reading body: %w", err)
+	if status != http.StatusOK {
+		return counters{}, fmt.Errorf("unexpected status %d", status)
 	}
 	return parseCounters(string(bodyBytes))
 }
@@ -140,18 +136,13 @@ func parseCounters(body string) (counters, error) {
 // fetchCounter makes a GET request to counter-app and returns the parsed
 // requests counter. Returns an error if the request fails, the status is not
 // 200, or the body does not contain the expected field.
-func fetchCounter(url string) (int, error) {
-	resp, err := http.Get(url)
+func fetchCounter(ctx context.Context, url string) (int, error) {
+	status, bodyBytes, err := requestHTTP(ctx, testHTTPClient, http.MethodGet, url, "", nil)
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("reading body: %w", err)
+	if status != http.StatusOK {
+		return 0, fmt.Errorf("unexpected status %d", status)
 	}
 	body := string(bodyBytes)
 	for _, field := range strings.Fields(body) {
@@ -172,8 +163,8 @@ func TestKVIsolation(t *testing.T) {
 	g := NewWithT(t)
 
 	// Wait for counter-app to be serving before taking any baseline.
-	g.Eventually(func() error {
-		_, err := fetchCounter(counterAppURL)
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) error {
+		_, err := fetchCounter(ctx, counterAppURL)
 		return err
 	}, routeTimeout, pollInterval).Should(Succeed(),
 		"counter-app should be serving at %s within %s", counterAppURL, routeTimeout)
@@ -185,16 +176,16 @@ func TestKVIsolation(t *testing.T) {
 	// of the last loop iteration as the "after" value rather than making a
 	// separate post-loop verification call.
 
-	demoBaseline, err := fetch(baseURL)
+	demoBaseline, err := fetch(t.Context(), baseURL)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	counterBaseline, err := fetchCounter(counterAppURL)
+	counterBaseline, err := fetchCounter(t.Context(), counterAppURL)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	const n = 5
 	var counterAfter int
 	for i := 0; i < n; i++ {
-		counterAfter, err = fetchCounter(counterAppURL)
+		counterAfter, err = fetchCounter(t.Context(), counterAppURL)
 		g.Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -204,7 +195,7 @@ func TestKVIsolation(t *testing.T) {
 
 	// demo-app requests counter must be unchanged — the only call to demo-app
 	// since the baseline was the demoAfter call itself.
-	demoAfter, err := fetch(baseURL)
+	demoAfter, err := fetch(t.Context(), baseURL)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(demoAfter.requests).To(Equal(demoBaseline.requests+1),
 		"demo-app KV store must be isolated from counter-app")
@@ -217,7 +208,7 @@ func TestKVIsolation(t *testing.T) {
 
 	var demoAfter2 counters
 	for i := 0; i < n; i++ {
-		demoAfter2, err = fetch(baseURL)
+		demoAfter2, err = fetch(t.Context(), baseURL)
 		g.Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -227,7 +218,7 @@ func TestKVIsolation(t *testing.T) {
 
 	// counter-app must be unchanged — we haven't called it since counterAfter.
 	// One call is needed to verify; it will itself increment by 1.
-	counterAfter2, err := fetchCounter(counterAppURL)
+	counterAfter2, err := fetchCounter(t.Context(), counterAppURL)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(counterAfter2).To(Equal(counterBaseline2+1),
 		"counter-app KV store must be isolated from demo-app")
@@ -243,16 +234,16 @@ func TestMetrics(t *testing.T) {
 	g := NewWithT(t)
 
 	// Trigger at least one request so both counters advance.
-	_, err := fetch(baseURL)
+	_, err := fetch(t.Context(), baseURL)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	g.Eventually(func() (float64, error) {
-		return scrapeMetricSum(metricsURL, "demo_requests_total")
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (float64, error) {
+		return scrapeMetricSum(ctx, metricsURL, "demo_requests_total")
 	}, routeTimeout, pollInterval).Should(BeNumerically(">", 0),
 		"demo_requests_total should be non-zero after invoking demo-app")
 
-	g.Eventually(func() (float64, error) {
-		return scrapeMetricSum(metricsURL, "wasm_host_events_received_total")
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (float64, error) {
+		return scrapeMetricSum(ctx, metricsURL, "wasm_host_events_received_total")
 	}, routeTimeout, pollInterval).Should(BeNumerically(">", 0),
 		"wasm_host_events_received_total should be non-zero after invoking demo-app")
 
@@ -262,54 +253,27 @@ func TestMetrics(t *testing.T) {
 		"wasm_host_dispatch_tasks_reaped_total",
 		"process_resident_memory_bytes",
 	} {
-		g.Eventually(func() (float64, error) {
-			return scrapeMetricSum(metricsURL, name)
+		g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (float64, error) {
+			return scrapeMetricSum(ctx, metricsURL, name)
 		}, routeTimeout, pollInterval).Should(BeNumerically(">", 0), name+" should be exposed after an invocation")
 	}
-	g.Eventually(func() (float64, error) {
-		return scrapeMetricSum(metricsURL, "wasm_host_dispatch_work")
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (float64, error) {
+		return scrapeMetricSum(ctx, metricsURL, "wasm_host_dispatch_work")
 	}, routeTimeout, pollInterval).Should(Equal(float64(0)),
 		"dispatch work should return to zero after traffic finishes")
 }
 
 // scrapeMetricSum fetches the Prometheus text output at url and returns the sum
 // of all sample values whose metric base name equals name.
-func scrapeMetricSum(url, name string) (float64, error) {
-	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
+func scrapeMetricSum(ctx context.Context, url, name string) (float64, error) {
+	status, bodyBytes, err := requestHTTP(ctx, testHTTPClient, http.MethodGet, url, "", nil)
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	if status != http.StatusOK {
+		return 0, fmt.Errorf("unexpected status %d", status)
 	}
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("reading body: %w", err)
-	}
-	var total float64
-	for _, line := range strings.Split(string(bodyBytes), "\n") {
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
-		}
-		// Lines: name{labels} value or name value
-		metricPart, rest, found := strings.Cut(line, " ")
-		if !found {
-			continue
-		}
-		baseName, _, _ := strings.Cut(metricPart, "{")
-		if baseName != name {
-			continue
-		}
-		valueStr := strings.Fields(rest)[0]
-		v, err := strconv.ParseFloat(valueStr, 64)
-		if err != nil {
-			continue
-		}
-		total += v
-	}
-	return total, nil
+	return metricSum(string(bodyBytes), name)
 }
 
 // TestSQLHello exercises the sql-hello Application using its three HTTP
@@ -327,15 +291,13 @@ func TestSQLHello(t *testing.T) {
 	g := NewWithT(t)
 
 	// Step 1: seed the table via the setup handler (writer user).
-	g.Eventually(func() error {
-		resp, err := http.Post(sqlHelloSetupURL, "", nil)
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) error {
+		status, _, err := requestHTTP(ctx, testHTTPClient, http.MethodPost, sqlHelloSetupURL, "", nil)
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("setup returned %d: %s", resp.StatusCode, b)
+		if status != http.StatusOK {
+			return fmt.Errorf("setup returned %d", status)
 		}
 		return nil
 	}, routeTimeout, pollInterval).Should(Succeed(),
@@ -343,18 +305,13 @@ func TestSQLHello(t *testing.T) {
 
 	// Step 2: query active rows; assert Alice and Bob present, Carol absent.
 	var body string
-	g.Eventually(func() (string, error) {
-		resp, err := http.Get(sqlHelloURL)
+	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (string, error) {
+		status, b, err := requestHTTP(ctx, testHTTPClient, http.MethodGet, sqlHelloURL, "", nil)
 		if err != nil {
 			return "", err
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("query returned status %d", resp.StatusCode)
-		}
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return "", fmt.Errorf("reading body: %w", err)
+		if status != http.StatusOK {
+			return "", fmt.Errorf("query returned status %d", status)
 		}
 		s := string(b)
 		if s == "" || s == "[]" {
@@ -373,10 +330,9 @@ func TestSQLHello(t *testing.T) {
 		"expected Carol (active=false) to be excluded from sql-hello response")
 
 	// Step 3: reader user attempts INSERT — must be rejected with 403.
-	resp, err := http.Post(sqlHelloInsertURL, "", nil)
+	status, _, err := requestHTTP(t.Context(), testHTTPClient, http.MethodPost, sqlHelloInsertURL, "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	defer resp.Body.Close()
-	g.Expect(resp.StatusCode).To(Equal(http.StatusForbidden),
+	g.Expect(status).To(Equal(http.StatusForbidden),
 		"reader user INSERT should be rejected with 403 (permission denied)")
 }
 
@@ -397,21 +353,17 @@ const migrationFailedTimeout = 180 * time.Second
 func TestSQLBrokenMigrationsFailurePath(t *testing.T) {
 	g := NewWithT(t)
 
-	g.Eventually(func() (string, error) {
-		return readyConditionReason("sql-broken-migrations", "default")
+	g.Eventually(pollContext(t, migrationFailedTimeout), func(ctx context.Context) (string, error) {
+		return readyConditionReason(ctx, "sql-broken-migrations", "default")
 	}, migrationFailedTimeout, pollInterval).Should(Equal("MigrationFailed"),
 		"sql-broken-migrations Application should reach Ready=False, reason=MigrationFailed")
 
 	// Sanity check: the gateway must not have wired up the function's route,
 	// since wp-operator never pushed config. A consistent absence is what we
 	// want, so we use Consistently rather than a single fetch.
-	g.Consistently(func() (int, error) {
-		resp, err := http.Get(sqlBrokenURL)
-		if err != nil {
-			return 0, err
-		}
-		defer resp.Body.Close()
-		return resp.StatusCode, nil
+	g.Consistently(pollContext(t, 5*time.Second+requestTimeout), func(ctx context.Context) (int, error) {
+		status, _, err := requestHTTP(ctx, testHTTPClient, http.MethodGet, sqlBrokenURL, "", nil)
+		return status, err
 	}, 5*time.Second, pollInterval).ShouldNot(Equal(http.StatusOK),
 		"GET %s must not be served while the Application is in MigrationFailed", sqlBrokenURL)
 }
@@ -420,12 +372,11 @@ func TestSQLBrokenMigrationsFailurePath(t *testing.T) {
 // condition reason for an Application. Returns an empty string (not an error)
 // when the condition is not yet present so that callers using Eventually keep
 // polling rather than failing instead.
-func readyConditionReason(name, namespace string) (string, error) {
-	cmd := exec.Command("kubectl", "get", "application", name,
+func readyConditionReason(ctx context.Context, name, namespace string) (string, error) {
+	out, err := kubectlOutput(ctx, kubectlTimeout, nil, false, "get", "application", name,
 		"-n", namespace,
 		"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].reason}`,
 	)
-	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("kubectl get application %s/%s: %w", namespace, name, err)
 	}
@@ -434,18 +385,32 @@ func readyConditionReason(name, namespace string) (string, error) {
 
 // kubectlApply attempts to apply the given YAML via kubectl and returns the
 // combined stdout+stderr output and any error.
-func kubectlApply(yaml string) (string, error) {
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(yaml)
-	out, err := cmd.CombinedOutput()
+func kubectlApply(ctx context.Context, yaml string) (string, error) {
+	out, err := kubectlOutput(ctx, kubectlTimeout, strings.NewReader(yaml), true, "apply", "-f", "-")
 	return string(out), err
 }
 
 // kubectlDelete deletes the resource described by the YAML, ignoring not-found errors.
-func kubectlDelete(yaml string) {
-	cmd := exec.Command("kubectl", "delete", "--ignore-not-found", "-f", "-")
-	cmd.Stdin = strings.NewReader(yaml)
-	_, _ = cmd.CombinedOutput()
+func kubectlDelete(ctx context.Context, yaml string) error {
+	_, err := kubectlOutput(ctx, kubectlTimeout, strings.NewReader(yaml), true,
+		"delete", "--ignore-not-found", "--timeout=15s", "-f", "-")
+	return err
+}
+
+func prepareTestApplications(t *testing.T, manifests ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, manifest := range manifests {
+			if err := kubectlDelete(context.Background(), manifest); err != nil {
+				t.Errorf("test Application cleanup failed: %v", err)
+			}
+		}
+	})
+	for _, manifest := range manifests {
+		if err := kubectlDelete(t.Context(), manifest); err != nil {
+			t.Fatalf("test Application preparation failed: %v", err)
+		}
+	}
 }
 
 // TestWebhookTopicConflictRejection verifies that applying an Application whose
@@ -481,17 +446,12 @@ spec:
         topic: webhook.conflict.test
 `
 
-	kubectlDelete(owner)
-	kubectlDelete(conflicting)
-	t.Cleanup(func() {
-		kubectlDelete(owner)
-		kubectlDelete(conflicting)
-	})
+	prepareTestApplications(t, owner, conflicting)
 
-	_, err := kubectlApply(owner)
+	_, err := kubectlApply(t.Context(), owner)
 	g.Expect(err).NotTo(HaveOccurred(), "owner Application should be admitted")
 
-	out, err := kubectlApply(conflicting)
+	out, err := kubectlApply(t.Context(), conflicting)
 	g.Expect(err).To(HaveOccurred(), "conflicting Application should be rejected at admission")
 	g.Expect(out).To(ContainSubstring("webhook.conflict.test"), "rejection message should name the conflicting topic")
 }
@@ -534,17 +494,12 @@ spec:
       type: counter
 `
 
-	kubectlDelete(owner)
-	kubectlDelete(conflicting)
-	t.Cleanup(func() {
-		kubectlDelete(owner)
-		kubectlDelete(conflicting)
-	})
+	prepareTestApplications(t, owner, conflicting)
 
-	_, err := kubectlApply(owner)
+	_, err := kubectlApply(t.Context(), owner)
 	g.Expect(err).NotTo(HaveOccurred(), "owner Application should be admitted")
 
-	out, err := kubectlApply(conflicting)
+	out, err := kubectlApply(t.Context(), conflicting)
 	g.Expect(err).To(HaveOccurred(), "conflicting Application should be rejected at admission")
 	g.Expect(out).To(ContainSubstring("webhook_conflict_metric_total"), "rejection message should name the conflicting metric")
 }
@@ -570,10 +525,9 @@ spec:
         topic: webhook.invalid.id.events
 `
 
-	kubectlDelete(invalid)
-	t.Cleanup(func() { kubectlDelete(invalid) })
+	prepareTestApplications(t, invalid)
 
-	out, err := kubectlApply(invalid)
+	out, err := kubectlApply(t.Context(), invalid)
 	g.Expect(err).To(HaveOccurred(), "Application with invalid identifier should be rejected at admission")
 	g.Expect(out).To(ContainSubstring("consecutive hyphens"), "rejection message should describe the identifier constraint")
 }

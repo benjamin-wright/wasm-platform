@@ -1,3 +1,5 @@
+load('../../tilt/ci.Tiltfile', 'CI_MODE')
+
 def monitoring(namespace):
     k8s_yaml(helm(
         'components/monitoring/helm',
@@ -12,10 +14,10 @@ def monitoring(namespace):
     local_resource(
         'monitoring: config-check',
         cmd = 'kubectl exec -n {} deployment/monitoring -- /bin/promtool check config /etc/prometheus/prometheus.yaml'.format(namespace),
-        resource_deps = ['monitoring'],
+        resource_deps = ['monitoring'] + (['ci: record-revision'] if CI_MODE else []),
         labels = ['monitoring'],
-        auto_init = False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )
     local_resource(
         'monitoring: traffic',

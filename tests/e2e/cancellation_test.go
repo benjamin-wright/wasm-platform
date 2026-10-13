@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -23,7 +22,7 @@ const cancellationURL = "http://localhost/cancellation"
 func TestInvocationCancellationEndToEnd(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	t.Cleanup(client.CloseIdleConnections)
-	kubectlForLogRegression(t, "wait", "application", "cancellation-app", "-n", "default",
+	kubectlForLogRegression(t, t.Context(), "wait", "application", "cancellation-app", "-n", "default",
 		"--for=condition=Ready", "--timeout=15s")
 	requestForLogRegression(t, client, http.MethodGet, cancellationURL, http.StatusOK, "", "",
 		func(body []byte) bool { return string(body) == "ready" })
@@ -64,8 +63,8 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 		})
 	}
 
-	startedBefore := cancellationStarts(t, client)
-	stoppedBefore := cancellationStops(t)
+	startedBefore := cancellationStarts(t, t.Context(), client)
+	stoppedBefore := cancellationStops(t, t.Context())
 	type result struct {
 		action action
 		status int
@@ -74,6 +73,8 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 	results := make(chan result, len(actions))
 	var requests sync.WaitGroup
 	startedAt := time.Now()
+	requestCtx, cancelRequests := context.WithTimeout(t.Context(), timeout+15*time.Second)
+	t.Cleanup(cancelRequests)
 	for _, invocation := range actions {
 		requests.Add(1)
 		go func(a action) {
@@ -82,7 +83,7 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 			if a.world == "message" {
 				command = "message " + command
 			}
-			status, _, err := cancellationRequest(context.Background(),
+			status, _, err := cancellationRequest(requestCtx,
 				slowClient, http.MethodPost, cancellationURL, command)
 			results <- result{action: a, status: status, err: err}
 		}(invocation)
@@ -94,15 +95,15 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 			if mode == "sleep" {
 				want++
 			}
-			cancellationEventually(t, startedAt.Add(15*time.Second), func() bool {
-				return cancellationStarts(t, client)[world+":"+mode] >= want
+			cancellationEventually(t, startedAt.Add(15*time.Second), func(ctx context.Context) bool {
+				return cancellationStarts(t, ctx, client)[world+":"+mode] >= want
 			}, world+" "+mode+" never entered the production guest")
 		}
 	}
 	for _, a := range actions {
 		if a.mode == "committed" {
-			cancellationEventually(t, startedAt.Add(min(15*time.Second, timeout)), func() bool {
-				status, body, err := cancellationRequest(context.Background(), client, http.MethodGet,
+			cancellationEventually(t, startedAt.Add(min(15*time.Second, timeout)), func(ctx context.Context) bool {
+				status, body, err := cancellationRequest(ctx, client, http.MethodGet,
 					cancellationURL+"?"+a.token, "")
 				return err == nil && status == http.StatusOK && body == "sql=1 kv=true"
 			}, a.world+" writes were not committed before the invocation deadline")
@@ -110,8 +111,8 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 	}
 
 	for _, world := range []string{"http", "message"} {
-		cancellationEventually(t, startedAt.Add(timeout+10*time.Second), func() bool {
-			return cancellationStops(t)[world] >= stoppedBefore[world]+5
+		cancellationEventually(t, startedAt.Add(timeout+10*time.Second), func(ctx context.Context) bool {
+			return cancellationStops(t, ctx)[world] >= stoppedBefore[world]+5
 		}, world+" executions did not actually exit within the cancellation bound")
 	}
 
@@ -142,7 +143,7 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 		if a.mode == "committed" || a.mode == "write" {
 			want = "sql=1 kv=true"
 		}
-		status, body, err := cancellationRequest(context.Background(), client, http.MethodGet,
+		status, body, err := cancellationRequest(t.Context(), client, http.MethodGet,
 			cancellationURL+"?"+a.token, "")
 		if err != nil || status != http.StatusOK || body != want {
 			t.Errorf("%s %s stored effects: HTTP %d body=%q err=%v; want %q", a.world, a.mode, status, body, err, want)
@@ -151,17 +152,8 @@ func TestInvocationCancellationEndToEnd(t *testing.T) {
 }
 
 func cancellationRequest(ctx context.Context, client *http.Client, method, endpoint, body string) (int, string, error) {
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(body))
-	if err != nil {
-		return 0, "", err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return 0, "", err
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-	return response.StatusCode, string(data), err
+	status, data, err := requestHTTP(ctx, client, method, endpoint, body, nil)
+	return status, string(data), err
 }
 
 func cancellationHostTimeout(t *testing.T) time.Duration {
@@ -177,7 +169,7 @@ func cancellationHostTimeout(t *testing.T) time.Duration {
 			}
 		}
 	}
-	data := kubectlForLogRegression(t, "get", "deployment", "execution-host", "-n", "wasm-platform", "-o", "json")
+	data := kubectlForLogRegression(t, t.Context(), "get", "deployment", "execution-host", "-n", "wasm-platform", "-o", "json")
 	if err := json.Unmarshal(data, &deployment); err != nil {
 		t.Fatal("could not decode execution-host deployment")
 	}
@@ -195,11 +187,14 @@ func cancellationHostTimeout(t *testing.T) time.Duration {
 	return 30 * time.Second
 }
 
-func cancellationStarts(t *testing.T, client *http.Client) map[string]int {
+func cancellationStarts(t *testing.T, ctx context.Context, client *http.Client) map[string]int {
 	t.Helper()
-	status, body, err := cancellationRequest(context.Background(), client, http.MethodGet, "http://localhost:9090/metrics", "")
+	status, body, err := cancellationRequest(ctx, client, http.MethodGet, metricsURL, "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("could not read execution-host metrics: HTTP %d err=%v", status, err)
+	}
+	if _, err := metricSum(body, "cancellation_started_total"); err != nil {
+		t.Fatal(err)
 	}
 	counts := make(map[string]int)
 	worldLabel := regexp.MustCompile(`world="([^"]+)"`)
@@ -221,9 +216,9 @@ func cancellationStarts(t *testing.T, client *http.Client) map[string]int {
 	return counts
 }
 
-func cancellationStops(t *testing.T) map[string]int {
+func cancellationStops(t *testing.T, ctx context.Context) map[string]int {
 	t.Helper()
-	logs := kubectlForLogRegression(t, "logs", "deployment/execution-host", "-n", "wasm-platform", "--tail=-1")
+	logs := kubectlForLogRegression(t, ctx, "logs", "deployment/execution-host", "-n", "wasm-platform", "--tail=-1")
 	counts := make(map[string]int)
 	plainLogs := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(string(logs), "")
 	for _, line := range strings.Split(plainLogs, "\n") {
@@ -239,16 +234,25 @@ func cancellationStops(t *testing.T) map[string]int {
 	return counts
 }
 
-func cancellationEventually(t *testing.T, deadline time.Time, condition func() bool, failure string) {
+func cancellationEventually(t *testing.T, deadline time.Time, condition func(context.Context) bool, failure string) {
 	t.Helper()
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
 	for {
-		matched := condition()
-		if time.Now().After(deadline) {
+		if ctx.Err() != nil {
+			t.Fatal(failure)
+		}
+		matched := condition(ctx)
+		if ctx.Err() != nil {
 			t.Fatal(failure)
 		}
 		if matched {
 			return
 		}
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			t.Fatal(failure)
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 }

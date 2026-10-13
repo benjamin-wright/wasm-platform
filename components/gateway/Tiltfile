@@ -1,6 +1,16 @@
+load('../../tilt/ci.Tiltfile', 'CI_MODE')
+load('../../tilt/workspace-deps.Tiltfile', 'RUST_WORKSPACE_INPUTS')
+
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/gateway'
 
 def gateway(resource_deps=[]):
+    source_deps = RUST_WORKSPACE_INPUTS + [
+        'components/gateway/src',
+        'components/gateway/Cargo.toml',
+        'components/gateway/build.rs',
+        'proto/gateway/v1/gateway.proto',
+    ]
+
     custom_build(
         IMAGE_REF,
         command = (
@@ -11,16 +21,29 @@ def gateway(resource_deps=[]):
             ' -t $EXPECTED_REF' +
             ' components/gateway'
         ),
-        deps = [
-            'components/gateway/src',
-            'components/gateway/Cargo.toml',
+        deps = source_deps + [
             'components/gateway/Dockerfile',
-            'components/gateway/build.rs',
-            'lib/platform-common',
-            'proto/gateway/v1/gateway.proto',
             '.dockerignore',
         ],
         image_deps = ['workspace-deps'],
+    )
+
+    local_resource(
+        'gateway: regression-tests',
+        cmd = 'cargo test --locked -p gateway',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
+        labels = ['gateway'],
+    )
+
+    local_resource(
+        'gateway: lint',
+        cmd = 'cargo clippy --locked -p gateway --all-targets -- -D warnings',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
+        labels = ['gateway'],
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )
 
     k8s_resource(

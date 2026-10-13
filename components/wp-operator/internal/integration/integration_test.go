@@ -29,7 +29,11 @@ import (
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
 )
 
-const updateTimeout = 30 * time.Second
+const (
+	requestTimeout = 5 * time.Second
+	updateTimeout  = 30 * time.Second
+	streamTimeout  = 5 * time.Minute
+)
 
 var scheme *runtime.Scheme
 
@@ -58,6 +62,7 @@ func newK8sClient(t *testing.T) client.Client {
 	if err != nil {
 		t.Fatalf("building kubeconfig: %v", err)
 	}
+	cfg.Timeout = requestTimeout
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatalf("creating k8s client: %v", err)
@@ -87,9 +92,11 @@ func createTestNamespace(t *testing.T, c client.Client) string {
 // are routed into per-resource buffered channels so that WaitForUpsert and
 // WaitForDelete calls for different resources are fully independent.
 type configClient struct {
-	mu      sync.Mutex
-	upserts map[string]chan *configsync.ApplicationConfig // keyed by "namespace/name"
-	deletes map[string]chan struct{}                      // keyed by "namespace/name"
+	mu        sync.Mutex
+	upserts   map[string]chan *configsync.ApplicationConfig // keyed by "namespace/name"
+	deletes   map[string]chan struct{}                      // keyed by "namespace/name"
+	done      chan struct{}
+	streamErr error
 }
 
 func newConfigClient(t *testing.T, hostID string) *configClient {
@@ -99,7 +106,11 @@ func newConfigClient(t *testing.T, hostID string) *configClient {
 		t.Fatalf("connecting to operator gRPC at %s: %v", grpcAddr(), err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	deadline := time.Now().Add(streamTimeout)
+	if testDeadline, ok := t.Deadline(); ok && testDeadline.Before(deadline) {
+		deadline = testDeadline
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
 	t.Cleanup(func() {
 		cancel()
 		_ = conn.Close()
@@ -116,11 +127,14 @@ func newConfigClient(t *testing.T, hostID string) *configClient {
 	cc := &configClient{
 		upserts: make(map[string]chan *configsync.ApplicationConfig),
 		deletes: make(map[string]chan struct{}),
+		done:    make(chan struct{}),
 	}
 	go func() {
+		defer close(cc.done)
 		for {
 			req, err := stream.Recv()
 			if err != nil {
+				cc.streamErr = fmt.Errorf("receiving configuration update: %w", err)
 				return
 			}
 			for _, u := range req.IncrementalConfig.GetUpdates() {
@@ -139,11 +153,14 @@ func newConfigClient(t *testing.T, hostID string) *configClient {
 				}
 			}
 			// Acknowledge so the operator can deliver the next update.
-			_ = stream.Send(&configsync.IncrementalUpdateAck{
+			if err := stream.Send(&configsync.IncrementalUpdateAck{
 				HostId:         req.TargetHostId,
 				VersionApplied: req.IncrementalConfig.GetVersion(),
 				Success:        true,
-			})
+			}); err != nil {
+				cc.streamErr = fmt.Errorf("acknowledging configuration update: %w", err)
+				return
+			}
 		}
 	}()
 	return cc
@@ -178,6 +195,9 @@ func (cc *configClient) WaitForUpsert(t *testing.T, ns, name string) *configsync
 	select {
 	case cfg := <-cc.upsertChan(ns + "/" + name):
 		return cfg
+	case <-cc.done:
+		t.Fatalf("configuration stream ended while waiting for upsert of %s/%s: %v", ns, name, cc.streamErr)
+		return nil
 	case <-time.After(updateTimeout):
 		t.Fatalf("timed out waiting for upsert of %s/%s", ns, name)
 		return nil
@@ -190,6 +210,8 @@ func (cc *configClient) WaitForDelete(t *testing.T, ns, name string) {
 	t.Helper()
 	select {
 	case <-cc.deleteChan(ns + "/" + name):
+	case <-cc.done:
+		t.Fatalf("configuration stream ended while waiting for delete of %s/%s: %v", ns, name, cc.streamErr)
 	case <-time.After(updateTimeout):
 		t.Fatalf("timed out waiting for delete of %s/%s", ns, name)
 	}
@@ -199,9 +221,11 @@ func (cc *configClient) WaitForDelete(t *testing.T, ns, name string) {
 func waitForReady(t *testing.T, c client.Client, ns, name string) {
 	t.Helper()
 	g := NewWithT(t)
+	ctx, cancel := context.WithTimeout(t.Context(), updateTimeout)
+	defer cancel()
 	g.Eventually(func() bool {
 		var app wasmplatformv1alpha1.Application
-		if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, &app); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &app); err != nil {
 			return false
 		}
 		for _, cond := range app.Status.Conditions {
@@ -210,7 +234,7 @@ func waitForReady(t *testing.T, c client.Client, ns, name string) {
 			}
 		}
 		return false
-	}, updateTimeout, 500*time.Millisecond).Should(BeTrue(), "application %s/%s should become Ready", ns, name)
+	}, updateTimeout, 500*time.Millisecond).WithContext(ctx).Should(BeTrue(), "application %s/%s should become Ready", ns, name)
 }
 
 // TestApplicationCreate_BroadcastsUpsert verifies that creating an Application
@@ -383,9 +407,11 @@ func TestTopicConflict_RejectedUntilOwnerDeleted(t *testing.T) {
 	cc.WaitForDelete(t, ns, "owner-app")
 
 	// Admission uses the informer cache, which may briefly retain the deleted owner.
+	ctx, cancel := context.WithTimeout(t.Context(), updateTimeout)
+	defer cancel()
 	g.Eventually(func() error {
-		return c.Create(context.Background(), blocked.DeepCopy())
-	}, updateTimeout, 500*time.Millisecond).Should(Succeed())
+		return c.Create(ctx, blocked.DeepCopy())
+	}, updateTimeout, 500*time.Millisecond).WithContext(ctx).Should(Succeed())
 	waitForReady(t, c, ns, "blocked-app")
 
 	update := cc.WaitForUpsert(t, ns, "blocked-app")

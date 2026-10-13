@@ -9,10 +9,10 @@ pub mod configsync {
     tonic::include_proto!("configsync.v1");
 }
 
-pub use configsync::{AppUpdate, ApplicationConfig, FullConfig};
+pub use configsync::{ApplicationConfig, FullConfig};
 
 /// A flattened view of a single deployable function, combining both application-level
-/// (shared env, sql, key_value, metrics) and function-level (module_ref, world_type, topic)
+/// (sql, key_value, metrics) and function-level (module_ref, world_type, topic)
 /// fields.  The registry maps each NATS subject (topic) to one FunctionEntry so that
 /// message dispatch is a single O(1) map lookup.
 #[derive(Clone)]
@@ -22,9 +22,6 @@ pub struct FunctionEntry {
     pub function_name: String,
     pub module_ref: String,
     pub world_type: configsync::WorldType,
-    pub http_config: Option<configsync::HttpConfig>,
-    /// Application-level shared config.
-    pub env: HashMap<String, String>,
     /// The derived PG username this function uses, or None if the function has no SQL access.
     /// At invocation time, the pool map is looked up by (namespace, app_name, sql_username).
     pub sql_username: Option<String>,
@@ -43,7 +40,6 @@ impl std::fmt::Debug for FunctionEntry {
             .field("function_name", &self.function_name)
             .field("module_ref", &"[REDACTED]")
             .field("world_type", &self.world_type)
-            .field("env", &"[REDACTED]")
             .field("sql_username", &self.sql_username)
             .field("kv_enabled", &self.kv_enabled)
             .finish_non_exhaustive()
@@ -102,11 +98,6 @@ pub struct ConfigDiff {
     pub pools_to_create: Vec<(String, String, String, String)>,
     /// Applications whose SQL pools should all be evicted: `(namespace, app_name)`.
     pub pools_to_evict_apps: Vec<(String, String)>,
-    /// Updated Redis connection info, if the config carried a Redis field.
-    /// `Some(Some(...))` → new/updated credentials.
-    /// `Some(None)` → Redis no longer provisioned (disconnect).
-    /// `None` → not present in the update (no change).
-    pub redis_change: Option<Option<configsync::RedisConnectionConfig>>,
 }
 
 /// Shared, thread-safe registry of all known function entries, keyed by NATS topic.
@@ -191,15 +182,11 @@ impl AppRegistry {
             map.insert(topic, entry);
         }
 
-        // Extract infrastructure connection changes from the full config.
-        let redis_change = Some(full.redis);
-
         Ok(ConfigDiff {
             modules_to_load,
             modules_to_evict,
             pools_to_create,
             pools_to_evict_apps,
-            redis_change,
         })
     }
 
@@ -264,18 +251,16 @@ impl AppRegistry {
                 }
 
                 for fn_cfg in &app.functions {
-                    if let Some(topic) = &fn_cfg.topic {
-                        if let Some(old) = map.get(topic.as_str()) {
-                            if (old.app_namespace.as_str(), old.app_name.as_str())
-                                != (app.namespace.as_str(), app.name.as_str())
-                            {
-                                modules_to_evict.push((
-                                    old.app_namespace.clone(),
-                                    old.app_name.clone(),
-                                    old.function_name.clone(),
-                                ));
-                            }
-                        }
+                    if let Some(topic) = &fn_cfg.topic
+                        && let Some(old) = map.get(topic.as_str())
+                        && (old.app_namespace.as_str(), old.app_name.as_str())
+                            != (app.namespace.as_str(), app.name.as_str())
+                    {
+                        modules_to_evict.push((
+                            old.app_namespace.clone(),
+                            old.app_name.clone(),
+                            old.function_name.clone(),
+                        ));
                     }
                 }
 
@@ -306,15 +291,11 @@ impl AppRegistry {
             }
         }
 
-        // Extract infrastructure connection changes.
-        let redis_change = Some(incremental.redis);
-
         Ok(ConfigDiff {
             modules_to_load,
             modules_to_evict,
             pools_to_create,
             pools_to_evict_apps,
-            redis_change,
         })
     }
 
@@ -372,8 +353,6 @@ fn function_entry_from(
         function_name: fn_cfg.name.clone(),
         module_ref: fn_cfg.module_ref.clone(),
         world_type,
-        http_config: fn_cfg.http_config.clone(),
-        env: app.env.clone(),
         sql_username: fn_cfg.sql_username.clone(),
         kv_enabled: app.key_value,
         metrics: app.metrics.clone(),

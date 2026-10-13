@@ -1,4 +1,13 @@
 def cancellation_app(namespace, resource_deps=[]):
+    workspace_deps = [
+        'examples/cancellation-app/Cargo.toml',
+        'examples/cancellation-app/Cargo.lock',
+        'examples/cancellation-app/http/Cargo.toml',
+        'examples/cancellation-app/messages/Cargo.toml',
+        'examples/cancellation-app/actions.rs',
+        'framework/runtime.wit',
+    ]
+
     for module in ['http', 'messages']:
         custom_build(
             'cancellation-app-' + module,
@@ -8,13 +17,7 @@ def cancellation_app(namespace, resource_deps=[]):
                 ' oras push $EXPECTED_REF target/wasm32-wasip2/release/cancellation_' + module + '.wasm' +
                 ' --artifact-type application/vnd.wasm.content.layer.v1+wasm --plain-http'
             ),
-            deps = [
-                'examples/cancellation-app/' + module,
-                'examples/cancellation-app/actions.rs',
-                'examples/cancellation-app/Cargo.toml',
-                'examples/cancellation-app/Cargo.lock',
-                'framework/runtime.wit',
-            ],
+            deps = workspace_deps + ['examples/cancellation-app/' + module],
             skips_local_docker = True,
         )
 

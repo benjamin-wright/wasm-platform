@@ -1,3 +1,5 @@
+load('../../tilt/ci.Tiltfile', 'CI_MODE')
+
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 
 # Release name used by helm() in the root Tiltfile.
@@ -5,6 +7,14 @@ IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 RELEASE_NAME = 'wasm-platform'
 
 def wp_operator(namespace='wasm-platform'):
+    source_deps = [
+        'components/wp-operator/cmd',
+        'components/wp-operator/api',
+        'components/wp-operator/internal',
+        'components/wp-operator/go.mod',
+        'components/wp-operator/go.sum',
+    ]
+
     k8s_kind('Application',
              image_json_path = ['{.spec.functions[*].module}', '{.spec[?(@.migrations)].migrations.artifact}'],
              pod_readiness = 'ignore')
@@ -16,13 +26,7 @@ def wp_operator(namespace='wasm-platform'):
             ' -t $EXPECTED_REF' +
             ' components/wp-operator'
         ),
-        deps = [
-            'components/wp-operator/cmd',
-            'components/wp-operator/api',
-            'components/wp-operator/internal',
-            'components/wp-operator/go.mod',
-            'components/wp-operator/go.sum',
-        ],
+        deps = source_deps + ['components/wp-operator/Dockerfile'],
     )
 
     k8s_resource(
@@ -49,40 +53,28 @@ def wp_operator(namespace='wasm-platform'):
 
     local_resource(
         'wp: unit-tests',
-        cmd = 'cd components/wp-operator && go test ./...',
-        deps = [
-            'components/wp-operator/cmd',
-            'components/wp-operator/api',
-            'components/wp-operator/internal',
-        ],
-        labels = ['tests'],
-        auto_init=False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
+        cmd = 'cd components/wp-operator && GOWORK=off go test -mod=readonly -count=1 -timeout=5m ./...',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
+        labels = ['wp-operator'],
     )
 
     local_resource(
         'wp: lint',
-        cmd = 'cd components/wp-operator && go vet ./...',
-        deps = [
-            'components/wp-operator/cmd',
-            'components/wp-operator/api',
-            'components/wp-operator/internal',
-            'components/wp-operator/go.mod',
-            'components/wp-operator/go.sum',
-        ],
+        cmd = 'cd components/wp-operator && GOWORK=off go vet -mod=readonly ./...',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
         labels = ['wp-operator'],
-        auto_init = False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )
 
     local_resource(
         'wp: integration-tests',
-        cmd = 'cd components/wp-operator && go test -tags integration -v ./internal/integration/...',
-        deps = [
-            'components/wp-operator/internal/integration',
-        ],
-        resource_deps = ['wp-operator'],
-        labels = ['tests'],
-        auto_init=False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
+        cmd = 'cd components/wp-operator && GOWORK=off go test -mod=readonly -tags integration -count=1 -timeout=5m -v ./internal/integration/...',
+        deps = source_deps,
+        resource_deps = ['wp-operator', 'wp-webhook'] + (['ci: record-revision'] if CI_MODE else []),
+        labels = ['wp-operator'],
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )

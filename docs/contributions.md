@@ -8,6 +8,7 @@ Install these tools on the host and make them available on `PATH` before running
 - Go 1.25.1+ (for operator and end-to-end tests)
 - Docker with a running daemon and BuildKit support (for k3d and container builds)
 - Make and kubectl
+- Python 3 (for local validation and monitoring helpers)
 - [k3d](https://k3d.io)
 - [Tilt](https://tilt.dev)
 - Helm
@@ -51,6 +52,22 @@ Builds container images, deploys Helm charts, runs unit tests on source change, 
 Resources are grouped by component label in the Tilt UI. Integration tests appear under the same label and must be triggered manually — click the resource and press the trigger button after the service is ready.
 
 Each component's build, deploy, and test logic lives in `components/<name>/Tiltfile`. The root `Tiltfile` loads and calls each component function.
+
+### Local CI
+
+During development, keep Tilt running through the local MCP. Trigger affected checks, inspect failures, and rerun those resources after fixes. Trigger `e2e-tests` against the latest deployed images before completing a slice. Builds and validation run locally; iteration does not require a cluster teardown or Tilt restart.
+
+For an unattended batch run with the local cluster running and its kubeconfig exported:
+
+```sh
+tilt ci --timeout=30m -- --ci
+```
+
+This runs builds, formatting/static checks, component regressions, tagged operator integration, Redis cancellation tests, monitoring configuration validation, and full-stack e2e tests on the local machine and k3d cluster. It uses no hosted build runner. Cluster tests bypass Go's test cache; Rust builds use lockfiles and Go checks use readonly modules.
+
+The [CI resource definitions](../tilt/ci.Tiltfile) record the Git commit and a fingerprint of tracked and non-ignored untracked source, including local edits. The final check rejects a changed tree; keep source stable during a run. Logs hold the validation results. The ignored `.tilt-ci-revision.json` holds only the temporary fingerprint.
+
+Normal `tilt up` runs component regressions and e2e harness checks on source changes. Cluster tests and lint remain manual. In an existing session, record the source baseline, trigger any checks affected by subsequent changes, and trigger the final revision check after validation. Resource dependencies can reuse prior successful checks; the final fingerprint detects source drift but does not force those checks to rerun. Batch mode enables the complete validation set on startup and needs its own Tilt session.
 
 ## Make Targets
 

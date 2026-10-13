@@ -1,8 +1,19 @@
+load('../../tilt/ci.Tiltfile', 'CI_MODE')
+
 def e2e_tests(resource_deps=[]):
     local_resource(
-        'e2e-tests',
-        cmd = 'cd tests/e2e && GOWORK=off go vet -tags integration ./... && GOWORK=off go test -tags integration -count=1 -v ./...',
-        resource_deps = ['demo-app', 'counter-app', 'log-error', 'sql-hello', 'sql-broken-migrations', 'cancellation-app'] + resource_deps,
+        'e2e: harness-tests',
+        cmd = 'cd tests/e2e && GOWORK=off go vet -mod=readonly ./... && GOWORK=off go test -mod=readonly -count=1 -timeout=1m ./...',
+        deps = ['tests/e2e'],
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
         labels = ['tests'],
-        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+    local_resource(
+        'e2e-tests',
+        cmd = 'cd tests/e2e && GOWORK=off go vet -mod=readonly -tags integration ./... && GOWORK=off go test -mod=readonly -tags integration -count=1 -timeout=15m -v ./...',
+        deps = ['tests/e2e'],
+        resource_deps = ['demo-app', 'counter-app', 'log-error', 'sql-hello', 'sql-broken-migrations', 'cancellation-app'] + resource_deps + (['ci: record-revision'] if CI_MODE else []),
+        labels = ['tests'],
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )

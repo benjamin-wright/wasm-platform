@@ -1,6 +1,17 @@
+load('../../tilt/ci.Tiltfile', 'CI_MODE')
+load('../../tilt/workspace-deps.Tiltfile', 'RUST_WORKSPACE_INPUTS')
+
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/execution-host'
 
 def execution_host(resource_deps=[]):
+    source_deps = RUST_WORKSPACE_INPUTS + [
+        'components/execution-host/src',
+        'components/execution-host/Cargo.toml',
+        'components/execution-host/build.rs',
+        'proto/configsync/v1/configsync.proto',
+        'framework/runtime.wit',
+    ]
+
     custom_build(
         IMAGE_REF,
         command = (
@@ -11,35 +22,12 @@ def execution_host(resource_deps=[]):
             ' -t $EXPECTED_REF' +
             ' components/execution-host'
         ),
-        deps = [
-            'components/execution-host/src',
-            'components/execution-host/Cargo.toml',
+        deps = source_deps + [
             'components/execution-host/Dockerfile',
-            'components/execution-host/build.rs',
-            'lib/platform-common',
-            'proto/configsync/v1/configsync.proto',
-            'framework/runtime.wit',
             '.dockerignore',
         ],
         image_deps = ['workspace-deps'],
     )
-
-    regression_deps = [
-        'Cargo.toml',
-        'Cargo.lock',
-        'components/execution-host/src',
-        'components/execution-host/Cargo.toml',
-        'components/execution-host/build.rs',
-        'components/execution-host/Tiltfile',
-        'components/gateway/src',
-        'components/gateway/Cargo.toml',
-        'components/gateway/build.rs',
-        'components/gateway/Tiltfile',
-        'lib/platform-common',
-        'proto/configsync/v1/configsync.proto',
-        'proto/gateway/v1/gateway.proto',
-        'framework/runtime.wit',
-    ]
 
     local_resource(
         'execution-host: update-dependencies',
@@ -51,22 +39,20 @@ def execution_host(resource_deps=[]):
 
     local_resource(
         'execution-host: regression-tests',
-        cmd = 'cargo test --locked -p platform-common -p execution-host -p gateway',
-        deps = regression_deps,
+        cmd = 'cargo test --locked -p platform-common -p execution-host',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
         labels = ['execution-host'],
     )
 
     local_resource(
         'execution-host: lint',
-        cmd = 'cargo clippy --locked -p platform-common -p execution-host -p gateway -p module-cache --all-targets',
-        deps = regression_deps + [
-            'components/module-cache/src',
-            'components/module-cache/Cargo.toml',
-            'components/module-cache/Tiltfile',
-        ],
+        cmd = 'cargo clippy --locked -p platform-common -p execution-host --all-targets -- -D warnings',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
         labels = ['execution-host'],
-        auto_init = False,
-        trigger_mode = TRIGGER_MODE_MANUAL,
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )
 
     k8s_resource(
@@ -85,9 +71,9 @@ def execution_host(resource_deps=[]):
     local_resource(
         'execution-host: redis-cancellation-tests',
         cmd = 'REDIS_TEST_URL=redis://localhost:6391 cargo test --locked -p execution-host redis_client::tests::queued_mutations -- --ignored',
-        deps = ['components/execution-host/src', 'components/execution-host/tests/redis-cancellation.yaml', 'components/execution-host/Cargo.toml', 'Cargo.lock'],
-        resource_deps = ['redis-cancellation'],
-        trigger_mode = TRIGGER_MODE_MANUAL,
-        auto_init = False,
+        deps = source_deps + ['components/execution-host/tests/redis-cancellation.yaml'],
+        resource_deps = ['redis-cancellation'] + (['ci: record-revision'] if CI_MODE else []),
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
+        auto_init = CI_MODE,
         labels = ['execution-host'],
     )

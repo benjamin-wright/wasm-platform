@@ -6,10 +6,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -44,7 +42,7 @@ func TestProductionLogsExcludeCredentials(t *testing.T) {
 		{"default", "wasm-default-sql-hello-writer-pg-creds", "PGPASSWORD"},
 		{"default", "wasm-default-sql-hello-reader-pg-creds", "PGPASSWORD"},
 	} {
-		out := kubectlForLogRegression(t, "get", "secret", ref.name, "-n", ref.namespace, "-o", "json")
+		out := kubectlForLogRegression(t, t.Context(), "get", "secret", ref.name, "-n", ref.namespace, "-o", "json")
 		var secret struct {
 			Data map[string][]byte `json:"data"`
 		}
@@ -76,7 +74,7 @@ func TestProductionLogsExcludeCredentials(t *testing.T) {
 		{"wp-operator", []string{"starting manager", "application config pushed"}},
 	} {
 		t.Run(component.name, func(t *testing.T) {
-			out := kubectlForLogRegression(t, "get", "pods", "-n", "wasm-platform",
+			out := kubectlForLogRegression(t, t.Context(), "get", "pods", "-n", "wasm-platform",
 				"-l", "app.kubernetes.io/name="+component.name, "-o", "json")
 			var pods struct {
 				Items []struct {
@@ -109,12 +107,12 @@ func TestProductionLogsExcludeCredentials(t *testing.T) {
 				}
 				for _, container := range pod.Spec.Containers {
 					args := []string{"logs", pod.Metadata.Name, "-n", "wasm-platform", "-c", container.Name, "--tail=-1"}
-					logs := kubectlForLogRegression(t, args...)
+					logs := kubectlForLogRegression(t, t.Context(), args...)
 					assertLogsExcludeCredentials(t, logs, forbidden, pod.Metadata.Name, container.Name)
 					componentLogs.Write(logs)
 					for _, status := range pod.Status.ContainerStatuses {
 						if status.Name == container.Name && status.RestartCount > 0 {
-							previous := kubectlForLogRegression(t, append(args, "--previous")...)
+							previous := kubectlForLogRegression(t, t.Context(), append(args, "--previous")...)
 							assertLogsExcludeCredentials(t, previous, forbidden, pod.Metadata.Name, container.Name)
 						}
 					}
@@ -158,23 +156,16 @@ func invokeGuestErrorForLogRegression(t *testing.T, client *http.Client) []strin
 
 func requestForLogRegression(t *testing.T, client *http.Client, method, endpoint string, status int, body, authorization string, validBody func([]byte) bool) []byte {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), routeTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), routeTimeout)
 	defer cancel()
+	headers := make(http.Header)
+	if authorization != "" {
+		headers.Set("Authorization", authorization)
+	}
 	for {
-		request, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(body))
-		if err != nil {
-			t.Fatal("could not construct log regression request")
-		}
-		if authorization != "" {
-			request.Header.Set("Authorization", authorization)
-		}
-		response, err := client.Do(request)
-		if err == nil {
-			body, readErr := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-			response.Body.Close()
-			if readErr == nil && response.StatusCode == status && (validBody == nil || validBody(body)) {
-				return body
-			}
+		gotStatus, data, err := requestHTTP(ctx, client, method, endpoint, body, headers)
+		if err == nil && gotStatus == status && (validBody == nil || validBody(data)) {
+			return data
 		}
 		select {
 		case <-ctx.Done():
@@ -184,12 +175,9 @@ func requestForLogRegression(t *testing.T, client *http.Client, method, endpoint
 	}
 }
 
-func kubectlForLogRegression(t *testing.T, args ...string) []byte {
+func kubectlForLogRegression(t *testing.T, ctx context.Context, args ...string) []byte {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, "kubectl", append([]string{"--request-timeout=15s"}, args...)...)
-	out, err := command.Output()
+	out, err := kubectlOutput(ctx, kubectlTimeout, nil, false, args...)
 	if err != nil {
 		// kubectl stderr can include server-supplied content; retain only the
 		// operation name, never subprocess output, in the test failure.

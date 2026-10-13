@@ -1,4 +1,13 @@
 def sql_hello(namespace, resource_deps=[]):
+    workspace_deps = [
+        'examples/sql-hello/Cargo.toml',
+        'examples/sql-hello/Cargo.lock',
+        'examples/sql-hello/setup/Cargo.toml',
+        'examples/sql-hello/query/Cargo.toml',
+        'examples/sql-hello/insert-test/Cargo.toml',
+        'framework/runtime.wit',
+    ]
+
     custom_build(
         'sql-hello-migrations',
         command = (
@@ -18,54 +27,42 @@ def sql_hello(namespace, resource_deps=[]):
     custom_build(
         'sql-hello-setup',
         command = (
-            'cargo build --manifest-path examples/sql-hello/setup/Cargo.toml' +
+            'cargo build --locked --manifest-path examples/sql-hello/setup/Cargo.toml' +
             ' --target wasm32-wasip2 --release --target-dir target &&' +
             ' oras push $EXPECTED_REF' +
             ' target/wasm32-wasip2/release/setup.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
             ' --plain-http'
         ),
-        deps = [
-            'examples/sql-hello/setup/lib.rs',
-            'examples/sql-hello/setup/Cargo.toml',
-            'framework/runtime.wit',
-        ],
+        deps = workspace_deps + ['examples/sql-hello/setup'],
         skips_local_docker = True,
     )
 
     custom_build(
         'sql-hello-query',
         command = (
-            'cargo build --manifest-path examples/sql-hello/query/Cargo.toml' +
+            'cargo build --locked --manifest-path examples/sql-hello/query/Cargo.toml' +
             ' --target wasm32-wasip2 --release --target-dir target &&' +
             ' oras push $EXPECTED_REF' +
             ' target/wasm32-wasip2/release/query.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
             ' --plain-http'
         ),
-        deps = [
-            'examples/sql-hello/query/lib.rs',
-            'examples/sql-hello/query/Cargo.toml',
-            'framework/runtime.wit',
-        ],
+        deps = workspace_deps + ['examples/sql-hello/query'],
         skips_local_docker = True,
     )
 
     custom_build(
         'sql-hello-insert-test',
         command = (
-            'cargo build --manifest-path examples/sql-hello/insert-test/Cargo.toml' +
+            'cargo build --locked --manifest-path examples/sql-hello/insert-test/Cargo.toml' +
             ' --target wasm32-wasip2 --release --target-dir target &&' +
             ' oras push $EXPECTED_REF' +
             ' target/wasm32-wasip2/release/insert_test.wasm' +
             ' --artifact-type application/vnd.wasm.content.layer.v1+wasm' +
             ' --plain-http'
         ),
-        deps = [
-            'examples/sql-hello/insert-test/lib.rs',
-            'examples/sql-hello/insert-test/Cargo.toml',
-            'framework/runtime.wit',
-        ],
+        deps = workspace_deps + ['examples/sql-hello/insert-test'],
         skips_local_docker = True,
     )
 

@@ -12,8 +12,8 @@
 ARG WORKSPACE_DEPS_IMAGE=lukemathwalker/cargo-chef:latest-rust-1.91-slim-bookworm
 FROM ${WORKSPACE_DEPS_IMAGE} AS builder
 COPY --from=workspace Cargo.toml Cargo.lock ./
-COPY --parents --from=workspace components/*/Cargo.toml examples/*/Cargo.toml lib/*/Cargo.toml ./
-RUN find components examples lib -maxdepth 2 -name Cargo.toml -exec dirname {} \; \
+COPY --parents --from=workspace components/*/Cargo.toml lib/*/Cargo.toml ./
+RUN find components lib -maxdepth 2 -name Cargo.toml -exec dirname {} \; \
     | xargs -I{} sh -c 'mkdir -p {}/src && touch {}/src/lib.rs {}/src/main.rs'
 COPY --parents --from=workspace proto/configsync/v1/configsync.proto ./
 COPY --from=workspace framework/runtime.wit ./framework/runtime.wit
@@ -21,7 +21,7 @@ COPY --from=workspace lib/ ./lib/
 COPY . ./components/execution-host/
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
-    cargo build --release --bin execution-host && \
+    cargo build --locked --release --bin execution-host && \
     cp target/release/execution-host /build/execution-host
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────────

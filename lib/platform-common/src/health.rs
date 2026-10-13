@@ -10,9 +10,7 @@ pub async fn healthz_handler() -> &'static str {
     "OK"
 }
 
-pub async fn readyz_handler(
-    State(state): State<ReadyState>,
-) -> (StatusCode, &'static str) {
+pub async fn readyz_handler(State(state): State<ReadyState>) -> (StatusCode, &'static str) {
     let nats_ready = *state.nats_ready_rx.borrow();
     let synced = *state.synced_rx.borrow();
     if nats_ready && synced {
@@ -63,7 +61,11 @@ pub async fn watch_readiness(
             if is_ready {
                 tracing::info!("readiness: ready");
             } else {
-                tracing::warn!(nats_ready = prev_nats, synced = prev_synced, "readiness: not ready");
+                tracing::warn!(
+                    nats_ready = prev_nats,
+                    synced = prev_synced,
+                    "readiness: not ready"
+                );
             }
             was_ready = is_ready;
         }

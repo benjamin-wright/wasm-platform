@@ -2,7 +2,7 @@ def counter_app(namespace, resource_deps=[]):
     custom_build(
         'counter-app-http',
         command = (
-            'cargo build --manifest-path examples/counter-app/Cargo.toml' +
+            'cargo build --locked --manifest-path examples/counter-app/Cargo.toml' +
             ' --target wasm32-wasip2 --release --target-dir target &&' +
             ' oras push $EXPECTED_REF' +
             ' target/wasm32-wasip2/release/counter_app.wasm' +
@@ -12,6 +12,7 @@ def counter_app(namespace, resource_deps=[]):
         deps = [
             'examples/counter-app/lib.rs',
             'examples/counter-app/Cargo.toml',
+            'examples/counter-app/Cargo.lock',
             'framework/runtime.wit',
         ],
         skips_local_docker = True,

@@ -29,10 +29,7 @@ pub fn build_router(state: Arc<GatewayState>) -> Router {
 
 // ── Request handler ───────────────────────────────────────────────────────────
 
-async fn handle_request(
-    State(state): State<Arc<GatewayState>>,
-    req: Request,
-) -> Response {
+async fn handle_request(State(state): State<Arc<GatewayState>>, req: Request) -> Response {
     let method = req.method().to_string();
     let uri = req.uri().clone();
     let path = uri.path().to_string();
@@ -41,7 +38,11 @@ async fn handle_request(
     let headers: Vec<(String, String)> = req
         .headers()
         .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v_str| (k.to_string(), v_str.to_string())))
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v_str| (k.to_string(), v_str.to_string()))
+        })
         .collect();
 
     let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
@@ -130,8 +131,8 @@ async fn handle_request(
         }
     };
 
-    let status = StatusCode::from_u16(http_response.status)
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(http_response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let mut header_map = HeaderMap::new();
     for (k, v) in &http_response.headers {

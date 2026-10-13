@@ -2,14 +2,17 @@
 
 Active implementation plan for the wasm-platform project.
 
+Use the [architecture proposal](proposal.md) for target responsibility boundaries and ownership invariants while executing this plan. Task order and remediation gates remain here.
+
 Finding IDs refer to the supplied Wasm platform technical review. F01–F11 are P1; F12 combines P1 correctness with P2 resilience; F13–F18 are P2. These are engineering priorities.
 
 ## Delivery order and readiness gates
 
-Preserve the Rust/Wasmtime execution host, Go operator, WIT contracts, OCI distribution, and NATS dispatch. The next milestone is reliable execution and isolation under updates, failures, and load. Complete the four remediation stages below before resuming Phases 13–16 or expanding the CLI. Start the regression harness and basic CI with stage 1, pairing each repair with its regression test.
+Preserve the Rust/Wasmtime execution host, Go operator, WIT contracts, OCI distribution, and NATS dispatch. The next milestone is reliable execution and isolation under updates, failures, and load. Follow the stage 0 migration plan to deliver remediation stages 1–4 before resuming Phases 13–16 or expanding the CLI. Pair each repair with its regression test and use the [local Tilt CI gate](contributions.md#local-ci).
 
 | Order | Milestone | Required outcome |
 |---|---|---|
+| 0 | Apply the architecture migration plan | Agreed policies and 17 implementation slices guide delivery of stages 1–4. |
 | 1 | Contain execution and trust risks | Timed-out work stops; task records are reaped; credentials, compiled artifacts, and SQL policy have enforceable boundaries. |
 | 2 | Make desired state converge | Immutable generations, replayable configuration, owned routes, rotation, and migration fencing survive updates and reconnects. |
 | 3 | Bound failure and shutdown | Finite resource/deadline budgets, correct HTTP and guest configuration, and defined message/drain semantics. |
@@ -25,6 +28,52 @@ Preserve the Rust/Wasmtime execution host, Go operator, WIT contracts, OCI distr
 Use deterministic clocks, controllable loaders, and barriers for ordering tests; use a disposable cluster for database, credential, routing, and rollout behavior. Tests must exercise the production component/dispatch path and use finite client deadlines. Primitive fuel/memory tests or successful CR updates alone do not establish the platform guarantees. Report results in the task conversation, following [AGENTS.md](../AGENTS.md).
 
 Keep existing `demo-app`, `counter-app`, and `sql-hello` fixtures passing. Follow the definition of done in [standards.md](standards.md): changed external behavior requires e2e coverage, current-state documentation, and a passing `e2e-tests` resource triggered through the Tilt MCP server.
+
+---
+
+## Remediation stage 0: Architecture migration plan
+
+### Design and agreed policies
+
+Use these policies and slices to implement the [architecture proposal](proposal.md) through the detailed tasks and verification gates in stages 1–4. The policies here resolve the alternatives still listed there; follow the selected paths during implementation.
+
+- **Scope and upgrades:** target a shared internal pilot within one organisation, protecting credentials and isolating guests even when a guest is compromised. Use coordinated platform upgrades with brief downtime; preserve Application manifests, existing WIT binaries and stored data. Mixed-protocol rolling compatibility is deferred.
+- **Artifacts:** share verified raw Wasm and compile locally on each host. Allow anonymous pulls from organisation-approved HTTPS registries, with an explicit local-development plaintext exception. Private registry authentication, shared native artifacts and compilation-versus-network benchmarking are deferred.
+- **Identity and transport:** authenticate short-lived projected Kubernetes ServiceAccount tokens with a specific audience through TokenReview. Use Istio ambient strict mTLS and explicit service allowlists. One trusted shared execution-host pool may prepare every Application and hold its credentials; scoped guest capabilities enforce isolation.
+- **Configuration authority:** only an initialized elected operator leader publishes configuration. Keep standby operators and webhook availability separate from publication authority. Loss of authoritative sync stops admission and cancels affected work; retained configuration does not provide a grace period.
+- **Activation and retirement:** retain the working generation during ordinary replacement preparation and failure. Activate only the latest desired deployment once at least one healthy host is prepared; temporary reduced capacity is acceptable. Exclude unprepared hosts from traffic, drain accepted old work within its deadlines, then retire the old generation. Rollback deploys an earlier artifact as a fresh revision; there is no retained quick-rollback window.
+- **Revocation:** removing or narrowing permission independently denies new forbidden operations and cancels affected in-flight work through backend cleanup. Unaffected work may continue; committed effects remain committed.
+- **Data and ownership:** namespace/name identifies persistent Application data; current Application UID and policy identify authorization and ephemeral resource ownership. Retain data by default and reuse it on same-name recreation. Provision shared infrastructure on demand, reclaim existing resources only after verifying platform ownership and expected identity, and retain it until explicit administrator removal. Data purge also requires explicit administrator action.
+- **Migrations:** use credentials scoped to the Application's logical database. Keep old traffic serving through running or failed migrations; developers must keep intermediate, successful and partially failed schema states compatible with serving code. Support both increasing and decreasing targets. Finish an active run before reconciling the newest desired artifact/target, skipping superseded pending requests; only the latest desired deployment may activate after exact migration and credential convergence. Opt-in traffic pauses are deferred.
+- **ApplicationRevision:** persist immutable configuration snapshots, resolved artifact digests, metric definitions and resource references, with operator-owned rollout and cleanup status. Preserve exact effective inputs or recoverable versioned bindings; keep generated credentials in Secrets. Record revisions and participating host processes before publication. Retain cleanup obligations until actual preparation, invocation and collector ownership is released; unreachable participants remain unresolved until cleanup or verified termination/fencing. Protect deletion with finalization and bound unresolved revision state.
+- **Metric schemas:** keep one metrics endpoint per host and preserve declared metric names. Compatible revisions may share collectors; an incompatible definition may reuse a name only after every conflicting revision has verifiably retired. Validate Application changes against desired configuration and surviving revision claims at admission; rejection preserves the previously accepted desired configuration. The elected operator rechecks and reserves ownership durably before publication to cover admission races. Fix host collector retirement so reuse works without restart; automatic schema suffixes are not selected.
+- **Messaging:** require sender-declared destinations and receiver-declared permitted sources for cross-Application publication. Establish the Application origin in the trusted host and enforce current permissions at both boundaries. Protect internal dispatch and reply subjects. External producer onboarding is deferred; raw publishers cannot assert an Application origin.
+- **Delivery and shutdown:** retain Core NATS live-event semantics, without durable replay or automatic handler/request retries. Stop intake, drain accepted work within a finite grace budget, then cancel remaining work and complete cleanup. Report rejected, dropped and unfinished outcomes. JetStream jobs and their retry/dead-letter policies are deferred.
+- **Capacity:** share execution capacity fairly among active Applications, allow use of spare capacity, and reserve nothing for idle Applications. Functions share their Application's budget. Bound counts, bytes and time across work, dependencies and retained state; derive numeric limits from pod budgets and measurement.
+- **Deployment:** the umbrella Helm release is the authoritative platform composition and compatible version set. Components retain build/test ownership; Istio, db-operator and other infrastructure prerequisites are managed separately. Reconcile conflicting documentation as implementation lands.
+
+### Remaining implementation slices
+
+Deliver each slice through its production entry points, add regressions for its changed external behavior, and pass the full existing `e2e-tests` resource through Tilt MCP. Run all builds, deployments and tests through Tilt MCP. Preserve the permanent fixtures and the additional fixtures already required by that resource; report validation evidence in the task conversation.
+
+- [ ] **2 — Invocation ownership.** Give supervisors ownership through execution, cancellation, task collection and backend cleanup; release capacity after actual termination.
+- [ ] **3 — Gateway request ownership.** Reject unknown routes and disallowed methods before body reads; bound intake, body size/read time and waiting work.
+- [ ] **4 — Verified raw-Wasm artifacts.** Enforce approved origins and immutable digest integrity, remove untrusted native sharing, compile locally and bound artifact storage/preparation.
+- [ ] **5 — Protected identity and startup authority.** Implement ServiceAccount authentication, Istio ambient transport protection, recipient authorization and rejection of uninitialized configuration.
+- [ ] **6 — Application lifecycle and inventory.** Persist owned resources, safely transition legacy identities, and implement verified retention, recreation and reclamation.
+- [ ] **7 — Effective capability authorization and revocation.** Enforce SQL/KV/metric isolation, current permission removal and mutual messaging grants. Release/pin and verify required downstream db-operator enforcement.
+- [ ] **8 — ApplicationRevision foundation.** Add the immutable CRD, durable revision identity/configuration, participant and cleanup status, metric reservations, admission checks and protected retirement.
+- [ ] **9 — Publication and replay.** Publish coherent configuration/routes and watermarks; implement restart epochs, bounded replay/resync, exact acknowledgements and recipient session ownership.
+- [ ] **10 — Owned routes.** Enforce path ownership and apply atomic changes/tombstones for rename, removal, trigger conversion and deletion.
+- [ ] **11 — Guest metric catalog.** Bind authorized schemas to generation leases, bound series, retire registrations and permit safe bare-name reuse without restart.
+- [ ] **12 — Complete serving generations.** Prepare immutable modules, environment and capability bindings; fence supersession and failed preparation, with leases retained through accepted work.
+- [ ] **13 — Distributed activation and recovery.** Activate with one healthy prepared host, fence gateway/NATS dispatch to the correct generation, exclude stale/unprepared hosts and recover from authority loss.
+- [ ] **14 — Migration and credential convergence.** Verify exact desired migration outcomes, correct table-grant bootstrap ordering, isolate migration credentials, serialize target changes, support rollback and reconcile credential rotation.
+- [ ] **15 — Capacity, fairness and deadlines.** Complete aggregate/per-Application bounds, fair scheduling, SQL connection/result limits, dependency deadlines and buffered HTTP response/header behavior.
+- [ ] **16 — Finite shutdown and live-event delivery.** Bound drain/cancellation, acknowledgement and idle-session lifetimes; account for message loss and unfinished work without automatic retries.
+- [ ] **17 — Release validation and documentation.** Complete reproducible umbrella deployment, generated-contract drift checks, CI and fresh-clone validation; reconcile current-state documentation with demonstrated behavior.
+
+The corresponding stage 1–4 tasks and exit gates define detailed coverage. Add revision restart/retirement, mutual messaging permission, schema reuse, revocation and fair-admission checks in their owning slices; existing green tests alone do not establish those new guarantees.
 
 ---
 
@@ -112,8 +161,8 @@ Complete F11–F17 after execution termination and generation convergence are de
 
 ### Tasks
 
-- [ ] **F18 — Make local builds track their real inputs.** Include shared Rust libraries, manifests/lockfiles, protobuf/WIT, and relevant Docker/build inputs in consumer Tilt dependencies. Verify a shared-source edit rebuilds every consumer. Establish one canonical CRD generation/deployment path and a generated-source/schema drift check; do not hand-edit generated outputs.
-- [ ] **F18 — Complete CI.** Add formatting, Rust/Go build and static checks, unit/regression tests, reproducible generators, schema/protobuf drift checks, Helm render/validation, tagged real-cluster operator integration, and full-stack disposable-cluster tests. Reuse the existing Tilt separation of unit and tagged cluster resources; align Makefile/CI commands and remove misleading envtest/integration claims. Disable cached cluster test results and pin tool/dependency versions so tests exercise the intended artifacts.
+- [ ] **F18 — Establish canonical schema generation.** Establish one canonical CRD generation/deployment path and a generated-source/schema drift check; do not hand-edit generated outputs.
+- [ ] **F18 — Complete release validation.** Extend the local Tilt CI gate with reproducible generators and schema/protobuf drift checks. Align Makefile commands and remove misleading envtest/integration claims. Pin tool/dependency versions and verify release artifacts through the same real-cluster tests.
 - [ ] **F01–F18 — Make failure tests release gates.** Include the cases above in automated regression coverage, prioritizing F01–F13 and F17. Cover load/soak, update/reconnect/rollout, secret redaction, SQL/metric isolation, migration status, and shutdown. Do not substitute line-coverage percentages for verified failure contracts.
 - [ ] **Documentation — Reconcile claims with implementation.** Update the owning README/architecture/contribution/component docs as fixes land. Distinguish implemented guarantees, development-only defaults, planned features, and measured results. Correct credential rotation, gateway settings, SQL/Redis topology and connections, topic publish policy, admission, deletion/retention, migration rollback, and wire contracts; link to source schemas rather than duplicate them. Mark CLI commands unimplemented while the component is only a README. Remove unsupported cold-start/concurrency/pooling/mmap/HPA/KEDA claims from current-state docs; keep goals here until measured or implemented.
 - [ ] **Onboarding — Prove a fresh clone.** Provide one tested prerequisites/build/apply/wait/curl/expected-result/cleanup path for HTTP and SQL, including KUBECONFIG export, actual standalone guest target paths, pushed module and migration artifacts, troubleshooting, development security boundaries, and data retention. Align guest/component contribution guidance with the current workspace/umbrella chart. Resolve an explicit license before outside adoption.

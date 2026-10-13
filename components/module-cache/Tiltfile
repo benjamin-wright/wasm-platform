@@ -1,6 +1,14 @@
+load('../../tilt/ci.Tiltfile', 'CI_MODE')
+load('../../tilt/workspace-deps.Tiltfile', 'RUST_WORKSPACE_INPUTS')
+
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/module-cache'
 
 def module_cache():
+    source_deps = RUST_WORKSPACE_INPUTS + [
+        'components/module-cache/src',
+        'components/module-cache/Cargo.toml',
+    ]
+
     custom_build(
         IMAGE_REF,
         command = (
@@ -11,14 +19,29 @@ def module_cache():
             ' -t $EXPECTED_REF' +
             ' components/module-cache'
         ),
-        deps = [
-            'components/module-cache/src',
-            'components/module-cache/Cargo.toml',
+        deps = source_deps + [
             'components/module-cache/Dockerfile',
-            'lib/platform-common',
             '.dockerignore',
         ],
         image_deps = ['workspace-deps'],
+    )
+
+    local_resource(
+        'module-cache: regression-tests',
+        cmd = 'cargo test --locked -p module-cache',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
+        labels = ['module-cache'],
+    )
+
+    local_resource(
+        'module-cache: lint',
+        cmd = 'cargo clippy --locked -p module-cache --all-targets -- -D warnings',
+        deps = source_deps,
+        resource_deps = ['ci: record-revision'] if CI_MODE else [],
+        labels = ['module-cache'],
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
     )
 
     k8s_resource(

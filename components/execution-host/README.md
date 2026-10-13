@@ -122,7 +122,7 @@ Dispatch collects each remaining task record and reports errors without interrup
 
 Use Tilt to build, deploy, and validate the host:
 
-- `execution-host: regression-tests` checks host code, including small metric lifetime/accounting tests; `execution-host: lint` runs Clippy.
+- `execution-host: regression-tests` checks host and shared-library code, including small metric lifetime/accounting tests; `execution-host: lint` runs Clippy.
 - `execution-host: redis-cancellation-tests` checks delayed commands against the disposable Redis deployment on port 6391; trigger it after that deployment is ready.
 - `e2e-tests` exercises dispatch through HTTP and message requests, reads back committed SQL/KV state through the cancellation fixture, and checks dispatch accounting after traffic.
 - `execution-host: update-dependencies` is a manual dependency-resolution/build check that can update `Cargo.lock`; trigger it when host dependency declarations change, before the locked regression resources.
