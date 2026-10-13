@@ -1,18 +1,27 @@
 mod config;
 mod http_server;
+mod listener;
+mod metrics;
 mod nats;
 mod route_sync;
 mod route_table;
+mod supervisor;
+
+#[cfg(test)]
+mod supervisor_tests;
 
 use anyhow::Result;
-use axum::{Router, routing::get};
-use http_server::GatewayState;
+use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use listener::BoundedListener;
+use metrics::MetricsRegistry;
+use nats::NatsBroker;
 use platform_common::{
     health::{self, ReadyState},
     nats_client::NatsConnectionInfo,
 };
 use route_table::RouteTable;
 use std::sync::Arc;
+use supervisor::RequestSupervisor;
 use tracing_subscriber::prelude::*;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -38,15 +47,10 @@ async fn main() -> Result<()> {
     let (nats_ready_tx, nats_ready_rx) = tokio::sync::watch::channel(false);
     let (synced_tx, synced_rx) = tokio::sync::watch::channel(false);
 
-    let (client_tx, client_rx) = tokio::sync::watch::channel::<Option<async_nats::Client>>(None);
-
-    let (_nats_conn_tx, nats_conn_rx) =
-        tokio::sync::watch::channel::<Option<NatsConnectionInfo>>(Some(nats_conn_info));
-
-    tokio::spawn(nats::run_nats_manager(
-        nats_conn_rx,
-        client_tx,
+    let broker = Arc::new(NatsBroker::new(
+        nats_conn_info,
         nats_ready_tx,
+        cfg.requests.in_flight,
     ));
 
     let table = RouteTable::new();
@@ -58,10 +62,26 @@ async fn main() -> Result<()> {
         synced_tx,
     ));
 
-    let state = Arc::new(GatewayState {
-        table,
-        nats: client_rx.clone(),
-        timeout: std::time::Duration::from_secs(cfg.timeout_secs),
+    let header_timeout = cfg.requests.body_read_timeout;
+    let supervisor = Arc::new(RequestSupervisor::new(table, broker, cfg.requests));
+    let ready_state = ReadyState {
+        nats_ready_rx: nats_ready_rx.clone(),
+        synced_rx: synced_rx.clone(),
+    };
+    let metrics = MetricsRegistry::new(Arc::clone(&supervisor))?;
+    let metrics_app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(metrics)
+        .route("/healthz", get(health::healthz_handler))
+        .route(
+            "/readyz",
+            get(health::readyz_handler).with_state(ready_state.clone()),
+        );
+    let metrics_listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await?;
+    let metrics_listener =
+        BoundedListener::new(metrics_listener, Arc::new(tokio::sync::Semaphore::new(8)));
+    tokio::spawn(async move {
+        http_server::serve_http(metrics_listener, metrics_app, header_timeout).await;
     });
 
     tokio::spawn(health::watch_readiness(
@@ -69,24 +89,35 @@ async fn main() -> Result<()> {
         synced_rx.clone(),
         "route sync",
     ));
-    let ready_state = ReadyState {
-        nats_ready_rx,
-        synced_rx,
-    };
     let app = Router::new()
         .route("/healthz", get(health::healthz_handler))
         .route(
             "/readyz",
             get(health::readyz_handler).with_state(ready_state),
         )
-        .merge(http_server::build_router(Arc::clone(&state)));
+        .merge(http_server::build_router(Arc::clone(&supervisor)));
 
     let addr = format!("0.0.0.0:{}", cfg.http_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = BoundedListener::new(listener, supervisor.connection_capacity());
     tracing::info!(%addr, "HTTP server listening");
-    axum::serve(listener, app).await?;
+    http_server::serve_http(listener, app, header_timeout).await;
 
     Ok(())
+}
+
+async fn metrics_handler(State(metrics): State<MetricsRegistry>) -> axum::response::Response {
+    match metrics.render() {
+        Ok(body) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4",
+            )],
+            body,
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// Reads NATS connection credentials from the directory mounted at

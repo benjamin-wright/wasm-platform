@@ -1,8 +1,8 @@
 # monitoring
 
-Local development Prometheus records execution-host dispatch health and Linux process metrics. The root Tiltfile deploys it alongside the platform; the production platform chart does not deploy monitoring.
+Local development Prometheus records execution-host dispatch health, gateway request ownership, and Linux process metrics. The root Tiltfile deploys it alongside the platform; the production platform chart does not deploy monitoring.
 
-Open [Prometheus](http://localhost:9091) while Tilt is running. Use **Query** to graph an expression over a chosen historical range, and **Status → Target health** to inspect scrapes. [The configuration](helm/prometheus.yaml) scrapes each execution-host pod directly on its named metrics port, retaining `namespace`, `pod`, and `pod_uid` labels. Replicas have independent counters; a load-balanced Service is not a scrape target. Discovery has read-only access to pods in the deployment namespace.
+Open [Prometheus](http://localhost:9091) while Tilt is running. Use **Query** to graph an expression over a chosen historical range, and **Status → Target health** to inspect scrapes. [The configuration](helm/prometheus.yaml) scrapes each execution-host and gateway pod directly on its named metrics port, retaining `namespace`, `pod`, and `pod_uid` labels. Replicas have independent counters; a load-balanced Service is not a scrape target. Discovery has read-only access to pods in the deployment namespace.
 
 ## History
 
@@ -10,7 +10,7 @@ Open [Prometheus](http://localhost:9091) while Tilt is running. Use **Query** to
 
 History survives Prometheus pod and Tilt process restarts while the PVC remains. Deleting the PVC or local cluster removes history. A local storage provisioner is required; the development k3d cluster provides one. This collector has one replica and no backup or remote storage.
 
-Only dispatch and process metrics are retained from hosts. Prometheus also records its own health metrics. Scrape interval and metric selection are owned by [the scrape configuration](helm/prometheus.yaml); host metric meanings are documented in [execution-host](../execution-host/README.md#metrics).
+Only dispatch and process metrics are retained from hosts; gateway ownership and process metrics are retained from gateways. Prometheus also records its own health metrics. Scrape interval and metric selection are owned by [the scrape configuration](helm/prometheus.yaml); metric meanings are documented in [execution-host](../execution-host/README.md#metrics) and [gateway](../gateway/README.md#metrics).
 
 ## Tilt review resources
 
@@ -28,6 +28,12 @@ Paste these expressions into Prometheus and select a range containing the traffi
 
 | Question | PromQL |
 |---|---|
+| How many gateway requests and connections are retained? | `wasm_gateway_work` |
+| How close are gateway requests and connections to their limits? | `wasm_gateway_work / wasm_gateway_limit` |
+| What was the gateway's highest observed request occupancy? | `wasm_gateway_high_water{pool="in_flight"}` |
+| Are gateway requests being rejected or cancelled? | `increase(wasm_gateway_requests_rejected_total[1h])` and `increase(wasm_gateway_requests_cancelled_total[1h])` |
+| Is any gateway failing scrapes? | `up{job="gateway"} == 0` |
+| Does gateway resident memory settle after traffic stops? | `process_resident_memory_bytes{job="gateway"}` |
 | How much work is waiting, running, cleaning up, or awaiting collection? | `wasm_host_dispatch_work` |
 | What were the largest observed work counts in the last hour? | `max_over_time(wasm_host_dispatch_work[1h])` |
 | How close has each bounded pool come to its configured limit since process start? | `wasm_host_dispatch_high_water / wasm_host_dispatch_limit` |

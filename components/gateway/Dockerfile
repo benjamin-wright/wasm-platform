@@ -26,5 +26,5 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
 # ── Stage 4: runtime ──────────────────────────────────────────────────────────
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /build/gateway /usr/local/bin/gateway
-EXPOSE 3000
+EXPOSE 3000 9090
 CMD ["/usr/local/bin/gateway"]

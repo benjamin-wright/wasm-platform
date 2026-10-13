@@ -30,9 +30,28 @@ impl std::fmt::Debug for NatsConnectionInfo {
 /// The manager reconnects automatically whenever the connection info changes
 /// (credential rotation) or when an `AuthorizationViolation` is received.
 pub async fn run_nats_manager(
+    conn_rx: tokio::sync::watch::Receiver<Option<NatsConnectionInfo>>,
+    client_tx: tokio::sync::watch::Sender<Option<async_nats::Client>>,
+    ready_tx: tokio::sync::watch::Sender<bool>,
+) {
+    run_nats_manager_inner(conn_rx, client_tx, ready_tx, None).await;
+}
+
+/// Runs the connection manager with bounded outgoing-command and subscription queues.
+pub async fn run_nats_manager_bounded(
+    conn_rx: tokio::sync::watch::Receiver<Option<NatsConnectionInfo>>,
+    client_tx: tokio::sync::watch::Sender<Option<async_nats::Client>>,
+    ready_tx: tokio::sync::watch::Sender<bool>,
+    message_capacity: usize,
+) {
+    run_nats_manager_inner(conn_rx, client_tx, ready_tx, Some(message_capacity)).await;
+}
+
+async fn run_nats_manager_inner(
     mut conn_rx: tokio::sync::watch::Receiver<Option<NatsConnectionInfo>>,
     client_tx: tokio::sync::watch::Sender<Option<async_nats::Client>>,
     ready_tx: tokio::sync::watch::Sender<bool>,
+    message_capacity: Option<usize>,
 ) {
     let mut backoff = Duration::from_secs(1);
 
@@ -52,8 +71,13 @@ pub async fn run_nats_manager(
         };
 
         let url = info.url.clone();
-        let opts = async_nats::ConnectOptions::new()
+        let mut opts = async_nats::ConnectOptions::new()
             .user_and_password(info.username.clone(), info.password.clone());
+        if let Some(capacity) = message_capacity {
+            opts = opts
+                .client_capacity(capacity)
+                .subscription_capacity(capacity);
+        }
 
         let (auth_err_tx, mut auth_err_rx) = tokio::sync::mpsc::channel::<()>(1);
 

@@ -49,6 +49,6 @@ def gateway(resource_deps=[]):
     k8s_resource(
         'gateway',
         labels = ['platform'],
-        port_forwards = [3000],
+        port_forwards = [3000, '9092:9090'],
         resource_deps = resource_deps,
     )

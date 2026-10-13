@@ -29,6 +29,11 @@ func pollContext(t *testing.T, timeout time.Duration) context.Context {
 }
 
 func requestHTTP(ctx context.Context, client *http.Client, method, endpoint, body string, headers http.Header) (int, []byte, error) {
+	status, _, data, err := requestHTTPWithHeaders(ctx, client, method, endpoint, body, headers)
+	return status, data, err
+}
+
+func requestHTTPWithHeaders(ctx context.Context, client *http.Client, method, endpoint, body string, headers http.Header) (int, http.Header, []byte, error) {
 	timeout := client.Timeout
 	if timeout <= 0 {
 		timeout = requestTimeout
@@ -37,22 +42,22 @@ func requestHTTP(ctx context.Context, client *http.Client, method, endpoint, bod
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(body))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	request.Header = headers.Clone()
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return response.StatusCode, nil, fmt.Errorf("reading response body: %w", err)
+		return response.StatusCode, response.Header, nil, fmt.Errorf("reading response body: %w", err)
 	}
 	if len(data) > maxResponseBytes {
-		return response.StatusCode, nil, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
+		return response.StatusCode, response.Header, nil, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
 	}
-	return response.StatusCode, data, nil
+	return response.StatusCode, response.Header, data, nil
 }
 
 func commandOutput(ctx context.Context, timeout time.Duration, name string, args []string, input io.Reader, combined bool) ([]byte, error) {

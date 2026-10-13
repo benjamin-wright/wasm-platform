@@ -32,3 +32,29 @@ scrape_configs:
       - source_labels: [__name__]
         regex: wasm_host_dispatch_.*|process_.*
         action: keep
+
+  - job_name: gateway
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          own_namespace: true
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=gateway
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_name, __meta_kubernetes_pod_container_port_name, __meta_kubernetes_pod_container_port_number]
+        regex: gateway;metrics;9090
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_uid]
+        target_label: pod_uid
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: wasm_gateway_.*|process_.*
+        action: keep
