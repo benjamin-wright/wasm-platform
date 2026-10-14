@@ -229,8 +229,30 @@ type ApplicationSpec struct {
 	Metrics []MetricDefinition `json:"metrics,omitempty"`
 }
 
+// ResolvedModuleStatus records the immutable module selected for a desired generation.
+type ResolvedModuleStatus struct {
+	Name string `json:"name"`
+	// +kubebuilder:validation:Minimum=1
+	Generation int64 `json:"generation"`
+	// +kubebuilder:validation:MaxLength=2048
+	RequestedRef string `json:"requestedRef"`
+	// +kubebuilder:validation:MaxLength=2048
+	ModuleRef string `json:"moduleRef"`
+	// +kubebuilder:validation:Pattern="^sha256:[a-f0-9]{64}$"
+	ManifestDigest string `json:"manifestDigest"`
+	// +kubebuilder:validation:Pattern="^sha256:[a-f0-9]{64}$"
+	WasmDigest string `json:"wasmDigest"`
+}
+
 // ApplicationStatus defines the observed state of an Application.
 type ApplicationStatus struct {
+	// ResolvedModules contains only the current desired generation's module identities.
+	// +optional
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=map
+	// +listMapKey=name
+	ResolvedModules []ResolvedModuleStatus `json:"resolvedModules,omitempty"`
+
 	// Conditions is the standard Kubernetes condition list.
 	// +optional
 	// +listType=map

@@ -8,10 +8,13 @@ On startup (or desync) the execution host requests a full configuration snapshot
 
 ## Module Loading
 
-When a new or updated application config arrives, the execution host:
+Configuration carries an immutable OCI manifest reference resolved by the operator. The host verifies the manifest digest and its single layer descriptor before querying the raw cache by layer digest. Cache hits and registry downloads must match the declared SHA-256 and binary Wasm envelope. Every host compiles locally; native artifacts are never accepted from the network. Raw-file ORAS artifacts declaring Wasm content can use generic tar layer descriptors; their bytes must still be binary Wasm and are never unpacked.
 
-1. Checks the module cache for a precompiled `.cwasm` keyed by `(digest, arch, wasmtime_version)`.
-2. On hit, loads directly. On miss, pulls the raw `.wasm` OCI artifact, AOT-compiles it, pushes the result back to the cache, then loads it.
+Only exact origins in `APPROVED_REGISTRIES` can be read. HTTPS is the default. `LOCAL_PLAINTEXT_REGISTRIES` is an explicit subset restricted to localhost/loopback development origins. Redirects, external layer URLs, multi-layer artifacts and image indexes are rejected. Registry requests are anonymous; authentication challenges are rejected.
+
+Manifest responses are limited to 1 MiB and Wasm layers to 16 MiB. Registry operations have a 10-second deadline; cache operations have a two-second deadline and bounded response reads. A failed or corrupt cache read falls back to the verified registry. A failed cache write cannot prevent registration.
+
+One preparation compiles at a time, with at most 16 additional waiting preparations and a 30-second preparation deadline. Compilation runs on the blocking pool. Expiry discards the result; the worker retains its permits until it exits. Compilation itself is not preemptible. The module registry holds at most 32 entries and 128 MiB of serialized native size; exceeding either rejects registration. Accepted invocations can retain replaced components until they finish. These limits bound input, concurrency and registry storage; serialized size does not measure compiler peak memory or invocation-held components.
 
 ## NATS Message Handling
 
@@ -61,7 +64,9 @@ Connection diagnostics report the operation and error category without connectio
 | Variable | Description |
 |---|---|
 | `CONFIG_SYNC_ADDR` | gRPC address of the wp-operator (required). |
-| `MODULE_CACHE_ADDR` | HTTP address of the module cache (required). |
+| `MODULE_CACHE_ADDR` | HTTP address of the raw module cache (required). |
+| `APPROVED_REGISTRIES` | Required comma-separated exact registry origins (`hostname[:port]`). |
+| `LOCAL_PLAINTEXT_REGISTRIES` | Optional comma-separated approved localhost/loopback origins allowed over HTTP. |
 | `NATS_CREDENTIALS_PATH` | Directory containing NATS credential files (required). |
 | `REDIS_URL` | Shared Redis URL (e.g. `redis://redis:6379`). |
 | `PG_POOL_MAX_CONNECTIONS` | Maximum connections per per-user PostgreSQL pool (default `5`). |
@@ -114,6 +119,30 @@ Dispatch metrics describe host-owned lifetimes, using only fixed labels. Their n
 
 Queue, task, and execution ownership update the counts when their lifetimes end, including panic and cancellation paths. `tracked` includes execution, reply publication, and completed records; it overlaps the other states. `running` includes scheduled execution and cleanup before cancellation is observed; `terminating` retains cancelled or panicking execution until exit. A collected wrapper with `outcome="ok"` can contain a failed invocation; invocation outcomes are recorded by `tasks_finished_total`.
 
+Module preparation metrics use the fixed-label prefix `wasm_host_preparation_` independently of invocation dispatch:
+
+| Suffix | Type | Meaning and labels |
+|---|---|---|
+| `work` | Gauge | `state`: `admission_wait`, `queued`, `preparing`, `compiling`, or `terminating`. |
+| `occupancy` | Gauge | Current reserved capacity; `kind`: `queued`, `active`, `tracked`, or `compiling`. |
+| `limit` | Gauge | Capacity; `kind`: `queued`, `active`, `tracked`, or `compiling`. |
+| `high_water` | Gauge | Highest lifetime occupancy; same `kind` values. |
+| `capacity_breaches_total` | Counter | Occupancy above configured capacity; same `kind` values. |
+| `accounting_errors_total` | Counter | Unbalanced lifetime accounting; `state` as for `work`. |
+| `submissions_total` | Counter | Admission outcome; `outcome`: `admitted`, `timeout`, `cancelled`, or `closed`. |
+| `finished_total` | Counter | Admitted preparations that actually exited; `outcome`: `success`, `error`, `timeout`, `cancelled`, or `panic`. |
+| `compilation_finished_total` | Counter | Blocking compiler workers that actually exited; same `outcome` values. |
+| `admission_wait_seconds` | Histogram | Waiting for a preparation record through admission, timeout, cancellation or closure. |
+| `queue_wait_seconds` | Histogram | Admitted waiting lifetime through acquisition of the active slot or exit. |
+| `compilation_seconds` | Histogram | Blocking compiler lifetime through actual worker exit. |
+| `compilation_overrun_seconds` | Histogram | Time from timeout or observed cancellation until actual compiler exit. |
+
+`admission_wait` counts callers without a preparation record; it has no capacity limit. The other states describe stages of admitted work: `queued` awaits the active slot, `preparing` covers artifact retrieval/verification and post-compilation cache work, `compiling` covers local compilation and serialized-size measurement, and `terminating` retains active work after timeout or cancellation. `tracked` occupancy covers all admitted records; `active` covers `preparing`, `compiling` and `terminating`. The `compiling` capacity includes still-running compiler workers in `terminating`, so it can remain occupied while the `compiling` work gauge is zero.
+
+The queued and tracked limits are the 17 reserved-record capacity: all records can briefly be queued before the active slot is acquired. The active and compiling limits are one.
+
+Timeout or cancellation moves an outstanding compiler worker to `terminating`; its compiling capacity remains occupied until CPU work exits, and late success is counted as the timeout or cancellation outcome. Active and tracked occupancy can remain held through the subsequent cache write after compiling occupancy returns to zero. Preparation completion includes post-compilation cache work. Compilation completion and duration follow actual worker exit, even after the caller has returned. These metrics have no Application or artifact labels.
+
 Counters and high-water marks retain brief events between scrapes while the process is alive and reset on restart. A final event can be missed if the process exits before another scrape. Linux deployments also expose Prometheus process metrics, including `process_resident_memory_bytes`. See [monitoring](../monitoring/README.md) for collection, retained history, and review queries.
 
 ## Graceful Shutdown
@@ -126,7 +155,7 @@ The supervisor collects each remaining blocking execution and reply record, repo
 
 Use Tilt to build, deploy, and validate the host:
 
-- `execution-host: regression-tests` checks host and shared-library code, including small metric lifetime/accounting tests; `execution-host: lint` runs Clippy.
+- `execution-host: regression-tests` checks host and shared-library code, including dispatch and preparation lifetime/accounting tests; `execution-host: lint` runs Clippy.
 - `execution-host: redis-cancellation-tests` checks delayed commands against the disposable Redis deployment on port 6391; trigger it after that deployment is ready.
 - `e2e-tests` exercises dispatch through HTTP and message requests, reads back committed SQL/KV state through the cancellation fixture, and checks dispatch accounting after traffic.
 - `execution-host: update-dependencies` is a manual dependency-resolution/build check that can update `Cargo.lock`; trigger it when host dependency declarations change, before the locked regression resources.

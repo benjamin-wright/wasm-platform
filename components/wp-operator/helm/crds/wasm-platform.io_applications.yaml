@@ -356,6 +356,44 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              resolvedModules:
+                description: ResolvedModules contains only the current desired generation's
+                  module identities.
+                items:
+                  description: ResolvedModuleStatus records the immutable module selected
+                    for a desired generation.
+                  properties:
+                    generation:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    manifestDigest:
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                    moduleRef:
+                      maxLength: 2048
+                      type: string
+                    name:
+                      type: string
+                    requestedRef:
+                      maxLength: 2048
+                      type: string
+                    wasmDigest:
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                  required:
+                  - generation
+                  - manifestDigest
+                  - moduleRef
+                  - name
+                  - requestedRef
+                  - wasmDigest
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               sqlDatabaseName:
                 description: |-
                   SQLDatabaseName is the derived PostgreSQL database name for this Application.

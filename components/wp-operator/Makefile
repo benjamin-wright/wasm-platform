@@ -17,6 +17,7 @@ install-tools: ## Install protoc plugins pinned to versions in go.mod.
 generate-crds: ## Regenerate CRD manifests and deepcopy functions via controller-gen.
 	controller-gen crd paths="./api/..." output:crd:artifacts:config=helm/crds
 	controller-gen object paths="./api/..."
+	cp helm/crds/wasm-platform.io_applications.yaml $(REPO_ROOT)/helm/wasm-platform/crds/applications.yaml
 
 .PHONY: setup-envtest
 setup-envtest: $(LOCALBIN) ## Download setup-envtest into ./bin.

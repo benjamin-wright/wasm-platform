@@ -30,7 +30,7 @@ scrape_configs:
         target_label: pod_uid
     metric_relabel_configs:
       - source_labels: [__name__]
-        regex: wasm_host_dispatch_.*|process_.*
+        regex: wasm_host_dispatch_.*|wasm_host_preparation_.*|process_.*
         action: keep
 
   - job_name: gateway

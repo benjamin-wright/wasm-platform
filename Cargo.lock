@@ -1952,8 +1952,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
+ "futures-util",
  "platform-common",
  "tokio",
+ "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2259,6 +2261,7 @@ dependencies = [
  "async-nats",
  "axum 0.8.9",
  "serde",
+ "sha2",
  "tokio",
  "tracing",
 ]

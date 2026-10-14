@@ -158,7 +158,7 @@ async fn run_config_sync(
             topics_tx.send(registry.topics()?).ok();
             tracing::debug!(version, update_count, "incremental config applied");
 
-            apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await;
+            apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await?;
             apply_pool_changes(sql_pools, diff.pools_to_create, diff.pools_to_evict_apps).await;
 
             let ack = IncrementalUpdateAck {
@@ -203,7 +203,7 @@ async fn fetch_full_config(
         let app_count = full.applications.len();
         let diff = registry.apply_full_config(full)?;
         tracing::info!(app_count, "full config applied");
-        apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await;
+        apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await?;
         apply_pool_changes(sql_pools, diff.pools_to_create, diff.pools_to_evict_apps).await;
     } else {
         tracing::warn!("operator returned empty full config response");
@@ -239,30 +239,12 @@ async fn apply_pool_changes(
     }
 }
 
-// Spawns module load/evict tasks for all changes from a config update.
-// Load failures are logged but do not abort the config sync loop.
+// One config-sync caller waits for preparation capacity; failures force a full resync.
 async fn apply_module_changes(
     modules: &ModuleRegistry,
     to_load: Vec<(String, String, String, String)>,
     to_evict: Vec<(String, String, String)>,
-) {
-    for (namespace, app_name, fn_name, module_ref) in to_load {
-        let m = modules.clone();
-        tokio::spawn(async move {
-            if m.load(&namespace, &app_name, &fn_name, &module_ref)
-                .await
-                .is_err()
-            {
-                tracing::error!(
-                    namespace = %namespace,
-                    app_name = %app_name,
-                    function_name = %fn_name,
-                    error_kind = "module_load",
-                    "failed to load module"
-                );
-            }
-        });
-    }
+) -> Result<()> {
     for (namespace, app_name, fn_name) in to_evict {
         if let Err(err) = modules.remove(&namespace, &app_name, &fn_name) {
             tracing::warn!(
@@ -273,4 +255,10 @@ async fn apply_module_changes(
             );
         }
     }
+    for (namespace, app_name, fn_name, module_ref) in to_load {
+        modules
+            .submit_load(namespace, app_name, fn_name, module_ref)
+            .await?;
+    }
+    Ok(())
 }

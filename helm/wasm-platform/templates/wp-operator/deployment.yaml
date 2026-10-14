@@ -31,6 +31,10 @@ spec:
             - --metrics-bind-address=:8080
             - --webhook-cert-dir=/etc/webhook/certs
           env:
+            - name: APPROVED_REGISTRIES
+              value: {{ join "," .Values.artifacts.approvedRegistries | quote }}
+            - name: LOCAL_PLAINTEXT_REGISTRIES
+              value: {{ join "," .Values.artifacts.localPlaintextRegistries | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

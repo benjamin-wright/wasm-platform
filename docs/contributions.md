@@ -93,7 +93,7 @@ Normal `tilt up` runs component regressions and e2e harness checks on source cha
 │   ├── gateway/                # Rust HTTP server — HTTP-to-NATS translation
 │   │   ├── Tiltfile            # Defines gateway() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the gateway
-│   ├── module-cache/           # Rust HTTP service — caches AOT-compiled WASM artifacts
+│   ├── module-cache/           # Rust HTTP service — caches verified raw WASM artifacts
 │   │   ├── Tiltfile            # Defines module_cache() for the root Tiltfile
 │   │   └── helm/               # Helm chart for the module cache
 │   ├── wp-databases/           # Helm chart — db-operator CRDs for shared PG, Redis, NATS

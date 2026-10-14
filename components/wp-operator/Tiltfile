@@ -60,6 +60,22 @@ def wp_operator(namespace='wasm-platform'):
     )
 
     local_resource(
+        'wp: generate-crds',
+        cmd = 'make -C components/wp-operator generate-crds',
+        labels = ['wp-operator'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+
+    local_resource(
+        'wp: format',
+        cmd = 'gofmt -w components/wp-operator/cmd/main.go components/wp-operator/api/v1alpha1/application_types.go components/wp-operator/internal/artifacts/*.go components/wp-operator/internal/controller/artifacts*.go components/wp-operator/internal/controller/application_controller.go components/wp-operator/internal/integration/integration_test.go',
+        labels = ['wp-operator'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+
+    local_resource(
         'wp: lint',
         cmd = 'cd components/wp-operator && GOWORK=off go vet -mod=readonly ./...',
         deps = source_deps,
@@ -73,7 +89,7 @@ def wp_operator(namespace='wasm-platform'):
         'wp: integration-tests',
         cmd = 'cd components/wp-operator && GOWORK=off go test -mod=readonly -tags integration -count=1 -timeout=5m -v ./internal/integration/...',
         deps = source_deps,
-        resource_deps = ['wp-operator', 'wp-webhook'] + (['ci: record-revision'] if CI_MODE else []),
+        resource_deps = ['wp-operator', 'wp-webhook', 'demo-app'] + (['ci: record-revision'] if CI_MODE else []),
         labels = ['wp-operator'],
         auto_init = CI_MODE,
         trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,

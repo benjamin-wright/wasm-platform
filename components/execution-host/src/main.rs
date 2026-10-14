@@ -13,6 +13,7 @@ mod module_cache;
 mod modules;
 mod nats;
 mod oci;
+mod preparation_metrics;
 mod redis_client;
 mod runtime;
 mod sql_pool;
@@ -122,8 +123,8 @@ async fn main() -> Result<()> {
         cache_addr,
         engine,
         metrics_registry.clone(),
-        fuel_limit.is_some(),
-    );
+        oci::OciSource::from_env()?,
+    )?;
 
     tracing::info!("execution-host starting");
 

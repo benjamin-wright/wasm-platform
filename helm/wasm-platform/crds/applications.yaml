@@ -140,6 +140,12 @@ spec:
                 maxItems: 50
                 minItems: 1
                 type: array
+              kv:
+                description: |-
+                  KV enables key-value store access for this Application.
+                  When true, a cluster-wide RedisDatabase is provisioned and a per-app key prefix
+                  is assigned automatically. When false or absent, no KV access is provisioned.
+                type: boolean
               metrics:
                 description: |-
                   Metrics is the list of user-defined Prometheus metrics declared by this Application.
@@ -185,12 +191,6 @@ spec:
                       || l == ''app_namespace'')'
                 maxItems: 50
                 type: array
-              kv:
-                description: |-
-                  KV enables key-value store access for this Application.
-                  When true, a cluster-wide RedisDatabase is provisioned and a per-app key prefix
-                  is assigned automatically. When false or absent, no KV access is provisioned.
-                type: boolean
               sql:
                 description: |-
                   SQL configures optional SQL database access for this Application.
@@ -355,6 +355,44 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - type
+                x-kubernetes-list-type: map
+              resolvedModules:
+                description: ResolvedModules contains only the current desired generation's
+                  module identities.
+                items:
+                  description: ResolvedModuleStatus records the immutable module selected
+                    for a desired generation.
+                  properties:
+                    generation:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    manifestDigest:
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                    moduleRef:
+                      maxLength: 2048
+                      type: string
+                    name:
+                      type: string
+                    requestedRef:
+                      maxLength: 2048
+                      type: string
+                    wasmDigest:
+                      pattern: ^sha256:[a-f0-9]{64}$
+                      type: string
+                  required:
+                  - generation
+                  - manifestDigest
+                  - moduleRef
+                  - name
+                  - requestedRef
+                  - wasmDigest
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
                 x-kubernetes-list-type: map
               sqlDatabaseName:
                 description: |-

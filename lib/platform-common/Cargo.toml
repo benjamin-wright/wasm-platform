@@ -9,5 +9,6 @@ anyhow = "1.0.102"
 async-nats = "0.46.0"
 axum = "0.8.8"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10.9"
 tokio = { version = "1.50.0", features = ["sync", "time"] }
 tracing = "0.1.44"

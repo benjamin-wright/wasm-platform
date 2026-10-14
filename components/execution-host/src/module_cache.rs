@@ -1,73 +1,95 @@
-use anyhow::Result;
+use std::time::Duration;
 
-/// HTTP client for the module-cache service.
-///
-/// All interaction with the cache (GET to probe, PUT to store) is encapsulated
-/// here so callers never depend on the HTTP protocol directly.
+use anyhow::{Result, bail};
+use platform_common::artifacts::{MAX_WASM_BYTES, Sha256Digest};
+
+const CACHE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Bounded HTTP transport for raw Wasm addressed by its SHA-256 digest.
 pub struct ModuleCacheClient {
-    base_url: String,
+    base_url: reqwest::Url,
     client: reqwest::Client,
 }
 
 impl ModuleCacheClient {
-    pub fn new(base_url: String) -> Self {
-        Self {
-            base_url,
-            client: reqwest::Client::new(),
+    pub fn new(base_url: String) -> Result<Self> {
+        let mut base_url = reqwest::Url::parse(&base_url)
+            .map_err(|_| anyhow::anyhow!("invalid module-cache URL configuration"))?;
+        if !matches!(base_url.scheme(), "http" | "https")
+            || base_url.host_str().is_none()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+        {
+            bail!("invalid module-cache URL configuration");
         }
+        if !base_url.path().ends_with('/') {
+            base_url.set_path(&format!("{}/", base_url.path()));
+        }
+        let client = reqwest::Client::builder()
+            .timeout(CACHE_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| anyhow::anyhow!("module-cache client configuration failed"))?;
+        Ok(Self { base_url, client })
     }
 
-    /// Returns the precompiled artifact bytes if present, or `None` on a 404.
-    pub async fn get(&self, digest: &str, arch: &str, version: &str) -> Result<Option<Vec<u8>>> {
-        let url = format!("{}/modules/{digest}/{arch}/{version}", self.base_url);
-        let resp = self.client.get(&url).send().await.map_err(|error| {
-            anyhow::anyhow!("module-cache GET failed ({})", http_error_kind(&error))
-        })?;
+    fn url(&self, digest: &Sha256Digest) -> Result<reqwest::Url> {
+        self.base_url
+            .join(&format!("modules/{digest}"))
+            .map_err(|_| anyhow::anyhow!("invalid module-cache URL configuration"))
+    }
 
-        match resp.status() {
-            s if s.is_success() => {
-                let bytes = resp.bytes().await.map_err(|error| {
-                    anyhow::anyhow!(
-                        "module-cache response body failed ({})",
-                        http_error_kind(&error)
-                    )
+    /// Returns at most 16 MiB; the caller checks integrity against the OCI descriptor.
+    pub async fn get(&self, digest: &Sha256Digest) -> Result<Option<Vec<u8>>> {
+        tokio::time::timeout(CACHE_TIMEOUT, async {
+            let response = self
+                .client
+                .get(self.url(digest)?)
+                .send()
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("module-cache GET failed ({})", http_error_kind(&error))
                 })?;
-                Ok(Some(bytes.to_vec()))
+            match response.status() {
+                reqwest::StatusCode::NOT_FOUND => return Ok(None),
+                reqwest::StatusCode::OK => {}
+                status => bail!("module-cache GET returned status {}", status.as_u16()),
             }
-            reqwest::StatusCode::NOT_FOUND => Ok(None),
-            s => Err(anyhow::anyhow!(
-                "module-cache GET returned status {}",
-                s.as_u16()
-            )),
-        }
+            crate::oci::read_response(response, MAX_WASM_BYTES)
+                .await
+                .map(Some)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("module-cache GET failed (timeout)"))?
     }
 
-    /// Stores a precompiled artifact in the cache.
-    pub async fn put(
-        &self,
-        digest: &str,
-        arch: &str,
-        version: &str,
-        artifact: Vec<u8>,
-    ) -> Result<()> {
-        let url = format!("{}/modules/{digest}/{arch}/{version}", self.base_url);
-        let resp = self
-            .client
-            .put(&url)
-            .body(artifact)
-            .send()
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("module-cache PUT failed ({})", http_error_kind(&error))
-            })?;
-
-        if !resp.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "module-cache PUT returned status {}",
-                resp.status().as_u16()
-            ));
+    pub async fn put(&self, digest: &Sha256Digest, wasm: Vec<u8>) -> Result<()> {
+        if wasm.len() > MAX_WASM_BYTES {
+            bail!("module-cache PUT exceeds Wasm size limit");
         }
-        Ok(())
+        tokio::time::timeout(CACHE_TIMEOUT, async {
+            let response = self
+                .client
+                .put(self.url(digest)?)
+                .header(reqwest::header::CONTENT_TYPE, "application/wasm")
+                .body(wasm)
+                .send()
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("module-cache PUT failed ({})", http_error_kind(&error))
+                })?;
+            if !response.status().is_success() {
+                bail!(
+                    "module-cache PUT returned status {}",
+                    response.status().as_u16()
+                );
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("module-cache PUT failed (timeout)"))?
     }
 }
 
@@ -90,87 +112,136 @@ fn http_error_kind(error: &reqwest::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Response, StatusCode, header},
+        routing::get,
+    };
 
     fn assert_safe_error(error: &anyhow::Error) {
         let diagnostic = format!("{error:#}\n{error:?}");
         assert_eq!(error.chain().count(), 1, "{diagnostic}");
-        assert!(!diagnostic.contains("CACHE_PASSWORD"), "{diagnostic}");
-        assert!(!diagnostic.contains("CACHE_TOKEN"), "{diagnostic}");
-        assert!(!diagnostic.contains("http://"), "{diagnostic}");
+        for secret in ["CACHE_PASSWORD", "CACHE_TOKEN", "http://"] {
+            assert!(!diagnostic.contains(secret), "{diagnostic}");
+        }
     }
 
-    #[tokio::test]
-    async fn invalid_cache_url_errors_exclude_credentials_and_tokens() {
-        let cache = ModuleCacheClient::new(
-            "http://user:CACHE_PASSWORD@[invalid?token=CACHE_TOKEN".to_string(),
-        );
-        let error = tokio::time::timeout(
-            Duration::from_secs(3),
-            cache.get("digest", "arch", "version"),
-        )
-        .await
-        .expect("cache GET exceeded test deadline")
-        .unwrap_err();
-        assert_safe_error(&error);
-        assert!(error.to_string().contains("configuration"));
-        let error = tokio::time::timeout(
-            Duration::from_secs(3),
-            cache.put("digest", "arch", "version", vec![]),
-        )
-        .await
-        .expect("cache PUT exceeded test deadline")
-        .unwrap_err();
-        assert_safe_error(&error);
-        assert!(error.to_string().contains("configuration"));
+    #[test]
+    fn invalid_cache_url_errors_exclude_credentials_and_tokens() {
+        for url in [
+            "http://user:CACHE_PASSWORD@[invalid?token=CACHE_TOKEN",
+            "http://user:CACHE_PASSWORD@localhost/?token=CACHE_TOKEN",
+            "file:///tmp/modules",
+        ] {
+            let error = ModuleCacheClient::new(url.into()).err().unwrap();
+            assert_safe_error(&error);
+            assert!(error.to_string().contains("configuration"));
+        }
     }
 
-    #[tokio::test]
-    async fn cache_status_errors_exclude_credentials_and_tokens() {
+    async fn server(router: Router) -> (ModuleCacheClient, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                axum::Router::new().fallback(|| async {
-                    (
-                        axum::http::StatusCode::UNAUTHORIZED,
-                        [
-                            ("www-authenticate", "Bearer CACHE_TOKEN"),
-                            ("x-diagnostic", "CACHE_PASSWORD"),
-                        ],
-                        "credentials CACHE_PASSWORD token CACHE_TOKEN",
-                    )
-                }),
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (
+            ModuleCacheClient::new(format!("http://{addr}")).unwrap(),
+            server,
+        )
+    }
+
+    fn digest() -> Sha256Digest {
+        format!("sha256:{}", "a".repeat(64)).parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn cache_status_errors_exclude_response_secrets() {
+        let router = Router::new().fallback(|| async {
+            (
+                StatusCode::UNAUTHORIZED,
+                [("www-authenticate", "Bearer CACHE_TOKEN")],
+                "credentials CACHE_PASSWORD token CACHE_TOKEN",
             )
-            .await
-            .unwrap();
         });
-        let cache = ModuleCacheClient::new(format!(
-            "http://user:CACHE_PASSWORD@{addr}?token=CACHE_TOKEN"
-        ));
-        let error = tokio::time::timeout(
-            Duration::from_secs(3),
-            cache.get("digest", "arch", "version"),
-        )
-        .await
-        .expect("cache GET exceeded test deadline")
-        .unwrap_err();
-        assert_safe_error(&error);
-        assert!(error.to_string().contains("401"));
-        let error = tokio::time::timeout(
-            Duration::from_secs(3),
-            cache.put("digest", "arch", "version", vec![]),
-        )
-        .await
-        .expect("cache PUT exceeded test deadline")
-        .unwrap_err();
-        assert_safe_error(&error);
-        assert!(error.to_string().contains("401"));
+        let (cache, server) = server(router).await;
+        for error in [
+            cache.get(&digest()).await.unwrap_err(),
+            cache.put(&digest(), vec![]).await.unwrap_err(),
+        ] {
+            assert_safe_error(&error);
+            assert!(error.to_string().contains("401"));
+        }
         server.abort();
-        let shutdown = tokio::time::timeout(Duration::from_secs(3), server)
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn redirects_do_not_follow_another_cache_origin() {
+        let router = Router::new().fallback(|| async {
+            (
+                StatusCode::TEMPORARY_REDIRECT,
+                [(
+                    header::LOCATION,
+                    "http://CACHE_PASSWORD.invalid/?token=CACHE_TOKEN",
+                )],
+            )
+        });
+        let (cache, server) = server(router).await;
+        let error = cache.get(&digest()).await.unwrap_err();
+        assert_safe_error(&error);
+        assert!(error.to_string().contains("307"));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn advertised_oversized_body_is_rejected_before_reading() {
+        let router = Router::new().fallback(|| async {
+            Response::builder()
+                .header(header::CONTENT_LENGTH, MAX_WASM_BYTES + 1)
+                .body(Body::from_stream(futures_util::stream::pending::<
+                    Result<Vec<u8>, std::io::Error>,
+                >()))
+                .unwrap()
+        });
+        let (cache, server) = server(router).await;
+        let error = cache.get(&digest()).await.unwrap_err();
+        assert!(error.to_string().contains("size limit"));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn streamed_body_cannot_exceed_the_artifact_limit() {
+        let router = Router::new().route(
+            "/modules/{digest}",
+            get(|| async {
+                let stream = futures_util::stream::iter(
+                    (0..=16).map(|_| Ok::<_, std::io::Error>(vec![0; 1024 * 1024])),
+                );
+                Body::from_stream(stream)
+            }),
+        );
+        let (cache, server) = server(router).await;
+        let error = cache.get(&digest()).await.unwrap_err();
+        assert!(error.to_string().contains("size limit"));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn stalled_body_uses_one_whole_response_deadline() {
+        let router = Router::new().fallback(|| async {
+            let stream = futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+            Body::from_stream(stream)
+        });
+        let (cache, server) = server(router).await;
+        let error = tokio::time::timeout(Duration::from_secs(3), cache.get(&digest()))
             .await
-            .expect("cache test server exceeded shutdown deadline");
-        assert!(shutdown.unwrap_err().is_cancelled());
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("timeout"));
+        server.abort();
+        let _ = server.await;
     }
 }

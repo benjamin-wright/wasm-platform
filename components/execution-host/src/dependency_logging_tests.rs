@@ -1,12 +1,12 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
 use axum::{
-    Json, Router,
-    http::{HeaderMap, StatusCode, header},
+    Router,
+    http::{StatusCode, header},
     routing::get,
 };
 use platform_common::nats_client::{NatsConnectionInfo, run_nats_manager};
@@ -96,10 +96,8 @@ async fn successful_nats_authentication_does_not_log_dependency_credentials() {
 }
 
 #[tokio::test]
-async fn successful_oci_token_authentication_does_not_log_dependency_tokens() {
-    // The OCI client parses the JWT claims when caching the token. The distant
-    // expiry keeps this fixture valid without relying on the test host's clock.
-    const TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjQxMDI0NDQ4MDB9.cHJpdmF0ZS10b2tlbi1zZW50aW5lbA";
+async fn oci_auth_challenges_are_rejected_without_following_or_logging_tokens() {
+    const TOKEN: &str = "private-oci-token-sentinel";
     for filter in FILTERS {
         let capture = LogCapture::default();
         let _subscriber = capture.subscribe_with_filter(filter);
@@ -107,92 +105,37 @@ async fn successful_oci_token_authentication_does_not_log_dependency_tokens() {
         let addr = listener.local_addr().unwrap();
         let auth_requests = Arc::new(AtomicUsize::new(0));
         let auth_requests_for_handler = Arc::clone(&auth_requests);
-        let manifest_authorized = Arc::new(AtomicBool::new(false));
-        let manifest_authorized_for_handler = Arc::clone(&manifest_authorized);
-        let challenge = format!("Bearer realm=\"http://{addr}/token\",service=\"log-regression\"");
+        let challenge = format!("Bearer realm=\"http://{addr}/token?secret={TOKEN}\"");
         let app = Router::new()
-            .route(
-                "/v2/",
-                get(move || {
-                    let challenge = challenge.clone();
-                    async move {
-                        (
-                            StatusCode::UNAUTHORIZED,
-                            [(header::WWW_AUTHENTICATE, challenge)],
-                        )
-                    }
-                }),
-            )
             .route(
                 "/token",
                 get(move || {
                     let requests = Arc::clone(&auth_requests_for_handler);
                     async move {
                         requests.fetch_add(1, Ordering::SeqCst);
-                        Json(serde_json::json!({"token": TOKEN}))
+                        TOKEN
                     }
                 }),
             )
-            .route(
-                "/v2/test/manifests/latest",
-                get(move |headers: HeaderMap| {
-                    let authorized = Arc::clone(&manifest_authorized_for_handler);
-                    async move {
-                        let expected = format!("Bearer {TOKEN}");
-                        let token_used = headers
-                            .get(header::AUTHORIZATION)
-                            .and_then(|value| value.to_str().ok())
-                            == Some(expected.as_str());
-                        authorized.store(token_used, Ordering::SeqCst);
-                        let status = if token_used {
-                            StatusCode::OK
-                        } else {
-                            StatusCode::UNAUTHORIZED
-                        };
-                        (
-                            status,
-                            Json(serde_json::json!({
-                                "schemaVersion": 2,
-                                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                                "config": {
-                                    "mediaType": "application/vnd.oci.image.config.v1+json",
-                                    "digest": format!("sha256:{}", "0".repeat(64)), "size": 0,
-                                },
-                                "layers": [],
-                            })),
-                        )
-                    }
-                }),
-            );
+            .fallback(move || {
+                let challenge = challenge.clone();
+                async move {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        [(header::WWW_AUTHENTICATE, challenge)],
+                        TOKEN,
+                    )
+                }
+            });
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let result = tokio::time::timeout(
-            Duration::from_secs(3),
-            crate::oci::resolve_digest(&format!("oci://{addr}/test:latest")),
-        )
-        .await;
+        let source = crate::oci::OciSource::new(&addr.to_string(), &addr.to_string()).unwrap();
+        let result = source
+            .manifest(&format!("oci://{addr}/test@sha256:{}", "0".repeat(64)))
+            .await;
         server.abort();
-        let _ = tokio::time::timeout(Duration::from_secs(3), server)
-            .await
-            .unwrap();
-        let digest = result
-            .expect("OCI authentication exceeded test deadline")
-            .unwrap();
-
-        assert!(digest.starts_with("sha256:"));
-        assert!(
-            auth_requests.load(Ordering::SeqCst) > 0,
-            "OCI token endpoint was not exercised"
-        );
-        assert!(
-            manifest_authorized.load(Ordering::SeqCst),
-            "OCI manifest request did not use the token"
-        );
-        tracing::info!("authenticated OCI dependency regression completed");
-        assert!(
-            capture
-                .text()
-                .contains("authenticated OCI dependency regression completed")
-        );
-        capture.assert_secrets_absent(&[TOKEN, "cHJpdmF0ZS10b2tlbi1zZW50aW5lbA"]);
+        let error = result.err().expect("anonymous challenge must fail");
+        tracing::warn!(error = %error, "OCI request rejected");
+        assert_eq!(auth_requests.load(Ordering::SeqCst), 0);
+        capture.assert_secrets_absent(&[TOKEN]);
     }
 }

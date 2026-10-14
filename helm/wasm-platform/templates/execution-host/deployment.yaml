@@ -25,6 +25,10 @@ spec:
           image: "{{ .Values.executionHost.image.repository }}:{{ .Values.executionHost.image.tag }}"
           imagePullPolicy: {{ .Values.executionHost.image.pullPolicy }}
           env:
+            - name: APPROVED_REGISTRIES
+              value: {{ join "," .Values.artifacts.approvedRegistries | quote }}
+            - name: LOCAL_PLAINTEXT_REGISTRIES
+              value: {{ join "," .Values.artifacts.localPlaintextRegistries | quote }}
             - name: MODULE_CACHE_ADDR
               value: {{ .Values.executionHost.moduleCache.addr | quote }}
             - name: CONFIG_SYNC_ADDR

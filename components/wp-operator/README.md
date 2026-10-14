@@ -88,7 +88,7 @@ spec:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Function identifier, unique within the Application. |
-| `module` | string | yes | OCI reference for the `.wasm` module. Prefer digest-pinned (`@sha256:…`). |
+| `module` | string | yes | OCI reference for one raw `.wasm` layer from an approved registry. Tags are resolved once per Application generation and published as digest-pinned references. |
 | `trigger.topic` | string | one of `topic`/`http` | NATS subject for `on-message` invocation. Must be unique cluster-wide. Wildcards (`*`, `>`) forbidden. Internally prefixed with `fn.` before pushing to execution hosts. |
 | `trigger.http.path` | string | with `http` | URL path the gateway exposes. Must start with `/`, unique cluster-wide. |
 | `trigger.http.methods` | []string | no | Allowed HTTP methods. Omit to accept all. Gateway returns `405` for unlisted methods. |
@@ -240,6 +240,16 @@ gRPC `ConfigSync` service for execution hosts. Schema: [`proto/configsync/v1/con
 
 The operator also exposes a `GatewayRoutes` service on the same gRPC port for the gateway's route table sync.
 
+## Module Registry Policy
+
+`APPROVED_REGISTRIES` is required and lists exact lowercase registry authorities (`hostname[:port]`), separated by commas without whitespace. Module pulls use anonymous HTTPS requests with certificate validation. `LOCAL_PLAINTEXT_REGISTRIES` optionally lists an approved subset using `localhost`, a `.localhost` hostname, or a loopback IP; those registries use HTTP. Redirects and delegated authentication are rejected.
+
+Resolution verifies a SHA-256 OCI image manifest and exactly one raw Wasm layer descriptor. Manifest responses are limited to 1 MiB and layer descriptors to 8 bytes–16 MiB. Layer media types are `application/wasm`, `application/vnd.wasm.content.layer.v1+wasm`, or `application/octet-stream`; external layer URLs are rejected. Registry operations have a 10-second deadline.
+
+ORAS raw Wasm layers labelled `application/vnd.oci.image.layer.v1.tar` are also accepted when the manifest declares `artifactType: application/vnd.wasm.content.layer.v1+wasm`.
+
+Resolved identities are persisted before configuration publication and reused for the same Application generation after reconciliation or operator restart. A spec change creates a new generation and resolves its requested references again. Within one operator process, resolution failure preserves its published configuration and marks the desired Application unready.
+
 ## Generated Code
 
 ```sh
@@ -284,3 +294,4 @@ wp-operator exposes a validating admission webhook on port 9443, registered as `
 |-------|-------------|
 | `status.sqlDatabaseName` | Derived PostgreSQL database name. Populated when `spec.sql` is set. |
 | `status.sqlUsernames` | Derived PostgreSQL usernames, one per provisioned user. Populated when `spec.sql` is set. |
+| `status.resolvedModules` | Current desired generation's per-function requested reference, pinned module reference, manifest digest and raw Wasm digest. |

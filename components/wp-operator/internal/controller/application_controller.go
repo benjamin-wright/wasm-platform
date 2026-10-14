@@ -22,6 +22,7 @@ import (
 
 	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/artifacts"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/routestore"
@@ -82,6 +83,7 @@ type ApplicationReconciler struct {
 	Store      *configstore.Store
 	RouteStore *routestore.Store
 	Config     Config
+	Artifacts  artifacts.Resolver
 }
 
 func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -258,6 +260,11 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
+	modules, err := r.resolveModules(ctx, app)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// ── Step 1: Ensure Postgres infrastructure (if spec.sql is set) ─────────────
 	if app.Spec.SQL != nil {
 		if err := ValidatePGInputs(app.Namespace, app.Name); err != nil {
@@ -298,7 +305,7 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 		topic := internalFunctionTopic(app, fn)
 		fnCfg := &configsync.FunctionConfig{
 			Name:      fn.Name,
-			ModuleRef: fn.Module,
+			ModuleRef: modules[fn.Name].ModuleRef,
 			Topic:     &topic,
 		}
 		if fn.Trigger.HTTP != nil {

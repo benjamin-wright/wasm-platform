@@ -88,3 +88,13 @@ databases:
     version: "2.10"
     jetStream:
       storageSize: 1Gi
+
+# Anonymous artifact pulls are restricted to these exact registry origins.
+artifacts:
+  approvedRegistries:
+    - wasm-platform-registry.localhost:5000
+    - wasm-platform-registry.localhost:5001
+  # Development only: approved loopback/localhost origins permitted over HTTP.
+  localPlaintextRegistries:
+    - wasm-platform-registry.localhost:5000
+    - wasm-platform-registry.localhost:5001

@@ -237,6 +237,27 @@ func waitForReady(t *testing.T, c client.Client, ns, name string) {
 	}, updateTimeout, 500*time.Millisecond).WithContext(ctx).Should(BeTrue(), "application %s/%s should become Ready", ns, name)
 }
 
+func fixtureModuleRef(t *testing.T, c client.Client) string {
+	t.Helper()
+	var moduleRef string
+	ctx, cancel := context.WithTimeout(t.Context(), updateTimeout)
+	defer cancel()
+	NewWithT(t).Eventually(func() bool {
+		var app wasmplatformv1alpha1.Application
+		if err := c.Get(ctx, types.NamespacedName{Namespace: "examples", Name: "demo-app"}, &app); err != nil {
+			return false
+		}
+		for _, module := range app.Status.ResolvedModules {
+			if module.Name == "message-handler" && module.Generation == app.Generation {
+				moduleRef = module.ModuleRef
+				return true
+			}
+		}
+		return false
+	}, updateTimeout, 500*time.Millisecond).WithContext(ctx).Should(BeTrue(), "demo-app should have a resolved message module")
+	return moduleRef
+}
+
 // TestApplicationCreate_BroadcastsUpsert verifies that creating an Application
 // CR causes the operator to push an upsert update to connected execution hosts.
 func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
@@ -244,6 +265,7 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 	c := newK8sClient(t)
 	ns := createTestNamespace(t, c)
 	cc := newConfigClient(t, "itest-host-create")
+	moduleRef := fixtureModuleRef(t, c)
 
 	app := &wasmplatformv1alpha1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-app", Namespace: ns},
@@ -251,7 +273,7 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 			Functions: []wasmplatformv1alpha1.FunctionSpec{
 				{
 					Name:   "handler",
-					Module: "oci://example.com/my-app@sha256:aaaa",
+					Module: moduleRef,
 					Trigger: wasmplatformv1alpha1.FunctionTrigger{
 						Topic: "itest.create",
 					},
@@ -266,7 +288,7 @@ func TestApplicationCreate_BroadcastsUpsert(t *testing.T) {
 
 	update := cc.WaitForUpsert(t, ns, "my-app")
 	g.Expect(update.GetFunctions()[0].GetTopic()).To(Equal("fn.itest.create"))
-	g.Expect(update.GetFunctions()[0].GetModuleRef()).To(Equal("oci://example.com/my-app@sha256:aaaa"))
+	g.Expect(update.GetFunctions()[0].GetModuleRef()).To(Equal(moduleRef))
 }
 
 // TestApplicationUpdate_BroadcastsUpsert verifies that updating an Application
@@ -283,7 +305,7 @@ func TestApplicationUpdate_BroadcastsUpsert(t *testing.T) {
 			Functions: []wasmplatformv1alpha1.FunctionSpec{
 				{
 					Name:   "handler",
-					Module: "oci://example.com/my-app@sha256:bbbb",
+					Module: fixtureModuleRef(t, c),
 					Trigger: wasmplatformv1alpha1.FunctionTrigger{
 						Topic: "itest.v1",
 					},
@@ -326,7 +348,7 @@ func TestApplicationDelete_BroadcastsDelete(t *testing.T) {
 			Functions: []wasmplatformv1alpha1.FunctionSpec{
 				{
 					Name:   "handler",
-					Module: "oci://example.com/my-app@sha256:cccc",
+					Module: fixtureModuleRef(t, c),
 					Trigger: wasmplatformv1alpha1.FunctionTrigger{
 						Topic: "itest.delete",
 					},
@@ -365,7 +387,7 @@ func TestTopicConflict_RejectedUntilOwnerDeleted(t *testing.T) {
 			Functions: []wasmplatformv1alpha1.FunctionSpec{
 				{
 					Name:   "handler",
-					Module: "oci://example.com/owner@sha256:1111",
+					Module: fixtureModuleRef(t, c),
 					Trigger: wasmplatformv1alpha1.FunctionTrigger{
 						Topic: sharedTopic,
 					},
@@ -385,7 +407,7 @@ func TestTopicConflict_RejectedUntilOwnerDeleted(t *testing.T) {
 			Functions: []wasmplatformv1alpha1.FunctionSpec{
 				{
 					Name:   "handler",
-					Module: "oci://example.com/blocked@sha256:2222",
+					Module: fixtureModuleRef(t, c),
 					Trigger: wasmplatformv1alpha1.FunctionTrigger{
 						Topic: sharedTopic,
 					},

@@ -19,6 +19,7 @@ import (
 
 	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/artifacts"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/controller"
 	grpcserver "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc"
@@ -51,6 +52,11 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	artifactRegistry, err := artifacts.NewRegistry(os.Getenv("APPROVED_REGISTRIES"), os.Getenv("LOCAL_PLAINTEXT_REGISTRIES"))
+	if err != nil {
+		ctrl.Log.Error(err, "invalid artifact registry configuration")
+		os.Exit(1)
+	}
 
 	// Resolve gRPC port: flag > env > default.
 	if grpcPort == 0 {
@@ -92,6 +98,7 @@ func main() {
 		Store:      store,
 		RouteStore: routeStore,
 		Config:     configFromEnv(),
+		Artifacts:  artifactRegistry,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "Application")
 		os.Exit(1)

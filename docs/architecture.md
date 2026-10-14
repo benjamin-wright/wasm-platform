@@ -38,19 +38,17 @@ Both worlds import a `log` interface. Guests emit structured log entries via exp
 
 ### OCI Distribution
 
-OCI artifacts for module storage. Libraries: `oras.land/oras-go/v2` (Go), `oci-distribution` crate (Rust). A centralized module cache stores AOT-compiled artifacts keyed by `(digest, arch, wasmtime_version)`.
+OCI artifacts carry raw binary Wasm. The operator resolves and persists immutable manifest and layer digests before publishing configuration. Hosts verify manifest and layer bytes, share raw content-addressed cache entries, and compile each component locally. Native compiled bytes never cross the cache boundary.
+
+Both registry clients use anonymous HTTP requests with bounded responses and deadlines. Approved exact registry origins are configured by the umbrella chart. HTTPS is required except for explicitly approved localhost/loopback development origins; redirects and external layer URLs are rejected. Registries requiring authentication or token delegation are unsupported.
 
 ---
 
 ## 2. Critical Design Considerations
 
-### Cold-Start Budget
+### Module Preparation
 
-Target **< 5ms cold-start** (container-based FaaS is 100ms–10s):
-
-1. **AOT compilation** — `.wasm` → native code at deploy time via `engine.precompile_component()`.
-2. **Instance pooling** — `PoolingAllocationConfig` pre-reserves memory/table slots with copy-on-write initialization.
-3. **Module caching** — compiled modules are memory-mapped from disk. One compilation, many instantiations.
+Preparation has bounded admission, compilation concurrency and retained component size. Compilation runs on the blocking pool; a timed-out compilation retains its capacity until the worker exits and cannot publish its result. Preparation reporting follows the same owners through admission, compilation and result disposal, so caller timeout does not imply released compiler capacity. Cache failures permit verified registry fallback; cache writes are best effort. The [execution-host contract](../components/execution-host/README.md#module-loading) and [raw-cache contract](../components/module-cache/README.md) define the limits.
 
 ### Sandboxing & Multi-Tenancy
 
@@ -84,7 +82,7 @@ The host functions translate WIT `sql.query` / `kv.get` calls into actual client
 
 ### Config Sync & Scaling
 
-Execution hosts are deployed as a **Deployment**. The wp-operator pushes configuration via gRPC: full snapshot on startup/desync, incremental deltas ongoing. On each new config, the execution host checks the module cache for a precompiled `.cwasm`; on a miss, pulls the OCI artifact, AOT-compiles it, and pushes the result back.
+Execution hosts are deployed as a **Deployment**. The wp-operator pushes configuration via gRPC: full snapshot on startup/desync, incremental deltas ongoing. On each new config, the execution host verifies the pinned OCI manifest, checks the raw module cache by layer digest, and fetches the verified layer on a miss. Every host compiles locally.
 
 Scaling targets concurrent invocations (not CPU/memory). A single execution host can run thousands of concurrent WASM instances. HPA with a custom metric or KEDA for event-driven scaling.
 
@@ -94,50 +92,20 @@ Scaling targets concurrent invocations (not CPU/memory). A single execution host
 
 ## 3. System Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          Kubernetes Cluster                          │
-│                                                                      │
-│  ┌──────────────────┐ gRPC push     ┌──────────────────────────────┐ │
-│  │  wp-operator      │──────────────▶│  Execution Host (Deployment) │ │
-│  │  (Go, kubebuilder)│◀ ─ ─ ─ ─ ─ ─ │                              │ │
-│  │                   │ gRPC full cfg │  ┌──────────────────────┐   │ │
-│  │  • Watches        │  (on startup/ │  │      Pod (×N)        │   │ │
-│  │    Application    │   desync)     │  │  ┌────────────────┐  │   │ │
-│  │    CRDs           │               │  │  │ execution-host │  │   │ │
-│  │  • Manages DBs,   │               │  │  │                │  │   │ │
-│  │    users, creds   │               │  │  │ Wasmtime Pool  │  │   │ │
-│  │    in shared PG   │               │  │  │                │  │   │ │
-│  │  • Registers      │               │  │  │ Host Fn Layer  │  │   │ │
-│  │    routes/triggers│               │  │  └───────┬────────┘  │   │ │
-│  │  • gRPC ConfigSync│               │  └──────────┼───────────┘   │ │
-│  └──────────────────┘               └─────────────┼───────────────┘ │
-│                         ┌───────────◀─────────────┘                  │
-│                         │     check / push compiled artifact          │
-│                         ▼                                             │
-│  ┌──────────────────────────────┐                                    │
-│  │  Module Cache (centralized)  │                                    │
-│  │  • Keyed by digest, arch,    │                                    │
-│  │    Wasmtime version          │                                    │
-│  │  • Execution hosts pull from │                                    │
-│  │    OCI registry on miss,     │                                    │
-│  │    AOT-compile, then push    │                                    │
-│  └──────────────────────────────┘                                    │
-│                                                                      │
-│  ┌─────────────────────┐      ┌────────────────────────────────────┐ │
-│  │  Gateway (Rust)      │      │  Shared Data Layer                 │ │
-│  │  • HTTP → NATS       │      │  ┌──────────────────────────────┐ │ │
-│  │    translation       │      │  │  PostgreSQL (single shared)  │ │ │
-│  └─────────────────────┘      │  │  Per-app DB + user            │ │ │
-│                                │  ├──────────────────────────────┤ │ │
-│  ┌─────────────────────┐      │  │  Redis (single shared)       │ │ │
-│  │  Trigger Layer       │      │  │  Auto <ns>/<app>/ prefix     │ │ │
-│  │  • Cron scheduler    │      │  ├──────────────────────────────┤ │ │
-│  └─────────────────────┘      │  │  NATS (single shared)        │ │ │
-│                                │  │  Subject-prefix isolation    │ │ │
-│                                │  └──────────────────────────────┘ │ │
-│                                └────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Apps[Application CRDs] --> Operator[WP Operator]
+    Registry[Approved OCI registry] -->|verified immutable manifest| Operator
+    Operator -->|pinned configuration| Host[Execution Host]
+    Operator -->|routes| Gateway
+    Client[HTTP client] --> Gateway
+    Gateway --> NATS
+    NATS --> Host
+    Registry -->|verified raw Wasm| Host
+    Cache[Bounded raw Wasm cache] <-->|content digest| Host
+    Host -->|local compilation| Wasmtime
+    Host --> PostgreSQL
+    Host --> Redis
 ```
 
 ### Component Responsibilities
@@ -147,7 +115,7 @@ Scaling targets concurrent invocations (not CPU/memory). A single execution host
 | **WP Operator** | Go | Reconciles `Application` CRDs. Manages per-app PG databases/users. Pushes per-app credentials and config to execution hosts and routes to the gateway via gRPC. Deferred-delete of databases via Redis reference counting with TTL. |
 | **Execution Host** | Rust | Syncs config from operator. Loads modules via the module cache. Subscribes to per-app NATS subjects. Executes WASM modules with scoped host functions (SQL, KV, messaging). |
 | **Gateway** | Rust | Translates HTTP requests to NATS request-reply based on operator-pushed route table. Method enforcement, timeout handling. |
-| **Module Cache** | Rust | Stores and serves AOT-compiled module artifacts keyed by `(digest, arch, wasmtime_version)`. |
+| **Module Cache** | Rust | Stores and serves verified raw Wasm bytes keyed by content digest. |
 | **Token Service** | TBD | Separately scalable service for minting JWT tokens. |
 | **Trigger Layer** | TBD | Cron scheduler dispatching invocation events to NATS. |
 | **Data Layer** | Managed | PostgreSQL, Redis, NATS — all provisioned by [db-operator](https://github.com/benjamin-wright/db-operator) via CRDs. |
@@ -155,7 +123,7 @@ Scaling targets concurrent invocations (not CPU/memory). A single execution host
 ### Invocation Flow (HTTP)
 
 1. Request arrives at gateway → serialised as platform JSON → published to `http.<namespace>.<name>` NATS subject with a reply subject.
-2. Execution host looks up the app config by subject → retrieves the precompiled `Component`.
+2. Execution host looks up the app config by subject → retrieves the locally compiled `Component`.
 3. Execution host instantiates the module → binds scoped host functions → calls `on-request` with typed WIT records.
 4. Guest runs, may call `sql`/`kv`/`messaging` imports → returns an `HttpResponse`.
 5. Execution host serialises the response as JSON → publishes to NATS reply subject → gateway constructs HTTP response.

@@ -30,6 +30,14 @@ def execution_host(resource_deps=[]):
     )
 
     local_resource(
+        'execution-host: format',
+        cmd = 'cargo fmt --all',
+        labels = ['execution-host'],
+        auto_init = False,
+        trigger_mode = TRIGGER_MODE_MANUAL,
+    )
+
+    local_resource(
         'execution-host: update-dependencies',
         cmd = 'cargo check -p execution-host',
         labels = ['execution-host'],

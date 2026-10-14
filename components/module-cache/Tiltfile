@@ -47,4 +47,5 @@ def module_cache():
     k8s_resource(
         'module-cache',
         labels = ['platform'],
+        port_forwards = ['3002:3000'],
     )

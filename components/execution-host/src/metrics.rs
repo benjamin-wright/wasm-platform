@@ -8,6 +8,7 @@ use prometheus::{CounterVec, Encoder, GaugeVec, Opts, Registry, TextEncoder};
 
 use crate::config::configsync;
 use crate::dispatch_metrics::DispatchMetrics;
+use crate::preparation_metrics::PreparationMetrics;
 
 // ── User-defined metric ───────────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ impl MetricsRegistry {
         let compilations_total = CounterVec::new(
             Opts::new(
                 "wasm_host_module_compilations_total",
-                "AOT compilations triggered on config arrival",
+                "Local Wasm compilation results",
             ),
             &["app_name", "app_namespace", "result"],
         )?;
@@ -130,6 +131,14 @@ impl MetricsRegistry {
                 dropped_metric_calls_total,
             }),
         })
+    }
+
+    pub(crate) fn preparation(
+        &self,
+        record_limit: usize,
+        active_limit: usize,
+    ) -> Result<PreparationMetrics> {
+        PreparationMetrics::new(&self.inner.registry, record_limit, active_limit)
     }
 
     pub(crate) fn dispatch(&self) -> DispatchMetrics {

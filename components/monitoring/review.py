@@ -14,12 +14,23 @@ from urllib.request import urlopen
 
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-MAX_SERIES = 256
+MAX_SERIES = 1024
 MAX_PODS = 8
 HISTORY_SECONDS = 300
-METRIC_PREFIX = "wasm_host_dispatch_"
+DISPATCH_PREFIX = "wasm_host_dispatch_"
+PREPARATION_PREFIX = "wasm_host_preparation_"
+DISPATCH_STATES = ("queued", "tracked", "completed_uncollected", "running", "terminating")
+PREPARATION_STATES = ("admission_wait", "queued", "preparing", "compiling", "terminating")
+PREPARATION_KINDS = ("queued", "active", "tracked", "compiling")
+PREPARATION_OUTCOMES = ("success", "error", "timeout", "cancelled", "panic")
+PREPARATION_TIMINGS = (
+    "admission_wait_seconds",
+    "queue_wait_seconds",
+    "compilation_seconds",
+    "compilation_overrun_seconds",
+)
 METRICS = [
-    METRIC_PREFIX + suffix
+    DISPATCH_PREFIX + suffix
     for suffix in (
         "work",
         "limit",
@@ -31,7 +42,24 @@ METRICS = [
         "tasks_reaped_total",
         "draining",
     )
-] + ["process_resident_memory_bytes", "up"]
+] + [
+    PREPARATION_PREFIX + suffix
+    for suffix in (
+        "work",
+        "occupancy",
+        "limit",
+        "high_water",
+        "capacity_breaches_total",
+        "accounting_errors_total",
+        "submissions_total",
+        "finished_total",
+        "compilation_finished_total",
+    )
+] + [
+    PREPARATION_PREFIX + timing + suffix
+    for timing in PREPARATION_TIMINGS
+    for suffix in ("_sum", "_count")
+] + ["process_resident_memory_bytes", "process_start_time_seconds", "up"]
 
 
 def fetch(url, parameters):
@@ -80,14 +108,14 @@ def family_values(series, name, label):
     }
 
 
-def print_family(series, suffix, label, expected):
-    values = family_values(series, METRIC_PREFIX + suffix, label)
+def print_family(series, prefix, suffix, label, expected):
+    values = family_values(series, prefix + suffix, label)
     fields = ", ".join(f"{key}={display(values.get(key))}" for key in expected)
     print(f"  {suffix}: {fields}")
 
 
-def family_total(series, suffix):
-    values = family_values(series, METRIC_PREFIX + suffix, "outcome")
+def family_total(series, prefix, suffix):
+    values = family_values(series, prefix + suffix, "outcome")
     if not values or any(value is None for value in values.values()):
         return None
     return sum(values.values())
@@ -105,6 +133,25 @@ def history_values(series, name, state=None):
             if number is not None:
                 samples.append((sampled_at, number))
     return sorted(samples)
+
+
+def print_work_review(snapshot, samples, prefix, states, kinds):
+    print_family(snapshot, prefix, "work", "state", states)
+    for suffix in ("limit", "high_water", "capacity_breaches_total"):
+        print_family(snapshot, prefix, suffix, "kind", kinds)
+    print_family(snapshot, prefix, "accounting_errors_total", "state", states)
+    peaks = []
+    for state in states:
+        values = history_values(samples, prefix + "work", state)
+        peaks.append(f"{state}={display(max((value for _, value in values), default=None))}")
+    print("  five-minute sampled work peaks: " + ", ".join(peaks))
+
+
+def print_timing(series, prefix, suffix):
+    total = family_values(series, prefix + suffix + "_sum", "").get("total")
+    count = family_values(series, prefix + suffix + "_count", "").get("total")
+    mean = total / count if total is not None and count is not None and count > 0 else None
+    print(f"  {suffix}: lifetime_mean={display(mean)}, observations={display(count)}")
 
 
 def review(base_url):
@@ -131,24 +178,32 @@ def review(base_url):
     retained = grouped_series(history["result"])
     identities = sorted(set(snapshots) | set(retained))
     if not identities:
-        print("Dispatch and RSS data unavailable; no recorded series were returned.")
+        print("Host work and process data unavailable; no recorded series were returned.")
     if len(identities) > MAX_PODS or len(active) > MAX_PODS:
         print(f"Output limited to {MAX_PODS} pods; inspect other pods in Prometheus.")
     for identity in identities[:MAX_PODS]:
         snapshot = snapshots.get(identity, [])
         samples = retained.get(identity, [])
         print("Pod " + "/".join(identity))
-        print_family(snapshot, "work", "state", ("queued", "tracked", "completed_uncollected", "running", "terminating"))
-        for suffix in ("limit", "high_water", "capacity_breaches_total"):
-            print_family(snapshot, suffix, "kind", ("queued", "execution", "tracked"))
-        print_family(snapshot, "accounting_errors_total", "state", ("queued", "tracked", "completed_uncollected", "running", "terminating"))
-        print_family(snapshot, "admissions_after_stop_total", "", ("total",))
-        print(f"  task totals since process start: finished={display(family_total(snapshot, 'tasks_finished_total'))}, reaped={display(family_total(snapshot, 'tasks_reaped_total'))}")
-        peaks = []
-        for state in ("queued", "tracked", "completed_uncollected", "running", "terminating"):
-            values = history_values(samples, METRIC_PREFIX + "work", state)
-            peaks.append(f"{state}={display(max((value for _, value in values), default=None))}")
-        print("  five-minute sampled work peaks: " + ", ".join(peaks))
+        started = family_values(snapshot, "process_start_time_seconds", "").get("total")
+        starts = {value for _, value in history_values(samples, "process_start_time_seconds")}
+        print(f"  process_started={timestamp(started) if started is not None else 'unavailable'}, observed_processes={len(starts) if starts else 'unavailable'}")
+        up = family_values(snapshot, "up", "").get("total")
+        scrapes = history_values(samples, "up")
+        failed = sum(value == 0 for _, value in scrapes) if scrapes else None
+        print(f"  scrape_up={display(up)}, five-minute failed scrape samples={display(failed)}")
+        print(" Dispatch")
+        print_work_review(snapshot, samples, DISPATCH_PREFIX, DISPATCH_STATES, ("queued", "execution", "tracked"))
+        print_family(snapshot, DISPATCH_PREFIX, "admissions_after_stop_total", "", ("total",))
+        print(f"  task totals since process start: finished={display(family_total(snapshot, DISPATCH_PREFIX, 'tasks_finished_total'))}, reaped={display(family_total(snapshot, DISPATCH_PREFIX, 'tasks_reaped_total'))}")
+        print(" Preparation")
+        print_work_review(snapshot, samples, PREPARATION_PREFIX, PREPARATION_STATES, PREPARATION_KINDS)
+        print_family(snapshot, PREPARATION_PREFIX, "occupancy", "kind", PREPARATION_KINDS)
+        print_family(snapshot, PREPARATION_PREFIX, "submissions_total", "outcome", ("admitted", "timeout", "cancelled", "closed"))
+        for suffix in ("finished_total", "compilation_finished_total"):
+            print_family(snapshot, PREPARATION_PREFIX, suffix, "outcome", PREPARATION_OUTCOMES)
+        for suffix in PREPARATION_TIMINGS:
+            print_timing(snapshot, PREPARATION_PREFIX, suffix)
         rss = history_values(samples, "process_resident_memory_bytes")
         if rss:
             latest = numeric(next((item["value"][1] for item in snapshot if item["metric"]["__name__"] == "process_resident_memory_bytes"), "nan"))
