@@ -21,6 +21,10 @@ The gateway connects to the wp-operator's gRPC server (same address as the `Conf
 
 On any stream error or close, the gateway backs off exponentially and reconnects, re-requesting a full snapshot.
 
+Every operator request reads the current projected ServiceAccount token at `/var/run/secrets/wasm-platform/token`, with audience `wasm-platform`; missing or malformed tokens fail startup. Connections and snapshot calls have a ten-second deadline. Stream sessions last at most five minutes and reconnect with backoff, including after identity or authority rejection.
+
+Application admission requires current authoritative route sync. Losing sync returns `503` for new work and cancels accepted body intake, pending broker requests and undelivered response bodies. Recovery admits new requests after an authenticated snapshot and update stream; cached routes provide no serving grace period. Cancellation does not undo work already published to guests.
+
 ## Platform JSON Payload Format
 
 The gateway serialises the incoming HTTP request as JSON before publishing to NATS. This format is **internal to the platform** — guest modules never see it. The execution host decodes it, calls `on-request` with typed WIT records, and serialises the returned `http-response` record back to JSON for the NATS reply.
@@ -93,7 +97,7 @@ All numeric settings must be positive integers within the maxima below; invalid 
 |---|---|
 | Path not in route table | `404 Not Found` |
 | Method not in allow-list | `405 Method Not Allowed`, with `Allow` |
-| Request capacity exhausted or NATS unavailable | `503 Service Unavailable` |
+| Route sync unavailable, request capacity exhausted or NATS unavailable | `503 Service Unavailable` |
 | Raw body or serialised payload exceeds a limit | `413 Payload Too Large` |
 | Request metadata exceeds its limit | `431 Request Header Fields Too Large` |
 | Body read deadline expires | `408 Request Timeout` |

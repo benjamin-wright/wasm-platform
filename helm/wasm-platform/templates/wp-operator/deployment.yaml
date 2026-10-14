@@ -7,6 +7,8 @@ metadata:
     {{- include "wasm-platform.wp-operator.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.wpOperator.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: wp-operator
@@ -14,7 +16,9 @@ spec:
   template:
     metadata:
       labels:
+        istio.io/dataplane-mode: ambient
         {{- include "wasm-platform.wp-operator.labels" . | nindent 8 }}
+      {{- include "wasm-platform.artifact-dns.annotations" . | nindent 6 }}
     spec:
       serviceAccountName: wp-operator
       securityContext:
@@ -41,6 +45,10 @@ spec:
                   fieldPath: metadata.namespace
             - name: GRPC_PORT
               value: {{ .Values.wpOperator.grpc.port | quote }}
+            - name: EXECUTION_HOST_SERVICE_ACCOUNT
+              value: execution-host
+            - name: GATEWAY_SERVICE_ACCOUNT
+              value: gateway
             - name: POSTGRES_VERSION
               value: {{ .Values.databases.postgres.version | quote }}
             - name: POSTGRES_STORAGE_SIZE

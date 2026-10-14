@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -111,6 +112,7 @@ func newConfigClient(t *testing.T, hostID string) *configClient {
 		deadline = testDeadline
 	}
 	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+testToken(t, "execution-host", "wasm-platform"))
 	t.Cleanup(func() {
 		cancel()
 		_ = conn.Close()

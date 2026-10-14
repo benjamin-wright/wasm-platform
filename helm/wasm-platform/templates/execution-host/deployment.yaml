@@ -14,8 +14,12 @@ spec:
   template:
     metadata:
       labels:
+        istio.io/dataplane-mode: ambient
         {{- include "wasm-platform.execution-host.labels" . | nindent 8 }}
+      {{- include "wasm-platform.artifact-dns.annotations" . | nindent 6 }}
     spec:
+      serviceAccountName: execution-host
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -74,10 +78,12 @@ spec:
             capabilities:
               drop: ["ALL"]
           volumeMounts:
+            {{- include "wasm-platform.identity.mount" . | nindent 12 }}
             - name: nats-credentials
               mountPath: /etc/nats-credentials
               readOnly: true
       volumes:
+        {{- include "wasm-platform.identity.volume" . | nindent 8 }}
         - name: nats-credentials
           secret:
             secretName: execution-host-nats-credentials

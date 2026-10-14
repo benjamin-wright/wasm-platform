@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	authenticationclient "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -20,9 +22,11 @@ import (
 	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/artifacts"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/authority"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/controller"
 	grpcserver "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/identity"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/routestore"
 )
 
@@ -43,7 +47,7 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address for the metrics endpoint.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address for health probes.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for high availability.")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", true, "Enable required configuration publication leader election.")
 	flag.IntVar(&grpcPort, "grpc-port", 0, "Port for the gRPC ConfigSync server (overrides GRPC_PORT env).")
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/etc/webhook/certs", "Directory containing tls.crt and tls.key for the validating webhook server.")
 
@@ -52,6 +56,10 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if !enableLeaderElection {
+		ctrl.Log.Error(fmt.Errorf("leader election is required"), "invalid publication configuration")
+		os.Exit(1)
+	}
 	artifactRegistry, err := artifacts.NewRegistry(os.Getenv("APPROVED_REGISTRIES"), os.Getenv("LOCAL_PLAINTEXT_REGISTRIES"))
 	if err != nil {
 		ctrl.Log.Error(err, "invalid artifact registry configuration")
@@ -71,8 +79,21 @@ func main() {
 
 	store := configstore.New()
 	routeStore := routestore.New()
+	publication := authority.New()
+	kubernetesConfig := ctrl.GetConfigOrDie()
+	authentication, err := authenticationclient.NewForConfig(kubernetesConfig)
+	if err != nil {
+		ctrl.Log.Error(err, "unable to create workload authentication client")
+		os.Exit(1)
+	}
+	access, err := grpcserver.NewAccess(identity.NewKubernetesReviewer(authentication.TokenReviews()), publication,
+		os.Getenv("POD_NAMESPACE"), os.Getenv("EXECUTION_HOST_SERVICE_ACCOUNT"), os.Getenv("GATEWAY_SERVICE_ACCOUNT"))
+	if err != nil {
+		ctrl.Log.Error(err, "invalid workload identity configuration")
+		os.Exit(1)
+	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(kubernetesConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
@@ -99,8 +120,13 @@ func main() {
 		RouteStore: routeStore,
 		Config:     configFromEnv(),
 		Artifacts:  artifactRegistry,
+		Authority:  publication,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "Application")
+		os.Exit(1)
+	}
+	if err := mgr.Add(&authority.Initializer{Authority: publication, Reader: mgr.GetAPIReader()}); err != nil {
+		ctrl.Log.Error(err, "unable to configure startup publication authority")
 		os.Exit(1)
 	}
 
@@ -118,7 +144,7 @@ func main() {
 		ctrl.Log.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("publication", publication.Ready); err != nil {
 		ctrl.Log.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
@@ -130,7 +156,7 @@ func main() {
 		ctrl.Log.Error(err, "unable to listen for gRPC", "addr", grpcAddr)
 		os.Exit(1)
 	}
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(access.UnaryInterceptor), grpc.StreamInterceptor(access.StreamInterceptor))
 	grpcserver.Register(grpcSrv, store)
 	grpcserver.RegisterGateway(grpcSrv, routeStore)
 	ctrl.Log.Info("starting gRPC server", "addr", grpcAddr)
@@ -141,12 +167,16 @@ func main() {
 	}()
 
 	ctrl.Log.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	managerCtx := ctrl.SetupSignalHandler()
+	stopRevocation := context.AfterFunc(managerCtx, publication.Revoke)
+	err = mgr.Start(managerCtx)
+	stopRevocation()
+	publication.Revoke()
+	grpcSrv.GracefulStop()
+	if err != nil {
 		ctrl.Log.Error(err, "problem running manager")
 		os.Exit(1)
 	}
-
-	grpcSrv.GracefulStop()
 }
 
 // configFromEnv builds a controller.Config from well-known environment

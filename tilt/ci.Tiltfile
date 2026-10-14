@@ -14,6 +14,7 @@ BASELINE_CHECKS = [
     'wp: lint',
     'wp: integration-tests',
     'e2e: harness-tests',
+    'identity: network-tests',
     'e2e-tests',
     'monitoring: config-check',
 ]

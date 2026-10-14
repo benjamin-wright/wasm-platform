@@ -102,7 +102,10 @@ fn limits() -> RequestLimits {
     }
 }
 
-fn supervisor(broker: Arc<FakeBroker>, limits: RequestLimits) -> RequestSupervisor {
+fn supervisor(
+    broker: Arc<FakeBroker>,
+    limits: RequestLimits,
+) -> (RequestSupervisor, tokio::sync::watch::Sender<bool>) {
     let table = RouteTable::new();
     table
         .upsert(
@@ -113,7 +116,11 @@ fn supervisor(broker: Arc<FakeBroker>, limits: RequestLimits) -> RequestSupervis
             },
         )
         .unwrap();
-    RequestSupervisor::new(table, broker, limits)
+    let (authority, receiver) = tokio::sync::watch::channel(true);
+    (
+        RequestSupervisor::new(table, broker, limits, receiver),
+        authority,
+    )
 }
 
 fn request() -> Request {
@@ -125,11 +132,106 @@ fn request() -> Request {
 }
 
 #[tokio::test]
+async fn unavailable_authority_rejects_before_body_intake_or_broker_dispatch() {
+    let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
+    let (supervisor, authority) = supervisor(broker.clone(), limits());
+    authority.send(false).unwrap();
+    let body = Body::from_stream(stream::poll_fn(|_| {
+        panic!("unavailable authority polled an HTTP body");
+        #[allow(unreachable_code)]
+        Poll::Pending::<Option<Result<Vec<u8>, io::Error>>>
+    }));
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/bounded")
+        .body(body)
+        .unwrap();
+
+    assert_eq!(
+        supervisor.handle(request).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(broker.calls(), 0);
+    assert_eq!(supervisor.snapshot().in_flight, 0);
+
+    authority.send(true).unwrap();
+    assert_eq!(
+        supervisor.handle(self::request()).await.status(),
+        StatusCode::OK
+    );
+    drop(authority);
+    assert_eq!(
+        supervisor.handle(self::request()).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn authority_loss_cancels_body_intake_even_if_sync_recovers_before_the_next_poll() {
+    let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
+    let (supervisor, authority) = supervisor(broker.clone(), limits());
+    let body = Body::from_stream(stream::pending::<Result<Vec<u8>, io::Error>>());
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/bounded")
+        .body(body)
+        .unwrap();
+    let mut accepted = Box::pin(supervisor.handle(request));
+    assert!(accepted.as_mut().now_or_never().is_none());
+    assert_eq!(supervisor.snapshot().in_flight, 1);
+    authority.send(false).unwrap();
+    authority.send(true).unwrap();
+
+    assert_eq!(accepted.await.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(broker.calls(), 0);
+    assert_eq!(supervisor.snapshot().in_flight, 0);
+    assert_eq!(supervisor.snapshot().cancelled, 1);
+}
+
+#[tokio::test]
+async fn authority_loss_drops_pending_broker_work_and_releases_request_admission() {
+    let broker = Arc::new(FakeBroker::new(BrokerAction::Wait));
+    let (supervisor, authority) = supervisor(broker.clone(), limits());
+    let mut accepted = Box::pin(supervisor.handle(request()));
+    assert!(accepted.as_mut().now_or_never().is_none());
+    assert_eq!(broker.calls(), 1);
+    authority.send(false).unwrap();
+
+    assert_eq!(accepted.await.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(supervisor.snapshot().in_flight, 0);
+    assert_eq!(supervisor.snapshot().cancelled, 1);
+
+    broker.reply();
+    authority.send(true).unwrap();
+    assert_eq!(supervisor.handle(request()).await.status(), StatusCode::OK);
+    assert_eq!(broker.calls(), 2);
+}
+
+#[tokio::test]
+async fn authority_loss_discards_a_buffered_response_before_body_delivery() {
+    let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
+    let (supervisor, authority) = supervisor(broker, limits());
+    let response = supervisor.handle(request()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(supervisor.snapshot().in_flight, 1);
+    authority.send(false).unwrap();
+    authority.send(true).unwrap();
+
+    assert!(
+        axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .is_err()
+    );
+    assert_eq!(supervisor.snapshot().in_flight, 0);
+    assert_eq!(supervisor.snapshot().cancelled, 1);
+}
+
+#[tokio::test]
 async fn serialized_payload_limit_rejects_a_body_within_its_raw_limit() {
     let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
     let mut limits = limits();
     limits.payload_bytes = 128;
-    let supervisor = supervisor(broker.clone(), limits);
+    let (supervisor, _authority) = supervisor(broker.clone(), limits);
     let request = Request::builder()
         .method(Method::POST)
         .uri("/bounded")
@@ -148,7 +250,7 @@ async fn serialized_payload_limit_rejects_a_body_within_its_raw_limit() {
 #[tokio::test]
 async fn buffered_response_retains_admission_until_body_consumption() {
     let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
-    let supervisor = supervisor(broker.clone(), limits());
+    let (supervisor, _authority) = supervisor(broker.clone(), limits());
     let response = supervisor.handle(request()).await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -173,7 +275,7 @@ async fn buffered_response_retains_admission_until_body_consumption() {
 #[tokio::test]
 async fn dropping_an_accepted_request_releases_its_admission() {
     let broker = Arc::new(FakeBroker::new(BrokerAction::Wait));
-    let supervisor = supervisor(broker.clone(), limits());
+    let (supervisor, _authority) = supervisor(broker.clone(), limits());
     let mut accepted = Box::pin(supervisor.handle(request()));
     assert!(accepted.as_mut().now_or_never().is_none());
     assert_eq!(broker.calls(), 1);
@@ -192,7 +294,7 @@ async fn dropping_an_accepted_request_releases_its_admission() {
 #[tokio::test]
 async fn broker_failure_releases_admission_for_the_next_request() {
     let broker = Arc::new(FakeBroker::new(BrokerAction::Fail));
-    let supervisor = supervisor(broker.clone(), limits());
+    let (supervisor, _authority) = supervisor(broker.clone(), limits());
 
     assert_eq!(
         supervisor.handle(request()).await.status(),
@@ -208,7 +310,7 @@ async fn broker_failure_releases_admission_for_the_next_request() {
 #[tokio::test]
 async fn broker_panic_releases_admission_for_the_next_request() {
     let broker = Arc::new(FakeBroker::new(BrokerAction::Panic));
-    let supervisor = supervisor(broker.clone(), limits());
+    let (supervisor, _authority) = supervisor(broker.clone(), limits());
 
     assert!(
         AssertUnwindSafe(supervisor.handle(request()))
@@ -226,7 +328,7 @@ async fn broker_panic_releases_admission_for_the_next_request() {
 #[test]
 fn unknown_routes_and_disallowed_methods_do_not_poll_the_body() {
     let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
-    let supervisor = supervisor(broker.clone(), limits());
+    let (supervisor, _authority) = supervisor(broker.clone(), limits());
 
     for (path, expected) in [
         ("/unknown", StatusCode::NOT_FOUND),
@@ -263,7 +365,7 @@ fn unknown_routes_and_disallowed_methods_do_not_poll_the_body() {
 async fn bounded_listener_rejects_excess_connections_and_releases_closed_slots() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let broker = Arc::new(FakeBroker::new(BrokerAction::Reply));
-        let supervisor = supervisor(broker, limits());
+        let (supervisor, _authority) = supervisor(broker, limits());
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut listener = BoundedListener::new(tcp, supervisor.connection_capacity());
         let address = Listener::local_addr(&listener).unwrap();

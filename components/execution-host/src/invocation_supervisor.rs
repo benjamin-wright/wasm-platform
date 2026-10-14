@@ -3,7 +3,7 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 use anyhow::Result;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, watch},
-    task::{Id, JoinError, JoinHandle, JoinSet},
+    task::{AbortHandle, Id, JoinError, JoinHandle, JoinSet},
 };
 
 use crate::{
@@ -23,6 +23,7 @@ pub(crate) struct DispatchContext {
     pub(crate) module_registry: ModuleRegistry,
     pub(crate) metrics_registry: MetricsRegistry,
     pub(crate) client_rx: watch::Receiver<Option<async_nats::Client>>,
+    pub(crate) synced_rx: watch::Receiver<bool>,
 }
 
 struct FunctionIdentity {
@@ -46,11 +47,15 @@ struct InvocationJob {
     identity: FunctionIdentity,
     reply: ReplyTarget,
     record: TaskRecord,
+    authority_revoked: bool,
 }
 
 enum OwnedJob {
     Execution(Box<InvocationJob>),
-    Reply { execution_outcome: &'static str },
+    Reply {
+        execution_outcome: &'static str,
+        abort: AbortHandle,
+    },
 }
 
 enum Completion {
@@ -96,7 +101,7 @@ impl InvocationSupervisor {
 
     pub(crate) async fn run(
         &mut self,
-        context: DispatchContext,
+        mut context: DispatchContext,
         mut shutdown: broadcast::Receiver<()>,
     ) {
         'dispatch: loop {
@@ -104,6 +109,10 @@ impl InvocationSupervisor {
                 tokio::select! {
                     biased;
                     _ = shutdown.recv() => break 'dispatch,
+                    result = context.synced_rx.changed() => {
+                        self.cancel_untrusted_work();
+                        if result.is_err() { break 'dispatch; }
+                    }
                     Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => {
                         self.collect(result);
                     }
@@ -120,6 +129,11 @@ impl InvocationSupervisor {
                 invocation,
                 mut queued,
             } = message;
+            if !*context.synced_rx.borrow() {
+                invocation.cancel();
+                queued.set_outcome("error");
+                continue;
+            }
             let permit = {
                 let admission = invocation.acquire_permit(self.slots.clone());
                 tokio::pin!(admission);
@@ -129,6 +143,13 @@ impl InvocationSupervisor {
                         _ = shutdown.recv() => {
                             invocation.cancel();
                             break 'dispatch;
+                        }
+                        result = context.synced_rx.changed() => {
+                            invocation.cancel();
+                            queued.set_outcome("error");
+                            self.cancel_untrusted_work();
+                            if result.is_err() { break 'dispatch; }
+                            continue 'dispatch;
                         }
                         Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => {
                             self.collect(result);
@@ -185,6 +206,11 @@ impl InvocationSupervisor {
                     continue;
                 }
             };
+            if !*context.synced_rx.borrow() || context.synced_rx.has_changed().unwrap_or(true) {
+                invocation.cancel();
+                queued.set_outcome("error");
+                continue;
+            }
             queued.set_outcome("admitted");
             drop(queued);
             let trigger = match function.world_type {
@@ -201,6 +227,7 @@ impl InvocationSupervisor {
                 identity: FunctionIdentity::from(&function),
                 reply,
                 record: self.metrics.task_started(),
+                authority_revoked: false,
             };
             let state = context.state.clone();
             let payload = message.payload.to_vec();
@@ -273,8 +300,29 @@ impl InvocationSupervisor {
             drop(record);
             Completion::Reply
         });
-        self.jobs
-            .insert(task.id(), OwnedJob::Reply { execution_outcome });
+        self.jobs.insert(
+            task.id(),
+            OwnedJob::Reply {
+                execution_outcome,
+                abort: task,
+            },
+        );
+    }
+
+    fn cancel_untrusted_work(&mut self) {
+        for job in self.jobs.values_mut() {
+            match job {
+                OwnedJob::Execution(job) => {
+                    job.authority_revoked = true;
+                    job.invocation.cancel();
+                }
+                OwnedJob::Reply { abort, .. } => abort.abort(),
+            }
+        }
+        while let Ok(mut message) = self.messages.try_recv() {
+            message.invocation.cancel();
+            message.queued.set_outcome("error");
+        }
     }
 
     fn collect(&mut self, result: Result<(Id, Completion), JoinError>) {
@@ -287,7 +335,12 @@ impl InvocationSupervisor {
             return;
         };
         match job {
-            OwnedJob::Execution(job) => {
+            OwnedJob::Execution(mut job) => {
+                if job.authority_revoked {
+                    job.record.set_outcome("cancelled");
+                    self.metrics.task_reaped("cancelled");
+                    return;
+                }
                 let (cancelled, expired) = match &result {
                     Ok((
                         _,
@@ -461,6 +514,7 @@ mod tests {
             },
             reply: ReplyTarget::new(None, None),
             record: supervisor.metrics.task_started(),
+            authority_revoked: false,
         }
     }
 
@@ -500,6 +554,147 @@ mod tests {
             .await
             .expect("supervisor lost an owned task");
         supervisor.collect(result);
+    }
+
+    #[tokio::test]
+    async fn uninitialized_authority_cancels_intake_before_registry_lookup() {
+        let (mut supervisor, sender, registry) = supervisor();
+        let invocation =
+            Invocation::with_metrics(Duration::from_secs(30), supervisor.metrics.clone());
+        sender
+            .try_send(InvocationMessage {
+                message: async_nats::Message {
+                    subject: "fn.test".into(),
+                    reply: None,
+                    payload: Vec::new().into(),
+                    headers: None,
+                    status: None,
+                    description: None,
+                    length: 0,
+                },
+                invocation: invocation.clone(),
+                queued: supervisor.metrics.queued(),
+            })
+            .unwrap_or_else(|_| panic!("failed to queue test invocation"));
+        let engine = wasmtime::Engine::default();
+        let metrics = MetricsRegistry::new().unwrap();
+        let pools = crate::sql_pool::SqlPoolMap::new(1);
+        let runtime = RuntimeState::new(
+            engine.clone(),
+            Arc::new(std::sync::RwLock::new(None)),
+            metrics.clone(),
+            pools,
+            None,
+            64 * 1024 * 1024,
+        )
+        .unwrap();
+        let modules = ModuleRegistry::new(
+            "http://localhost:3000".into(),
+            engine,
+            metrics.clone(),
+            crate::oci::OciSource::new("localhost:5000", "localhost:5000").unwrap(),
+        )
+        .unwrap();
+        let (_authority, synced_rx) = watch::channel(false);
+        let (_client, client_rx) = watch::channel(None);
+        let context = DispatchContext {
+            state: Arc::new(runtime),
+            app_registry: AppRegistry::new(),
+            module_registry: modules,
+            metrics_registry: metrics,
+            client_rx,
+            synced_rx,
+        };
+        let (shutdown, shutdown_rx) = broadcast::channel(1);
+        let running = tokio::spawn(async move {
+            supervisor.run(context, shutdown_rx).await;
+            supervisor
+        });
+        bounded(invocation.cancelled()).await;
+        shutdown.send(()).unwrap();
+        let supervisor = bounded(running).await.unwrap();
+        assert!(supervisor.jobs.is_empty());
+        assert_eq!(
+            metric(
+                &registry,
+                "wasm_host_dispatch_queue_exits_total",
+                Some(("outcome", "error"))
+            ),
+            1.0
+        );
+        assert_eq!(
+            metric(&registry, "wasm_host_dispatch_tasks_finished_total", None),
+            0.0
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_loss_cancels_execution_and_queue_while_retaining_cleanup_capacity() {
+        let (mut supervisor, sender, registry) = supervisor();
+        let active = Invocation::with_metrics(Duration::from_secs(30), supervisor.metrics.clone());
+        let (cleanup_entered, cleanup_started) = oneshot::channel();
+        let (release_cleanup, cleanup_released) = oneshot::channel();
+        active.spawn_cleanup(async move {
+            cleanup_entered.send(()).unwrap();
+            bounded(cleanup_released).await.unwrap();
+        });
+        bounded(cleanup_started).await.unwrap();
+        let (execution_entered, execution_started) = oneshot::channel();
+        let permit = supervisor.slots.clone().acquire_owned().await.unwrap();
+        supervisor.spawn_execution(
+            job(&supervisor, active.clone()),
+            permit,
+            move |invocation| {
+                execution_entered.send(()).unwrap();
+                tokio::runtime::Handle::current().block_on(invocation.cancelled());
+                Ok(Some(b"revoked result".to_vec()))
+            },
+        );
+        bounded(execution_started).await.unwrap();
+        let queued = Invocation::with_metrics(Duration::from_secs(30), supervisor.metrics.clone());
+        sender
+            .try_send(InvocationMessage {
+                message: async_nats::Message {
+                    subject: "fn.test".into(),
+                    reply: None,
+                    payload: Vec::new().into(),
+                    headers: None,
+                    status: None,
+                    description: None,
+                    length: 0,
+                },
+                invocation: queued.clone(),
+                queued: supervisor.metrics.queued(),
+            })
+            .unwrap_or_else(|_| panic!("failed to queue test invocation"));
+        supervisor.cancel_untrusted_work();
+        assert!(active.check().is_err());
+        assert!(queued.check().is_err());
+        cancel_pending_collection(&mut supervisor).await;
+        assert_eq!(supervisor.slots.available_permits(), 0);
+        assert_eq!(supervisor.jobs.len(), 1);
+        release_cleanup.send(()).unwrap();
+        collect_next(&mut supervisor).await;
+        assert!(supervisor.tasks.is_empty());
+        assert!(supervisor.jobs.is_empty());
+        assert_eq!(supervisor.slots.available_permits(), 1);
+        assert_eq!(
+            metric(
+                &registry,
+                "wasm_host_dispatch_tasks_finished_total",
+                Some(("outcome", "cancelled"))
+            ),
+            1.0
+        );
+        assert_eq!(
+            metric(
+                &registry,
+                "wasm_host_dispatch_tasks_reaped_total",
+                Some(("outcome", "cancelled"))
+            ),
+            1.0
+        );
+        bounded(supervisor.stop_and_drain()).await;
     }
 
     #[tokio::test]

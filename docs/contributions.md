@@ -49,6 +49,10 @@ tilt up
 
 Builds container images, deploys Helm charts, runs unit tests on source change, and live-reloads on source changes. Requires a running cluster from `make cluster-up`.
 
+Tilt installs Istio ambient independently of the platform release through [the pinned infrastructure resources](../tilt/istio.Tiltfile), including the k3d CNI configuration. `istio-ready` gates the operator and raw cache until istiod, CNI and ztunnel are available. Workload enrollment and service policies are owned by the [umbrella chart](../helm/wasm-platform/). Protected cache and configuration ports require mesh identities; `kubectl port-forward` is an administrative path and tests supply projected-audience tokens separately.
+
+The local plaintext registry exception disables ambient DNS capture on registry-consuming workloads so CoreDNS can resolve the k3d `.localhost` registry to its container address. Ambient mTLS and service authorization remain enabled. Without the plaintext exception, those workloads use ambient's default DNS capture.
+
 Resources are grouped by component label in the Tilt UI. Integration tests appear under the same label and must be triggered manually — click the resource and press the trigger button after the service is ready.
 
 Each component's build, deploy, and test logic lives in `components/<name>/Tiltfile`. The root `Tiltfile` loads and calls each component function.
@@ -67,7 +71,7 @@ This runs builds, formatting/static checks, component regressions, tagged operat
 
 The [CI resource definitions](../tilt/ci.Tiltfile) record the Git commit and a fingerprint of tracked and non-ignored untracked source, including local edits. The final check rejects a changed tree; keep source stable during a run. Logs hold the validation results. The ignored `.tilt-ci-revision.json` holds only the temporary fingerprint.
 
-Normal `tilt up` runs component regressions and e2e harness checks on source changes. Cluster tests and lint remain manual. In an existing session, record the source baseline, trigger any checks affected by subsequent changes, and trigger the final revision check after validation. Resource dependencies can reuse prior successful checks; the final fingerprint detects source drift but does not force those checks to rerun. Batch mode enables the complete validation set on startup and needs its own Tilt session.
+Normal `tilt up` runs component regressions and e2e harness checks on source changes. Cluster tests and lint remain manual. `identity: network-tests` verifies real meshed allowlists and rejection of plaintext bypass before `e2e-tests`; both are part of the local CI gate. In an existing session, record the source baseline, trigger any checks affected by subsequent changes, and trigger the final revision check after validation. Resource dependencies can reuse prior successful checks; the final fingerprint detects source drift but does not force those checks to rerun. Batch mode enables the complete validation set on startup and needs its own Tilt session.
 
 ## Make Targets
 

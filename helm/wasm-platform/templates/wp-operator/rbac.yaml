@@ -13,6 +13,9 @@ metadata:
   labels:
     {{- include "wasm-platform.wp-operator.labels" . | nindent 4 }}
 rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
   - apiGroups: ["wasm-platform.io"]
     resources: ["applications"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

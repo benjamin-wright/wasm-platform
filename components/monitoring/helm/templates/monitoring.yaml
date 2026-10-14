@@ -94,6 +94,7 @@ spec:
   template:
     metadata:
       labels:
+        istio.io/dataplane-mode: ambient
         {{- include "monitoring.labels" . | nindent 8 }}
       annotations:
         checksum/config: {{ .Files.Get "prometheus.yaml" | sha256sum }}

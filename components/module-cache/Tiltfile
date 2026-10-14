@@ -3,7 +3,7 @@ load('../../tilt/workspace-deps.Tiltfile', 'RUST_WORKSPACE_INPUTS')
 
 IMAGE_REF = 'wasm-platform-registry.localhost:5001/module-cache'
 
-def module_cache():
+def module_cache(namespace='wasm-platform', resource_deps=[]):
     source_deps = RUST_WORKSPACE_INPUTS + [
         'components/module-cache/src',
         'components/module-cache/Cargo.toml',
@@ -48,4 +48,12 @@ def module_cache():
         'module-cache',
         labels = ['platform'],
         port_forwards = ['3002:3000'],
+        resource_deps = resource_deps,
+        objects = [
+            'module-cache:ServiceAccount:{}'.format(namespace),
+            'wasm-platform-module-cache:ClusterRole',
+            'wasm-platform-module-cache:ClusterRoleBinding',
+            'module-cache:PeerAuthentication:{}'.format(namespace),
+            'module-cache:AuthorizationPolicy:{}'.format(namespace),
+        ],
     )

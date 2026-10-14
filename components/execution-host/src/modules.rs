@@ -465,10 +465,12 @@ mod tests {
         pulls: Arc<AtomicUsize>,
         puts: Arc<Mutex<Vec<CacheWrite>>>,
         servers: Vec<tokio::task::JoinHandle<()>>,
+        token_path: std::path::PathBuf,
     }
 
     impl Drop for Fixture {
         fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.token_path);
             for server in &self.servers {
                 server.abort();
             }
@@ -548,13 +550,22 @@ mod tests {
                 }),
             );
             let (cache_origin, cache_server) = serve(cache_router).await;
-            let registry = ModuleRegistry::new(
+            let mut registry = ModuleRegistry::new(
                 format!("http://{cache_origin}"),
                 Engine::default(),
                 MetricsRegistry::new().unwrap(),
                 OciSource::new(&source_origin, &source_origin).unwrap(),
             )
             .unwrap();
+            let token_path = std::env::temp_dir().join(format!(
+                "module-fixture-{}-{}.token",
+                std::process::id(),
+                source_origin.replace(':', "-")
+            ));
+            tokio::fs::write(&token_path, "HOST_TOKEN").await.unwrap();
+            Arc::get_mut(&mut registry.cache).unwrap().set_token_reader(
+                platform_common::identity::ProjectedTokenReader::new(&token_path),
+            );
             Self {
                 registry,
                 pinned: format!("oci://{source_origin}/app@{manifest_digest}"),
@@ -562,6 +573,7 @@ mod tests {
                 pulls,
                 puts,
                 servers: vec![source_server, cache_server],
+                token_path,
             }
         }
 

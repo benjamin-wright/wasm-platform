@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use platform_common::identity::{
+    ProjectedTokenReader, RPC_TIMEOUT, SYNC_SESSION_TIMEOUT, operator_channel,
+};
 
 use crate::sql_pool::SqlPoolMap;
 use crate::{
@@ -18,12 +21,13 @@ use crate::{
 
 // Loops forever: fetches a full config snapshot then maintains the incremental
 // update stream.  On any error or clean stream close, backs off and retries.
-// `synced_tx` is set to `true` after the first successful full snapshot and
-// back to `false` while reconnecting, so readiness reflects operator reachability.
+// `synced_tx` requires an authoritative snapshot and authenticated stream
+// registration; reconnecting revokes admission and stops topic subscriptions.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_config_sync_loop(
     addr: String,
     host_id: String,
+    token: ProjectedTokenReader,
     registry: AppRegistry,
     modules: ModuleRegistry,
     metrics: MetricsRegistry,
@@ -34,12 +38,21 @@ pub async fn run_config_sync_loop(
 ) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_config_sync(
-            &addr, &host_id, &registry, &modules, &metrics, &topics_tx, &synced_tx, &sql_pools,
-            &redis_tx,
+        let result = tokio::time::timeout(
+            SYNC_SESSION_TIMEOUT,
+            run_config_sync(
+                &addr, &host_id, &token, &registry, &modules, &metrics, &topics_tx, &synced_tx,
+                &sql_pools, &redis_tx,
+            ),
         )
         .await
-        {
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("config sync session expired")));
+        if *synced_tx.borrow() {
+            backoff = Duration::from_secs(1);
+        }
+        let _ = synced_tx.send(false);
+        let _ = topics_tx.send(Vec::new());
+        match result {
             Ok(()) => {
                 tracing::warn!("config sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
@@ -50,7 +63,6 @@ pub async fn run_config_sync_loop(
                     retry_after_secs = backoff.as_secs(),
                     "config sync failed; reconnecting"
                 );
-                let _ = synced_tx.send(false);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
@@ -64,6 +76,7 @@ pub async fn run_config_sync_loop(
 async fn run_config_sync(
     addr: &str,
     host_id: &str,
+    token: &ProjectedTokenReader,
     registry: &AppRegistry,
     modules: &ModuleRegistry,
     metrics: &MetricsRegistry,
@@ -75,6 +88,7 @@ async fn run_config_sync(
     fetch_full_config(
         addr.to_string(),
         host_id.to_string(),
+        token,
         registry,
         modules,
         sql_pools,
@@ -92,11 +106,11 @@ async fn run_config_sync(
         );
     }
     topics_tx.send(registry.topics()?).ok();
-    let _ = synced_tx.send(true);
 
     tracing::info!("opening incremental update stream");
-    let mut client = ConfigSyncClient::connect(addr.to_string())
+    let mut client = operator_channel(addr)
         .await
+        .map(ConfigSyncClient::new)
         .map_err(|_| anyhow::anyhow!("config update connection failed"))?;
     tracing::info!("gRPC client connected for config updates");
 
@@ -111,7 +125,7 @@ async fn run_config_sync(
 
     tracing::info!("calling push_incremental_update RPC");
     let mut update_stream = client
-        .push_incremental_update(ack_stream)
+        .push_incremental_update(token.grpc_request(ack_stream, SYNC_SESSION_TIMEOUT).await?)
         .await
         .map_err(|error| anyhow::anyhow!("config update RPC failed ({:?})", error.code()))?
         .into_inner();
@@ -133,6 +147,7 @@ async fn run_config_sync(
         return Ok(());
     }
     tracing::info!("initial host ack sent to mpsc channel");
+    let _ = synced_tx.send(true);
 
     tracing::info!("waiting for first incremental update message");
     while let Some(request) = update_stream
@@ -181,20 +196,29 @@ async fn run_config_sync(
 async fn fetch_full_config(
     addr: String,
     host_id: String,
+    token: &ProjectedTokenReader,
     registry: &AppRegistry,
     modules: &ModuleRegistry,
     sql_pools: &Arc<SqlPoolMap>,
     redis_tx: &tokio::sync::watch::Sender<Option<String>>,
 ) -> Result<()> {
     tracing::info!("connecting to operator for full config");
-    let mut client = ConfigSyncClient::connect(addr)
+    let mut client = operator_channel(&addr)
         .await
+        .map(ConfigSyncClient::new)
         .map_err(|_| anyhow::anyhow!("config snapshot connection failed"))?;
     let response = client
-        .request_full_config(FullConfigRequest {
-            host_id,
-            last_ack_timestamp: None,
-        })
+        .request_full_config(
+            token
+                .grpc_request(
+                    FullConfigRequest {
+                        host_id,
+                        last_ack_timestamp: None,
+                    },
+                    RPC_TIMEOUT,
+                )
+                .await?,
+        )
         .await
         .map_err(|error| anyhow::anyhow!("config snapshot RPC failed ({:?})", error.code()))?
         .into_inner();
@@ -206,7 +230,9 @@ async fn fetch_full_config(
         apply_module_changes(modules, diff.modules_to_load, diff.modules_to_evict).await?;
         apply_pool_changes(sql_pools, diff.pools_to_create, diff.pools_to_evict_apps).await;
     } else {
-        tracing::warn!("operator returned empty full config response");
+        return Err(anyhow::anyhow!(
+            "operator returned uninitialized full config response"
+        ));
     }
     Ok(())
 }

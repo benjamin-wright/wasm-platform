@@ -1,6 +1,6 @@
 # End-to-end tests
 
-The `e2e-tests` Tilt resource verifies deployed HTTP, messaging, KV, SQL, metrics, admission, cancellation, and credential-log behavior. It waits for the permanent `demo-app`, `counter-app`, and `sql-hello` fixtures before running. See the [testing standards](../../docs/standards.md#end-to-end-testing) for the required gate.
+The `e2e-tests` Tilt resource verifies deployed HTTP, messaging, KV, SQL, metrics, admission, workload identity, cancellation, and credential-log behavior. It waits for the permanent `demo-app`, `counter-app`, and `sql-hello` fixtures before running. See the [testing standards](../../docs/standards.md#end-to-end-testing) for the required gate.
 
 Gateway checks verify completed-request route/method rejection through the ingress. Direct checks on the production HTTP port forwarded by Tilt at `localhost:3000` withhold bodies to verify early route/method rejection, check oversized and steadily streamed bodies/headers, fill intake with admitted partial uploads, and verify rejection, recovery and absent guest side effects. Both HTTP listeners' probes remain available during saturation; the internal listener at `localhost:9092` exposes ownership metrics. Workload sizes follow the deployed gateway limits.
 
@@ -11,3 +11,5 @@ Cancellation checks aggregate metrics and exit logs across execution-host pods, 
 The untagged helper regressions exercise stalled HTTP responses, subprocess cancellation, response limits, and missing or malformed metric samples without requiring deployed fixtures. Build and test resources run through the local Tilt environment described in [contributions](../../docs/contributions.md#tilt).
 
 Artifact tests verify persisted immutable identities, raw-cache digest integrity and rejection of native replacement, local compilation on cache hits, and denied registry origins through Application reconciliation and HTTP dispatch. The local cache port-forward is defined in its Tilt resource.
+
+Identity checks reject anonymous, invalid, wrong-audience and wrong-role tokens through the deployed cache and operator APIs. Authorized artifact tests issue short-lived platform-audience tokens through the Kubernetes API. The separate `identity: network-tests` gate uses disposable meshed and plaintext pods to verify service allowlists and mTLS requirements. An operator outage check cancels an accepted guest, rejects retained-route admission and verifies recovery without delayed guest effects; the operator is restored during cleanup.

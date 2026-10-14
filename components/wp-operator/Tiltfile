@@ -6,7 +6,7 @@ IMAGE_REF = 'wasm-platform-registry.localhost:5001/wp-operator'
 # The ClusterRole and ClusterRoleBinding are named <release>-wp-operator.
 RELEASE_NAME = 'wasm-platform'
 
-def wp_operator(namespace='wasm-platform'):
+def wp_operator(namespace='wasm-platform', resource_deps=[]):
     source_deps = [
         'components/wp-operator/cmd',
         'components/wp-operator/api',
@@ -33,10 +33,13 @@ def wp_operator(namespace='wasm-platform'):
         'wp-operator',
         labels = ['platform'],
         port_forwards = ['50051:50051'],
+        resource_deps = resource_deps,
         objects = [
             'wp-operator:ServiceAccount:{}'.format(namespace),
             '{}-wp-operator:ClusterRole'.format(RELEASE_NAME),
             '{}-wp-operator:ClusterRoleBinding'.format(RELEASE_NAME),
+            'wp-operator:PeerAuthentication:{}'.format(namespace),
+            'wp-operator:AuthorizationPolicy:{}'.format(namespace),
         ],
     )
 

@@ -15,7 +15,7 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use platform_common::http_types::{HttpRequestPayload, HttpResponsePayload};
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{OwnedSemaphorePermit, Semaphore, watch},
     time::Instant,
 };
 
@@ -53,10 +53,16 @@ pub struct RequestSupervisor {
     requests: Arc<Semaphore>,
     connections: Arc<Semaphore>,
     counts: Arc<Counts>,
+    authority: watch::Receiver<bool>,
 }
 
 impl RequestSupervisor {
-    pub fn new(table: RouteTable, broker: Arc<dyn RequestBroker>, limits: RequestLimits) -> Self {
+    pub fn new(
+        table: RouteTable,
+        broker: Arc<dyn RequestBroker>,
+        limits: RequestLimits,
+        authority: watch::Receiver<bool>,
+    ) -> Self {
         Self {
             table,
             broker,
@@ -64,6 +70,7 @@ impl RequestSupervisor {
             connections: Arc::new(Semaphore::new(limits.connections)),
             counts: Arc::new(Counts::default()),
             limits,
+            authority,
         }
     }
 
@@ -85,6 +92,11 @@ impl RequestSupervisor {
     }
 
     pub async fn handle(&self, req: Request) -> Response {
+        let mut authority = self.authority.clone();
+        let authorized = *authority.borrow_and_update();
+        if !authorized || authority.has_changed().is_err() {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         let route = match self.table.get(req.uri().path()) {
             Ok(Some(route)) => route,
             Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -119,11 +131,26 @@ impl RequestSupervisor {
             completed: false,
         };
         let deadline = Instant::now() + self.limits.timeout;
-        let response = self.dispatch(req, route.nats_subject, deadline).await;
-        lease.reply(response)
+        let dispatch_authority = authority.clone();
+        tokio::select! {
+            biased;
+            _ = authority.changed() => {
+                drop(lease);
+                StatusCode::SERVICE_UNAVAILABLE.into_response()
+            }
+            response = self.dispatch(req, route.nats_subject, deadline, dispatch_authority) => {
+                lease.reply(response, authority)
+            }
+        }
     }
 
-    async fn dispatch(&self, req: Request, subject: String, deadline: Instant) -> Response {
+    async fn dispatch(
+        &self,
+        req: Request,
+        subject: String,
+        deadline: Instant,
+        authority: watch::Receiver<bool>,
+    ) -> Response {
         let metadata_bytes = req.uri().to_string().len()
             + req.method().as_str().len()
             + req
@@ -179,6 +206,9 @@ impl RequestSupervisor {
         if Instant::now() >= deadline {
             return StatusCode::GATEWAY_TIMEOUT.into_response();
         }
+        if !*authority.borrow() {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         let reply = match self
             .broker
             .request(subject, serialized.bytes, deadline)
@@ -218,12 +248,25 @@ struct RequestLease {
 }
 
 impl RequestLease {
-    fn reply(mut self, response: Response) -> Response {
+    fn reply(mut self, response: Response, authority: watch::Receiver<bool>) -> Response {
         self.completed = true;
         let (parts, body) = response.into_parts();
-        let body = stream::unfold((body.into_data_stream(), self), |(mut body, lease)| async {
-            body.next().await.map(|chunk| (chunk, (body, lease)))
-        });
+        let body = stream::unfold(
+            Some((body.into_data_stream(), self, authority)),
+            |state| async {
+                let (mut body, mut lease, mut authority) = state?;
+                tokio::select! {
+                    biased;
+                    _ = authority.changed() => {
+                        lease.completed = false;
+                        Some((Err(axum::Error::new(io::Error::other("configuration authority lost"))), None))
+                    }
+                    chunk = body.next() => {
+                        chunk.map(|chunk| (chunk, Some((body, lease, authority))))
+                    }
+                }
+            },
+        );
         Response::from_parts(parts, Body::from_stream(body))
     }
 }

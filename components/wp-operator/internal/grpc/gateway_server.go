@@ -84,7 +84,17 @@ func (s *GatewayServer) PushRouteUpdate(stream grpc.BidiStreamingServer[gateway.
 		log.Info("gateway disconnected", "gateway_id", gatewayID)
 	}()
 
-	for batch := range ch {
+	for {
+		var batch *routestore.RouteUpdateBatch
+		select {
+		case <-stream.Context().Done():
+			return context.Cause(stream.Context())
+		case next, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			batch = next
+		}
 		protoUpdates := make([]*gateway.RouteUpdate, len(batch.Updates))
 		for i, u := range batch.Updates {
 			protoUpdates[i] = &gateway.RouteUpdate{
@@ -110,9 +120,6 @@ func (s *GatewayServer) PushRouteUpdate(stream grpc.BidiStreamingServer[gateway.
 			return recvErr
 		}
 	}
-
-	// Channel closed by slow-gateway eviction in BroadcastUpdate; gateway should reconnect.
-	return nil
 }
 
 func routeToProto(r *routestore.RouteConfig) *gateway.RouteConfig {

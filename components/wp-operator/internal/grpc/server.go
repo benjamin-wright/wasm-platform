@@ -83,7 +83,17 @@ func (s *Server) PushIncrementalUpdate(stream grpc.BidiStreamingServer[configsyn
 		log.Info("host disconnected", "host_id", hostID)
 	}()
 
-	for update := range ch {
+	for {
+		var update *configsync.IncrementalConfig
+		select {
+		case <-stream.Context().Done():
+			return context.Cause(stream.Context())
+		case next, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			update = next
+		}
 		req := &configsync.IncrementalUpdateRequest{
 			TargetHostId:      hostID,
 			IncrementalConfig: update,
@@ -98,7 +108,4 @@ func (s *Server) PushIncrementalUpdate(stream grpc.BidiStreamingServer[configsyn
 			return recvErr
 		}
 	}
-
-	// Channel closed by slow-host eviction in BroadcastUpdate; host should reconnect.
-	return nil
 }

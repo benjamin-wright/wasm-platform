@@ -84,6 +84,12 @@ The host functions translate WIT `sql.query` / `kv.get` calls into actual client
 
 Execution hosts are deployed as a **Deployment**. The wp-operator pushes configuration via gRPC: full snapshot on startup/desync, incremental deltas ongoing. On each new config, the execution host verifies the pinned OCI manifest, checks the raw module cache by layer digest, and fetches the verified layer on a miss. Every host compiles locally.
 
+Only the elected operator leader publishes initialized configuration. Its gRPC Service selects ready publication endpoints; the webhook Service includes standby endpoints independently of publication readiness. Operator upgrades recreate the Deployment so a previous leader cannot prevent its replacement from becoming ready. A trusted shared execution-host pool may receive every Application's configuration and credentials. Gateway identities receive only routes from configuration sync.
+
+Clients authenticate with projected Kubernetes ServiceAccount tokens for audience `wasm-platform`, requested with a ten-minute lifetime. Kubernetes issues and rotates the pod-bound tokens; clients reopen the projected file for each request. Operator and raw-cache adapters verify them with Kubernetes TokenReview and authorize exact namespace/ServiceAccount identities. Client-provided host or gateway IDs do not grant access. Expired, revoked, wrong-audience or unauthorized tokens are rejected; unavailable authentication fails closed.
+
+Credential-bearing gRPC and raw-cache traffic requires Istio ambient mTLS with explicit workload allowlists. Istiod, CNI and ztunnel must be installed before protected workloads deploy. Istio issues and renews workload certificates under its [certificate lifecycle](https://istio.io/latest/docs/concepts/security/); expired or untrusted identities cannot establish mTLS. Health, webhook and public gateway traffic retain their separate access paths. See the [umbrella chart](../helm/wasm-platform/templates/) for identity, projection and policy declarations.
+
 Scaling targets concurrent invocations (not CPU/memory). A single execution host can run thousands of concurrent WASM instances. HPA with a custom metric or KEDA for event-driven scaling.
 
 **NATS queue groups:** Each execution host replica subscribes via `queue_subscribe` using the topic name as the queue group. NATS delivers each message to exactly one replica in the group, matching the Kafka consumer-group pattern. This prevents duplicate invocations during horizontal scaling and rolling updates. Old replicas that are draining leave the queue group naturally when their NATS connection closes.
@@ -139,6 +145,8 @@ All platform components are deployed from a single Helm chart at `helm/wasm-plat
 `values.yaml` is nested per component (`wpOperator`, `executionHost`, `gateway`, `moduleCache`, `databases`). Workload names are deterministic (e.g. `wp-operator`, not `{{ .Release.Name }}`-prefixed) so component Tiltfiles can address them via `k8s_resource()`. RBAC cluster-scoped resources use `{{ .Release.Name }}-wp-operator` for uniqueness.
 
 The **db-operator** is installed separately as an OCI chart prerequisite in its own `db-operator` namespace. Only its CRs (PostgresDatabase, RedisDatabase, NatsCluster, etc.) are rendered by the umbrella chart, under `templates/databases/`.
+
+Istio ambient is an independent infrastructure prerequisite, installed through [its Tilt definitions](../tilt/istio.Tiltfile). The umbrella chart owns workload enrollment, dedicated ServiceAccounts, TokenReview RBAC, token projections and service authorization policies. The monitoring workload joins ambient to scrape the protected raw-cache port; artifact access still requires an authorized execution-host token.
 
 ### Tilt Layout
 

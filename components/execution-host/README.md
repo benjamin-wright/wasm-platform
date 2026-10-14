@@ -6,6 +6,10 @@ The runtime engine of the wasm platform: receives per-application configuration 
 
 On startup (or desync) the execution host requests a full configuration snapshot from the wp-operator via gRPC. It then maintains a bidirectional stream for incremental deltas. See [`proto/configsync/v1/configsync.proto`](../../proto/configsync/v1/configsync.proto) for the schema. Rust stubs are generated at build time via `build.rs` / `tonic-build`.
 
+The host reads its projected ServiceAccount token from `/var/run/secrets/wasm-platform/token` for every operator or cache request, including after rotation. The token is required at startup and has audience `wasm-platform`. Operator connections and snapshot calls have a ten-second deadline; stream sessions last at most five minutes and reconnect with backoff, including after identity or authority rejection.
+
+Invocation admission requires an authoritative snapshot and authenticated update stream. Loss of sync stops subscriptions, rejects queued work and cancels active invocations and pending replies. Execution capacity remains held through backend cleanup; revoked results are discarded. A fresh snapshot and stream restore admission without retaining a serving grace period.
+
 ## Module Loading
 
 Configuration carries an immutable OCI manifest reference resolved by the operator. The host verifies the manifest digest and its single layer descriptor before querying the raw cache by layer digest. Cache hits and registry downloads must match the declared SHA-256 and binary Wasm envelope. Every host compiles locally; native artifacts are never accepted from the network. Raw-file ORAS artifacts declaring Wasm content can use generic tar layer descriptors; their bytes must still be binary Wasm and are never unpacked.

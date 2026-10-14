@@ -39,6 +39,8 @@ async fn main() -> Result<()> {
     platform_common::logging::install_panic_hook();
 
     let cfg = config::Config::from_env()?;
+    let workload_token = platform_common::identity::ProjectedTokenReader::platform();
+    workload_token.validate().await?;
 
     let nats_conn_info = read_nats_credentials()?;
 
@@ -58,12 +60,18 @@ async fn main() -> Result<()> {
     tokio::spawn(route_sync::run_route_sync_loop(
         cfg.operator_addr.clone(),
         cfg.gateway_id.clone(),
+        workload_token,
         table.clone(),
         synced_tx,
     ));
 
     let header_timeout = cfg.requests.body_read_timeout;
-    let supervisor = Arc::new(RequestSupervisor::new(table, broker, cfg.requests));
+    let supervisor = Arc::new(RequestSupervisor::new(
+        table,
+        broker,
+        cfg.requests,
+        synced_rx.clone(),
+    ));
     let ready_state = ReadyState {
         nats_ready_rx: nats_ready_rx.clone(),
         synced_rx: synced_rx.clone(),

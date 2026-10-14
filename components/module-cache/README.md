@@ -4,6 +4,10 @@ Shared, in-memory storage for verified binary Wasm. Execution hosts verify downl
 
 ## HTTP API
 
+Artifact requests require `Authorization: Bearer <token>`. Kubernetes TokenReview must authenticate audience `wasm-platform` and the `execution-host` ServiceAccount in the cache's `POD_NAMESPACE`; other identities receive `403`, while missing or invalid credentials receive `401`. Authorization precedes artifact body reads and cache access. Review failures return `503`; at most eight reviews run concurrently, each with a three-second deadline, and excess review work receives `429`.
+
+Startup requires `POD_NAMESPACE` and in-cluster Kubernetes API coordinates, CA and ServiceAccount credentials. API credentials are reread for each review. Health and metrics endpoints remain available without artifact authentication.
+
 `GET /modules/{digest}` returns raw Wasm with `Content-Type: application/wasm` (`200`) or a cache miss (`404`). `digest` must be canonical `sha256:` followed by 64 lowercase hexadecimal characters.
 
 `PUT /modules/{digest}` verifies the binary Wasm header and digest before storage (`204`). Repeating the same content is idempotent. Invalid digest syntax returns `400`; non-Wasm or mismatched bytes return `422`. The legacy architecture/version routes are unavailable.

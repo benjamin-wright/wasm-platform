@@ -49,22 +49,27 @@ func TestVerifiedRawWasmCacheAndLocalCompilation(t *testing.T) {
 	g.Expect(module.ModuleRef).To(HaveSuffix("@" + module.ManifestDigest))
 
 	cacheURL := "http://localhost:3002/modules/" + module.WasmDigest
-	var raw []byte
-	g.Eventually(pollContext(t, routeTimeout), func(ctx context.Context) (int, error) {
-		status, body, err := requestHTTP(ctx, testHTTPClient, http.MethodGet, cacheURL, "", nil)
-		raw = body
-		return status, err
-	}, routeTimeout, pollInterval).Should(Equal(http.StatusOK))
+	cacheHeaders := workloadHeaders(t, "execution-host", "wasm-platform")
+	reference := strings.SplitN(strings.TrimPrefix(module.ModuleRef, "oci://"), "/", 2)
+	g.Expect(reference).To(HaveLen(2))
+	repository := strings.SplitN(reference[1], "@", 2)[0]
+	status, raw, err := requestHTTP(t.Context(), testHTTPClient, http.MethodGet,
+		"http://localhost:5001/v2/"+repository+"/blobs/"+module.WasmDigest, "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(status).To(Equal(http.StatusOK))
 	g.Expect(bytes.HasPrefix(raw, []byte{0, 'a', 's', 'm'})).To(BeTrue())
 	g.Expect(fmt.Sprintf("sha256:%x", sha256.Sum256(raw))).To(Equal(module.WasmDigest))
-	status, _, err := requestHTTP(t.Context(), testHTTPClient, http.MethodPut, cacheURL, "\x7fELF untrusted-native-artifact", nil)
+	status, _, err = requestHTTP(t.Context(), testHTTPClient, http.MethodPut, cacheURL, string(raw), cacheHeaders)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(status).To(Equal(http.StatusNoContent))
+	status, _, err = requestHTTP(t.Context(), testHTTPClient, http.MethodPut, cacheURL, "\x7fELF untrusted-native-artifact", cacheHeaders)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(status).To(Equal(http.StatusUnprocessableEntity))
-	status, body, err := requestHTTP(t.Context(), testHTTPClient, http.MethodGet, cacheURL, "", nil)
+	status, body, err := requestHTTP(t.Context(), testHTTPClient, http.MethodGet, cacheURL, "", cacheHeaders)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(status).To(Equal(http.StatusOK))
 	g.Expect(body).To(Equal(raw))
-	status, _, err = requestHTTP(t.Context(), testHTTPClient, http.MethodGet, cacheURL+"/aarch64/42", "", nil)
+	status, _, err = requestHTTP(t.Context(), testHTTPClient, http.MethodGet, cacheURL+"/aarch64/42", "", cacheHeaders)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(status).To(Equal(http.StatusNotFound))
 

@@ -81,7 +81,7 @@ func TestInitialAcksDoNotLogFreeFormMessages(t *testing.T) {
 	})
 }
 
-func newLoggedGRPCServer(t *testing.T, register func(*grpc.Server)) (context.Context, *grpc.ClientConn, *observer.ObservedLogs) {
+func newLoggedGRPCServer(t *testing.T, register func(*grpc.Server), options ...grpc.ServerOption) (context.Context, *grpc.ClientConn, *observer.ObservedLogs) {
 	t.Helper()
 	core, logs := observer.New(zap.InfoLevel)
 	previousLogger := ctrl.Log
@@ -89,7 +89,7 @@ func newLoggedGRPCServer(t *testing.T, register func(*grpc.Server)) (context.Con
 	t.Cleanup(func() { ctrl.Log = previousLogger })
 
 	listener := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
+	server := grpc.NewServer(options...)
 	register(server)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {

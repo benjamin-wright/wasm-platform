@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use platform_common::artifacts::{MAX_WASM_BYTES, Sha256Digest};
+use platform_common::identity::ProjectedTokenReader;
 
 const CACHE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -9,9 +10,15 @@ const CACHE_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct ModuleCacheClient {
     base_url: reqwest::Url,
     client: reqwest::Client,
+    token: ProjectedTokenReader,
 }
 
 impl ModuleCacheClient {
+    #[cfg(test)]
+    pub(crate) fn set_token_reader(&mut self, token: ProjectedTokenReader) {
+        self.token = token;
+    }
+
     pub fn new(base_url: String) -> Result<Self> {
         let mut base_url = reqwest::Url::parse(&base_url)
             .map_err(|_| anyhow::anyhow!("invalid module-cache URL configuration"))?;
@@ -30,9 +37,14 @@ impl ModuleCacheClient {
         let client = reqwest::Client::builder()
             .timeout(CACHE_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .build()
             .map_err(|_| anyhow::anyhow!("module-cache client configuration failed"))?;
-        Ok(Self { base_url, client })
+        Ok(Self {
+            base_url,
+            client,
+            token: ProjectedTokenReader::platform(),
+        })
     }
 
     fn url(&self, digest: &Sha256Digest) -> Result<reqwest::Url> {
@@ -45,8 +57,9 @@ impl ModuleCacheClient {
     pub async fn get(&self, digest: &Sha256Digest) -> Result<Option<Vec<u8>>> {
         tokio::time::timeout(CACHE_TIMEOUT, async {
             let response = self
-                .client
-                .get(self.url(digest)?)
+                .token
+                .http_request(self.client.get(self.url(digest)?))
+                .await?
                 .send()
                 .await
                 .map_err(|error| {
@@ -71,10 +84,14 @@ impl ModuleCacheClient {
         }
         tokio::time::timeout(CACHE_TIMEOUT, async {
             let response = self
-                .client
-                .put(self.url(digest)?)
-                .header(reqwest::header::CONTENT_TYPE, "application/wasm")
-                .body(wasm)
+                .token
+                .http_request(
+                    self.client
+                        .put(self.url(digest)?)
+                        .header(reqwest::header::CONTENT_TYPE, "application/wasm")
+                        .body(wasm),
+                )
+                .await?
                 .send()
                 .await
                 .map_err(|error| {
@@ -119,6 +136,14 @@ mod tests {
         routing::get,
     };
 
+    struct TestTokenFile(std::path::PathBuf);
+
+    impl Drop for TestTokenFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     fn assert_safe_error(error: &anyhow::Error) {
         let diagnostic = format!("{error:#}\n{error:?}");
         assert_eq!(error.chain().count(), 1, "{diagnostic}");
@@ -143,11 +168,19 @@ mod tests {
     async fn server(router: Router) -> (ModuleCacheClient, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        (
-            ModuleCacheClient::new(format!("http://{addr}")).unwrap(),
-            server,
-        )
+        let mut client = ModuleCacheClient::new(format!("http://{addr}")).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "cache-client-{}-{}.token",
+            std::process::id(),
+            addr.port()
+        ));
+        tokio::fs::write(&path, "HOST_TOKEN").await.unwrap();
+        client.token = ProjectedTokenReader::new(&path);
+        let server = tokio::spawn(async move {
+            let _token_file = TestTokenFile(path);
+            axum::serve(listener, router).await.unwrap();
+        });
+        (client, server)
     }
 
     fn digest() -> Sha256Digest {

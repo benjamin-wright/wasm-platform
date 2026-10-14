@@ -1,6 +1,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use platform_common::identity::{
+    ProjectedTokenReader, RPC_TIMEOUT, SYNC_SESSION_TIMEOUT, operator_channel,
+};
 
 use crate::route_table::{RouteEntry, RouteTable};
 
@@ -12,17 +15,28 @@ use gateway::{FullRoutesRequest, RouteUpdateAck, gateway_routes_client::GatewayR
 
 /// Loops forever: fetches a full route snapshot then maintains the incremental
 /// update stream.  On any error or clean stream close, backs off and retries.
-/// `synced_tx` is set to `true` after the first successful full snapshot and
-/// back to `false` while reconnecting.
+/// `synced_tx` is true only after an authoritative snapshot and authenticated
+/// stream registration; reconnecting revokes admission.
 pub async fn run_route_sync_loop(
     addr: String,
     gateway_id: String,
+    token: ProjectedTokenReader,
     table: RouteTable,
     synced_tx: tokio::sync::watch::Sender<bool>,
 ) {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_route_sync(&addr, &gateway_id, &table, &synced_tx).await {
+        let result = tokio::time::timeout(
+            SYNC_SESSION_TIMEOUT,
+            run_route_sync(&addr, &gateway_id, &token, &table, &synced_tx),
+        )
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("route sync session expired")));
+        if *synced_tx.borrow() {
+            backoff = Duration::from_secs(1);
+        }
+        let _ = synced_tx.send(false);
+        match result {
             Ok(()) => {
                 tracing::warn!("route sync stream closed; reconnecting");
                 backoff = Duration::from_secs(1);
@@ -33,7 +47,6 @@ pub async fn run_route_sync_loop(
                     retry_after_secs = backoff.as_secs(),
                     "route sync failed; reconnecting"
                 );
-                let _ = synced_tx.send(false);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
@@ -46,15 +59,16 @@ pub async fn run_route_sync_loop(
 async fn run_route_sync(
     addr: &str,
     gateway_id: &str,
+    token: &ProjectedTokenReader,
     table: &RouteTable,
     synced_tx: &tokio::sync::watch::Sender<bool>,
 ) -> Result<()> {
-    fetch_full_routes(addr.to_string(), gateway_id.to_string(), table).await?;
-    let _ = synced_tx.send(true);
+    fetch_full_routes(addr.to_string(), gateway_id.to_string(), token, table).await?;
 
     tracing::info!("opening incremental route update stream");
-    let mut client = GatewayRoutesClient::connect(addr.to_string())
+    let mut client = operator_channel(addr)
         .await
+        .map(GatewayRoutesClient::new)
         .map_err(|_| anyhow::anyhow!("route update connection failed"))?;
     tracing::info!("gRPC client connected for route updates");
 
@@ -69,7 +83,7 @@ async fn run_route_sync(
 
     tracing::info!("calling push_route_update RPC");
     let mut update_stream = client
-        .push_route_update(ack_stream)
+        .push_route_update(token.grpc_request(ack_stream, SYNC_SESSION_TIMEOUT).await?)
         .await
         .map_err(|error| anyhow::anyhow!("route update RPC failed ({:?})", error.code()))?
         .into_inner();
@@ -91,6 +105,7 @@ async fn run_route_sync(
         return Ok(());
     }
     tracing::info!("initial gateway ack sent to mpsc channel");
+    let _ = synced_tx.send(true);
 
     tracing::info!("waiting for first route update message");
     while let Some(request) = update_stream
@@ -139,15 +154,28 @@ async fn run_route_sync(
 /// Connects to the operator's gRPC endpoint, requests a full route snapshot,
 /// and applies it to the table.  Returns an error if the connection or RPC
 /// fails so that the process retries rather than silently running unconfigured.
-async fn fetch_full_routes(addr: String, gateway_id: String, table: &RouteTable) -> Result<()> {
+async fn fetch_full_routes(
+    addr: String,
+    gateway_id: String,
+    token: &ProjectedTokenReader,
+    table: &RouteTable,
+) -> Result<()> {
     tracing::info!("connecting to operator for full routes");
-    let mut client = GatewayRoutesClient::connect(addr)
+    let mut client = operator_channel(&addr)
         .await
+        .map(GatewayRoutesClient::new)
         .map_err(|_| anyhow::anyhow!("route snapshot connection failed"))?;
     let response = client
-        .request_full_routes(FullRoutesRequest {
-            gateway_id: gateway_id.clone(),
-        })
+        .request_full_routes(
+            token
+                .grpc_request(
+                    FullRoutesRequest {
+                        gateway_id: gateway_id.clone(),
+                    },
+                    RPC_TIMEOUT,
+                )
+                .await?,
+        )
         .await
         .map_err(|error| anyhow::anyhow!("route snapshot RPC failed ({:?})", error.code()))?
         .into_inner();
@@ -188,6 +216,7 @@ mod tests {
             fetch_full_routes(
                 "http://user:OPERATOR_PASSWORD@[invalid?token=OPERATOR_TOKEN".to_string(),
                 "gateway".to_string(),
+                &ProjectedTokenReader::platform(),
                 &table,
             ),
         )

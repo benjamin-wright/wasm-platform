@@ -1,7 +1,9 @@
-def k8s_namespace(name):
-  k8s_yaml(blob(
-    'apiVersion: v1\n' +
-    'kind: Namespace\n' +
-    'metadata:\n' +
-    '  name: ' + name + '\n'
-  ))
+def k8s_namespace(name, labels={}):
+    k8s_yaml(encode_yaml({
+        'apiVersion': 'v1',
+        'kind': 'Namespace',
+        'metadata': {
+            'name': name,
+            'labels': labels,
+        },
+    }))

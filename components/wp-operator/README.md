@@ -240,6 +240,12 @@ gRPC `ConfigSync` service for execution hosts. Schema: [`proto/configsync/v1/con
 
 The operator also exposes a `GatewayRoutes` service on the same gRPC port for the gateway's route table sync.
 
+Both services require `authorization: Bearer <token>` metadata with a short-lived projected Kubernetes ServiceAccount token for audience `wasm-platform`. TokenReview verifies the token and audience. Only `EXECUTION_HOST_SERVICE_ACCOUNT` in `POD_NAMESPACE` can receive credential-bearing ConfigSync data; only `GATEWAY_SERVICE_ACCOUNT` in that namespace can receive GatewayRoutes data. The two accounts must differ. Client-supplied host and gateway IDs do not grant access.
+
+Snapshots and streams return `Unavailable` until the elected leader has processed its startup Application inventory. Pending startup provisioning or reconciliation failures keep publication unready. `/readyz` reflects that authority; standby operators keep their admission webhook available through its separate Service. Leadership loss closes active streams and rejects new configuration requests.
+
+Streams close at token expiry or after five minutes, and TokenReview rechecks active tokens every 30 seconds with a five-second API deadline. Clients must reconnect with their current projected token. Authentication failures return fixed error messages without token or API-response details. In-cluster transport is protected by the platform's Istio ambient strict mTLS policy.
+
 ## Module Registry Policy
 
 `APPROVED_REGISTRIES` is required and lists exact lowercase registry authorities (`hostname[:port]`), separated by commas without whitespace. Module pulls use anonymous HTTPS requests with certificate validation. `LOCAL_PLAINTEXT_REGISTRIES` optionally lists an approved subset using `localhost`, a `.localhost` hostname, or a loopback IP; those registries use HTTP. Redirects and delegated authentication are rejected.

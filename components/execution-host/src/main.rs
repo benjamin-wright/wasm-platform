@@ -54,6 +54,8 @@ async fn main() -> Result<()> {
         )
         .init();
     platform_common::logging::install_panic_hook();
+    let workload_token = platform_common::identity::ProjectedTokenReader::platform();
+    workload_token.validate().await?;
 
     let mut wasm_config = wasmtime::Config::new();
     wasm_config.wasm_component_model(true);
@@ -189,6 +191,7 @@ async fn main() -> Result<()> {
     tokio::spawn(config_sync::run_config_sync_loop(
         addr,
         host_id,
+        workload_token,
         app_registry.clone(),
         module_registry.clone(),
         metrics_registry.clone(),
@@ -213,7 +216,7 @@ async fn main() -> Result<()> {
     ));
     let ready_state = ReadyState {
         nats_ready_rx,
-        synced_rx,
+        synced_rx: synced_rx.clone(),
     };
     let health_app = Router::new()
         .route("/healthz", get(health::healthz_handler))
@@ -245,6 +248,7 @@ async fn main() -> Result<()> {
             module_registry,
             metrics_registry,
             client_rx,
+            synced_rx,
         },
         shutdown_tx.subscribe(),
     );

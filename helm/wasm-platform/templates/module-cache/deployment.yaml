@@ -14,8 +14,10 @@ spec:
   template:
     metadata:
       labels:
+        istio.io/dataplane-mode: ambient
         {{- include "wasm-platform.module-cache.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: module-cache
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -41,6 +43,10 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: RUST_LOG
               value: {{ .Values.moduleCache.logLevel | quote }}
           resources:

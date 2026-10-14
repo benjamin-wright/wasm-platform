@@ -1,0 +1,37 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: module-cache
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wasm-platform.module-cache.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: module-cache
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  mtls:
+    mode: STRICT
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: module-cache
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wasm-platform.module-cache.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: module-cache
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            serviceAccounts:
+              - {{ printf "%s/execution-host" .Release.Namespace | quote }}
+              - {{ printf "%s/monitoring" .Release.Namespace | quote }}
+      to:
+        - operation:
+            ports: ["3000"]

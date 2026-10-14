@@ -254,11 +254,25 @@ func cancellationHostSnapshots(t *testing.T, ctx context.Context) map[string]can
 	return hosts
 }
 
-func cancellationMetricTotal(t *testing.T, hosts map[string]cancellationHostSnapshot, name string) float64 {
+func cancellationMetricTotal(t *testing.T, hosts map[string]cancellationHostSnapshot, name string, labels ...string) float64 {
 	t.Helper()
 	var total float64
 	for pod, host := range hosts {
-		value, err := metricSum(host.metrics, name)
+		metrics := host.metrics
+		if len(labels) > 0 {
+			var selected []string
+			for _, line := range strings.Split(metrics, "\n") {
+				matches := true
+				for _, label := range labels {
+					matches = matches && strings.Contains(line, label)
+				}
+				if matches {
+					selected = append(selected, line)
+				}
+			}
+			metrics = strings.Join(selected, "\n")
+		}
+		value, err := metricSum(metrics, name)
 		if err != nil {
 			t.Fatalf("execution-host %s: %v", pod, err)
 		}

@@ -23,6 +23,7 @@ import (
 	dboperator "github.com/benjamin-wright/db-operator/pkg/api/v1alpha1"
 	wasmplatformv1alpha1 "github.com/benjamin-wright/wasm-platform/wp-operator/api/v1alpha1"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/artifacts"
+	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/authority"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/configstore"
 	configsync "github.com/benjamin-wright/wasm-platform/wp-operator/internal/grpc/configsync"
 	"github.com/benjamin-wright/wasm-platform/wp-operator/internal/routestore"
@@ -84,6 +85,7 @@ type ApplicationReconciler struct {
 	RouteStore *routestore.Store
 	Config     Config
 	Artifacts  artifacts.Resolver
+	Authority  *authority.Authority
 }
 
 func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -92,13 +94,18 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var app wasmplatformv1alpha1.Application
 	if err := r.Get(ctx, req.NamespacedName, &app); err != nil {
 		if apierrors.IsNotFound(err) {
+			if r.Authority != nil {
+				r.Authority.Reconciled(req.NamespacedName, "", 0)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
 	if !app.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &app)
+		result, err := r.reconcileDelete(ctx, &app)
+		r.recordInitialized(&app, result, err)
+		return result, err
 	}
 
 	if !controllerutil.ContainsFinalizer(&app, applicationFinalizer) {
@@ -115,7 +122,14 @@ func (r *ApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.setReadyCondition(&app, metav1.ConditionFalse, "ReconcileError", err.Error())
 		_ = r.Status().Update(ctx, &app)
 	}
+	r.recordInitialized(&app, result, err)
 	return result, err
+}
+
+func (r *ApplicationReconciler) recordInitialized(app *wasmplatformv1alpha1.Application, result ctrl.Result, err error) {
+	if r.Authority != nil && err == nil && !result.Requeue && result.RequeueAfter == 0 {
+		r.Authority.Reconciled(client.ObjectKeyFromObject(app), app.UID, app.Generation)
+	}
 }
 
 func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {

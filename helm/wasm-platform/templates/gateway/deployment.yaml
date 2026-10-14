@@ -14,8 +14,11 @@ spec:
   template:
     metadata:
       labels:
+        istio.io/dataplane-mode: ambient
         {{- include "wasm-platform.gateway.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -40,6 +43,7 @@ spec:
             - name: RUST_LOG
               value: {{ .Values.gateway.logLevel | quote }}
           volumeMounts:
+            {{- include "wasm-platform.identity.mount" . | nindent 12 }}
             - name: nats-credentials
               mountPath: /var/run/secrets/nats
               readOnly: true
@@ -70,6 +74,7 @@ spec:
             capabilities:
               drop: ["ALL"]
       volumes:
+        {{- include "wasm-platform.identity.volume" . | nindent 8 }}
         - name: nats-credentials
           secret:
             secretName: {{ .Values.gateway.nats.secretName }}

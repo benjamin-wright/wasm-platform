@@ -2,6 +2,15 @@ load('../../tilt/ci.Tiltfile', 'CI_MODE')
 
 def e2e_tests(resource_deps=[]):
     local_resource(
+        'identity: network-tests',
+        cmd = 'python3 tests/identity/network_test.py',
+        deps = ['tests/identity', 'helm/wasm-platform/templates/module-cache/mesh.yaml', 'helm/wasm-platform/templates/wp-operator/mesh.yaml'],
+        resource_deps = ['istio-ready', 'module-cache', 'wp-operator'],
+        labels = ['tests'],
+        auto_init = CI_MODE,
+        trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,
+    )
+    local_resource(
         'e2e: format',
         cmd = 'gofmt -w tests/e2e/*.go',
         labels = ['tests'],
@@ -17,9 +26,9 @@ def e2e_tests(resource_deps=[]):
     )
     local_resource(
         'e2e-tests',
-        cmd = 'cd tests/e2e && GOWORK=off go vet -mod=readonly -tags integration ./... && GOWORK=off go test -mod=readonly -tags integration -count=1 -timeout=15m -v ./...',
-        deps = ['tests/e2e'],
-        resource_deps = ['demo-app', 'counter-app', 'log-error', 'sql-hello', 'sql-broken-migrations', 'cancellation-app'] + resource_deps + (['ci: record-revision'] if CI_MODE else []),
+        cmd = 'cd components/wp-operator && GOWORK=off go test -mod=readonly -tags integration -count=1 -timeout=1m -run "^TestConfigurationIdentity$" ./internal/integration && cd ../../tests/e2e && GOWORK=off go vet -mod=readonly -tags integration ./... && GOWORK=off go test -mod=readonly -tags integration -count=1 -timeout=15m -v ./...',
+        deps = ['tests/e2e', 'components/wp-operator/internal/integration/identity_test.go'],
+        resource_deps = ['demo-app', 'counter-app', 'log-error', 'sql-hello', 'sql-broken-migrations', 'cancellation-app', 'identity: network-tests'] + resource_deps + (['ci: record-revision'] if CI_MODE else []),
         labels = ['tests'],
         auto_init = CI_MODE,
         trigger_mode = TRIGGER_MODE_AUTO if CI_MODE else TRIGGER_MODE_MANUAL,

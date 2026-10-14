@@ -3,15 +3,19 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, FromRequest, Path, Request, State},
     http::{StatusCode, header::CONTENT_TYPE},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
 use platform_common::{
     artifacts::{CACHE_MAX_BYTES, CACHE_MAX_ENTRIES, MAX_WASM_BYTES, Sha256Digest, verify_wasm},
     health,
+    identity::{IdentityError, MAX_TOKEN_BYTES, ServiceAccountReviewer},
 };
 use std::{
     collections::{HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -23,6 +27,65 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 const MAX_UPLOADS: usize = 2;
 const MAX_RESPONSES: usize = 2;
 const BODY_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_AUTH_REQUESTS: usize = 8;
+
+pub(crate) trait ArtifactAuthorizer: Send + Sync {
+    fn authorize<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), IdentityError>> + Send + 'a>>;
+}
+
+impl ArtifactAuthorizer for ServiceAccountReviewer {
+    fn authorize<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), IdentityError>> + Send + 'a>> {
+        Box::pin(ServiceAccountReviewer::authorize(self, token))
+    }
+}
+
+#[derive(Clone)]
+struct Authentication {
+    authorizer: Arc<dyn ArtifactAuthorizer>,
+    requests: Arc<Semaphore>,
+}
+
+async fn authenticate(
+    State(auth): State<Authentication>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut values = request
+        .headers()
+        .get_all(axum::http::header::AUTHORIZATION)
+        .iter();
+    let token = values
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let Some(token) = token.filter(|token| !token.is_empty() && token.len() <= MAX_TOKEN_BYTES)
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if values.next().is_some() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(permit) = auth.requests.try_acquire() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    let result = tokio::time::timeout(AUTH_TIMEOUT, auth.authorizer.authorize(token)).await;
+    drop(permit);
+    match result {
+        Ok(Ok(())) => next.run(request).await,
+        Ok(Err(IdentityError::Forbidden)) => StatusCode::FORBIDDEN.into_response(),
+        Ok(Err(IdentityError::Unauthenticated | IdentityError::InvalidToken)) => {
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+        _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
 
 struct OwnedResponse {
     bytes: Bytes,
@@ -130,9 +193,14 @@ impl CacheState {
     }
 }
 
-pub(crate) fn router(state: CacheState) -> Router {
+pub(crate) fn router(state: CacheState, authorizer: Arc<dyn ArtifactAuthorizer>) -> Router {
+    let auth = Authentication {
+        authorizer,
+        requests: Arc::new(Semaphore::new(MAX_AUTH_REQUESTS)),
+    };
     Router::new()
         .route("/modules/{digest}", get(get_module).put(put_module))
+        .route_layer(middleware::from_fn_with_state(auth, authenticate))
         .route("/healthz", get(health::healthz_handler))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
@@ -270,6 +338,29 @@ mod tests {
     use std::{convert::Infallible, task::Poll};
     use tower::ServiceExt;
 
+    struct TestAuthorizer;
+
+    impl ArtifactAuthorizer for TestAuthorizer {
+        fn authorize<'a>(
+            &'a self,
+            token: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), IdentityError>> + Send + 'a>> {
+            Box::pin(async move {
+                match token {
+                    "HOST_TOKEN" => Ok(()),
+                    "GATEWAY_TOKEN" => Err(IdentityError::Forbidden),
+                    "REVIEW_UNAVAILABLE" => Err(IdentityError::ReviewUnavailable),
+                    "STALLED_REVIEW" => std::future::pending().await,
+                    _ => Err(IdentityError::Unauthenticated),
+                }
+            })
+        }
+    }
+
+    fn router(state: CacheState) -> Router {
+        super::router(state, Arc::new(TestAuthorizer))
+    }
+
     fn wasm(marker: u8) -> Bytes {
         Bytes::from(vec![0, b'a', b's', b'm', 13, 0, 1, 0, 0, 2, 1, marker])
     }
@@ -278,8 +369,84 @@ mod tests {
         Request::builder()
             .method(method)
             .uri(path)
+            .header(axum::http::header::AUTHORIZATION, "Bearer HOST_TOKEN")
             .body(body)
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unauthorized_requests_do_not_poll_bodies_or_touch_artifact_capacity() {
+        let state = CacheState::new();
+        let app = router(state.clone());
+        for (credential, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("Bearer INVALID_TOKEN"), StatusCode::UNAUTHORIZED),
+            (Some("Bearer GATEWAY_TOKEN"), StatusCode::FORBIDDEN),
+            (
+                Some("Bearer REVIEW_UNAVAILABLE"),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            for method in ["GET", "PUT"] {
+                let body = Body::from_stream(futures_util::stream::poll_fn(
+                    |_| -> Poll<Option<Result<Bytes, Infallible>>> {
+                        panic!("authentication rejection polled artifact body");
+                    },
+                ));
+                let mut request = request(method, &path(&wasm(b'a')), body);
+                request
+                    .headers_mut()
+                    .remove(axum::http::header::AUTHORIZATION);
+                if let Some(credential) = credential {
+                    request.headers_mut().insert(
+                        axum::http::header::AUTHORIZATION,
+                        credential.parse().unwrap(),
+                    );
+                }
+                assert_eq!(
+                    app.clone().oneshot(request).await.unwrap().status(),
+                    expected
+                );
+            }
+        }
+        assert!(state.store.lock().await.entries.is_empty());
+        assert_eq!(state.uploads.available_permits(), MAX_UPLOADS);
+        assert_eq!(state.responses.available_permits(), MAX_RESPONSES);
+        assert_eq!(state.metrics.misses.load(Ordering::Relaxed), 0);
+        for route in ["/healthz", "/readyz", "/metrics"] {
+            let mut request = request("GET", route, Body::empty());
+            request.headers_mut().clear();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn authentication_work_is_bounded_and_stalled_reviews_expire() {
+        let state = CacheState::new();
+        let app = router(state.clone());
+        let mut stalled = Vec::new();
+        for _ in 0..MAX_AUTH_REQUESTS {
+            let mut request = request("PUT", &path(&wasm(b'a')), Body::empty());
+            request.headers_mut().insert(
+                axum::http::header::AUTHORIZATION,
+                "Bearer STALLED_REVIEW".parse().unwrap(),
+            );
+            stalled.push(tokio::spawn(app.clone().oneshot(request)));
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(put(&app, wasm(b'b')).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(state.uploads.available_permits(), MAX_UPLOADS);
+        tokio::time::advance(AUTH_TIMEOUT).await;
+        for task in stalled {
+            assert_eq!(
+                task.await.unwrap().unwrap().status(),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+        }
+        assert_eq!(put(&app, wasm(b'b')).await, StatusCode::NO_CONTENT);
     }
 
     fn path(bytes: &[u8]) -> String {

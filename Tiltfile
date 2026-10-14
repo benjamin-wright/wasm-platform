@@ -22,10 +22,12 @@ load('./examples/cancellation-app/Tiltfile', 'cancellation_app')
 load('./tests/e2e/Tiltfile', 'e2e_tests')
 load('./tilt/workspace-deps.Tiltfile', 'workspace_deps')
 load('./tilt/cert-manager.Tiltfile', 'cert_manager')
+load('./tilt/istio.Tiltfile', 'istio')
 
-k8s_namespace(namespace)
+k8s_namespace(namespace, labels={'istio.io/dataplane-mode': 'ambient'})
 db_operator(namespace = 'db-operator')
 cert_manager()
+istio()
 
 workspace_deps()
 
@@ -38,10 +40,10 @@ k8s_yaml(helm(
 ))
 
 wp_databases(namespace=namespace)
-wp_operator()
+wp_operator(resource_deps=['istio-ready'])
 execution_host(resource_deps=['wp-operator'])
 gateway(resource_deps=['wp-operator'])
-module_cache()
+module_cache(resource_deps=['istio-ready'])
 monitoring(namespace=namespace)
 
 

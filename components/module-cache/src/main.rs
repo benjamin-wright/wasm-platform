@@ -1,7 +1,11 @@
 mod cache;
 
 use anyhow::Result;
-use std::{future::IntoFuture, sync::atomic::Ordering, time::Duration};
+use std::{
+    future::IntoFuture,
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 use tracing_subscriber::prelude::*;
 
 #[tokio::main]
@@ -16,10 +20,12 @@ async fn main() -> Result<()> {
         .init();
     platform_common::logging::install_panic_hook();
 
+    let authorizer =
+        platform_common::identity::ServiceAccountReviewer::in_cluster("execution-host").await?;
     let state = cache::CacheState::new();
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let server = axum::serve(listener, cache::router(state.clone()))
+    let server = axum::serve(listener, cache::router(state.clone(), Arc::new(authorizer)))
         .with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
         })

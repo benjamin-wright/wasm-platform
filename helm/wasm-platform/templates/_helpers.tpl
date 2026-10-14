@@ -8,6 +8,29 @@ app.kubernetes.io/part-of: wasm-platform
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
+{{- define "wasm-platform.identity.mount" -}}
+- name: workload-identity
+  mountPath: /var/run/secrets/wasm-platform
+  readOnly: true
+{{- end }}
+
+{{- define "wasm-platform.identity.volume" -}}
+- name: workload-identity
+  projected:
+    sources:
+      - serviceAccountToken:
+          audience: wasm-platform
+          expirationSeconds: 600
+          path: token
+{{- end }}
+
+{{- define "wasm-platform.artifact-dns.annotations" -}}
+{{- if .Values.artifacts.localPlaintextRegistries }}
+annotations:
+  ambient.istio.io/dns-capture: "false"
+{{- end }}
+{{- end }}
+
 {{/*
 Label set for execution-host resources.
 */}}
