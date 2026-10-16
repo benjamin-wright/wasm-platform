@@ -94,8 +94,11 @@ func TestSyncAuthorityLossCancelsExecutionAndRecovers(t *testing.T) {
 			}
 		}
 		return cancellationMetricTotal(t, after, "wasm_host_dispatch_tasks_finished_total", `outcome="cancelled"`) > finished &&
-			cancellationMetricTotal(t, after, "wasm_host_dispatch_work", `state="tracked"`) == 0
+			cancellationMetricTotal(t, after, "wasm_host_dispatch_work") == 0
 	}, "authority-loss cancellation did not release the actual host execution")
+	if total := cancellationMetricTotal(t, cancellationHostSnapshots(t, t.Context()), "wasm_host_dispatch_accounting_errors_total"); total != 0 {
+		t.Errorf("dispatch accounting errors = %g after authority-loss cancellation; want zero", total)
+	}
 	select {
 	case response := <-completed:
 		if response.err != nil || response.status != http.StatusServiceUnavailable {

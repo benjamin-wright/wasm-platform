@@ -84,7 +84,7 @@ func TestStartupAuthorityWaitsForProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).WithStatusSubresource(app).Build()
-	reconciler := artifactReconciler(c, registry)
+	reconciler := artifactReconciler(&lifecycleClient{Client: c}, registry)
 	reconciler.Config.PostgresCredentialNamespace = "default"
 	publication := authority.New()
 	reconciler.Authority = publication

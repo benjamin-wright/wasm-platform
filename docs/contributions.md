@@ -71,6 +71,8 @@ This runs builds, formatting/static checks, component regressions, tagged operat
 
 The [CI resource definitions](../tilt/ci.Tiltfile) record the Git commit and a fingerprint of tracked and non-ignored untracked source, including local edits. The final check rejects a changed tree; keep source stable during a run. Logs hold the validation results. The ignored `.tilt-ci-revision.json` holds only the temporary fingerprint.
 
+Tilt allows at most two concurrent resource updates. Unit tests, lint, and read-only static checks opt into parallel execution; Cargo commands share the existing build cache and serialize compilation through Cargo's own lock. Formatting, generation, cluster tests, and revision recording/verification remain exclusive. The concurrency limit also caps image builds and deployments at two.
+
 Normal `tilt up` runs component regressions and e2e harness checks on source changes. Cluster tests and lint remain manual. `identity: network-tests` verifies real meshed allowlists and rejection of plaintext bypass before `e2e-tests`; both are part of the local CI gate. In an existing session, record the source baseline, trigger any checks affected by subsequent changes, and trigger the final revision check after validation. Resource dependencies can reuse prior successful checks; the final fingerprint detects source drift but does not force those checks to rerun. Batch mode enables the complete validation set on startup and needs its own Tilt session.
 
 ## Make Targets

@@ -20,6 +20,7 @@ BASELINE_CHECKS = [
 ]
 
 def ci():
+    update_settings(max_parallel_updates=2)
     local_resource(
         'ci: record-revision',
         cmd = 'python3 tilt/check_revision.py record',
@@ -29,6 +30,7 @@ def ci():
     )
     local_resource(
         'ci: static-checks',
+        allow_parallel = True,
         cmd = 'python3 tilt/static_checks.py',
         deps = ['Cargo.toml', 'Cargo.lock', 'components', 'lib', 'examples', 'tests/e2e', 'helm', 'tilt/static_checks.py'],
         resource_deps = ['ci: record-revision'] if CI_MODE else [],

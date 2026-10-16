@@ -338,6 +338,7 @@ impl InvocationSupervisor {
             OwnedJob::Execution(mut job) => {
                 if job.authority_revoked {
                     job.record.set_outcome("cancelled");
+                    drop(job.record);
                     self.metrics.task_reaped("cancelled");
                     return;
                 }
@@ -693,6 +694,15 @@ mod tests {
                 Some(("outcome", "cancelled"))
             ),
             1.0
+        );
+        assert_eq!(metric(&registry, "wasm_host_dispatch_work", None), 0.0);
+        assert_eq!(
+            metric(
+                &registry,
+                "wasm_host_dispatch_accounting_errors_total",
+                None
+            ),
+            0.0
         );
         bounded(supervisor.stop_and_drain()).await;
     }

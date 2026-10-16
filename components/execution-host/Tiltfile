@@ -47,6 +47,7 @@ def execution_host(resource_deps=[]):
 
     local_resource(
         'execution-host: regression-tests',
+        allow_parallel = True,
         cmd = 'cargo test --locked -p platform-common -p execution-host',
         deps = source_deps,
         resource_deps = ['ci: record-revision'] if CI_MODE else [],
@@ -55,6 +56,7 @@ def execution_host(resource_deps=[]):
 
     local_resource(
         'execution-host: lint',
+        allow_parallel = True,
         cmd = 'cargo clippy --locked -p platform-common -p execution-host --all-targets -- -D warnings',
         deps = source_deps,
         resource_deps = ['ci: record-revision'] if CI_MODE else [],

@@ -61,17 +61,23 @@ WASM is sandboxed by default; host functions break that sandbox deliberately. Gu
 
 ### Data Layer
 
-Three shared backing stores, all provisioned by the **[db-operator](https://github.com/benjamin-wright/db-operator)** via CRDs in the platform Helm chart:
+Three backing stores are reconciled by the **[db-operator](https://github.com/benjamin-wright/db-operator)**. The wp-operator provisions shared PostgreSQL and Redis infrastructure on demand; the umbrella Helm chart declares NATS infrastructure.
 
 | Store | Isolation Model |
 |---|---|
-| **PostgreSQL** | Per-app logical database + dedicated user, created by the wp-operator. |
+| **PostgreSQL** | One shared instance per Application namespace, with per-app logical databases and dedicated SQL users. |
 | **Redis** | Single shared instance. Per-app key-prefix isolation (`<namespace>/<app>/`), assigned automatically — no CRD field required. |
 | **NATS** | Single shared instance. Per-app subject isolation (operator-assigned prefixed topics). |
 
-**Connection model:** execution hosts are configured once with shared infrastructure coordinates (`PG_HOST`/`PG_PORT`, `REDIS_URL` env vars). The `ConfigSync` service carries only the per-app delta: database name, username, and password for PostgreSQL. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **private asynchronous connection per host call** — isolation is purely by key prefix, automatically derived from `(namespace, app)`.
+**Connection model:** `ConfigSync` carries per-user PostgreSQL connection URLs and shared Redis connection information. PostgreSQL uses **per-app connection pools** keyed by `(database_name, username)`, lazily initialized. Redis uses a **private asynchronous connection per host call** — isolation is purely by key prefix, automatically derived from `(namespace, app)`.
 
 The host functions translate WIT `sql.query` / `kv.get` calls into actual client calls, keeping WASM modules ignorant of the backing store.
+
+### Data Ownership and Retention
+
+Application namespace/name identifies persistent data: its logical SQL database and KV prefix remain stable across deletion and same-name recreation. Shared PostgreSQL instances, Redis and the execution-host Redis credential have platform scope and no Application owner. They remain until explicit administrator removal; data purge is also an administrator action.
+
+A ResourceInventory identifies one Application UID and owns its ephemeral SQL credential and migration CRs. Recreating an Application gives those CRs fresh identities while reusing its persistent data. The db-operator owns credential Secrets through the corresponding CR UID. Inventory spec is the durable authority for bindings and cleanup obligations; status is reconstructible observation. The inventory has no Application owner reference and its own finalizer, so cleanup can outlive both the Application and individual child CRs. Application deletion waits for verified Kubernetes cleanup by default, with an explicit policy to orphan the inventory and continue cleanup independently. The [operator lifecycle contract](../components/wp-operator/README.md#sql-credential-lifecycle) defines ownership checks, legacy attestation and the limits of downstream SQL revocation.
 
 ### Event Trigger Architecture
 
@@ -118,13 +124,13 @@ flowchart LR
 
 | Component | Language | Responsibility |
 |---|---|---|
-| **WP Operator** | Go | Reconciles `Application` CRDs. Manages per-app PG databases/users. Pushes per-app credentials and config to execution hosts and routes to the gateway via gRPC. Deferred-delete of databases via Redis reference counting with TTL. |
+| **WP Operator** | Go | Reconciles `Application` CRDs, provisions shared infrastructure and per-app SQL bindings, and records resource ownership and cleanup. Pushes credentials and config to execution hosts and routes to the gateway via gRPC. |
 | **Execution Host** | Rust | Syncs config from operator. Loads modules via the module cache. Subscribes to per-app NATS subjects. Executes WASM modules with scoped host functions (SQL, KV, messaging). |
 | **Gateway** | Rust | Translates HTTP requests to NATS request-reply based on operator-pushed route table. Method enforcement, timeout handling. |
 | **Module Cache** | Rust | Stores and serves verified raw Wasm bytes keyed by content digest. |
 | **Token Service** | TBD | Separately scalable service for minting JWT tokens. |
 | **Trigger Layer** | TBD | Cron scheduler dispatching invocation events to NATS. |
-| **Data Layer** | Managed | PostgreSQL, Redis, NATS — all provisioned by [db-operator](https://github.com/benjamin-wright/db-operator) via CRDs. |
+| **Data Layer** | Managed | [db-operator](https://github.com/benjamin-wright/db-operator) reconciles PostgreSQL, Redis and NATS CRs under their platform resource owners. |
 
 ### Invocation Flow (HTTP)
 
@@ -144,7 +150,7 @@ All platform components are deployed from a single Helm chart at `helm/wasm-plat
 
 `values.yaml` is nested per component (`wpOperator`, `executionHost`, `gateway`, `moduleCache`, `databases`). Workload names are deterministic (e.g. `wp-operator`, not `{{ .Release.Name }}`-prefixed) so component Tiltfiles can address them via `k8s_resource()`. RBAC cluster-scoped resources use `{{ .Release.Name }}-wp-operator` for uniqueness.
 
-The **db-operator** is installed separately as an OCI chart prerequisite in its own `db-operator` namespace. Only its CRs (PostgresDatabase, RedisDatabase, NatsCluster, etc.) are rendered by the umbrella chart, under `templates/databases/`.
+The **db-operator** is installed separately as an OCI chart prerequisite in its own `db-operator` namespace. The umbrella chart renders its NATS CRs under `templates/databases/`; the wp-operator creates PostgreSQL and Redis CRs on demand.
 
 Istio ambient is an independent infrastructure prerequisite, installed through [its Tilt definitions](../tilt/istio.Tiltfile). The umbrella chart owns workload enrollment, dedicated ServiceAccounts, TokenReview RBAC, token projections and service authorization policies. The monitoring workload joins ambient to scrape the protected raw-cache port; artifact access still requires an authorized execution-host token.
 
@@ -197,9 +203,9 @@ The operator checks all existing Applications for metric name collisions at reco
 **Decision:**
 
 - **Artifact reference:** `spec.sql.migrations.artifact` (ORAS artifact reference) plus `spec.sql.migrations.targetRevision` (numeric migration ID) at the Application level. The artifact is a tar+gzip of paired `.sql` files (`<id>-<name>-apply.sql` / `<id>-<name>-rollback.sql`) with media type `application/vnd.db-operator.migrations.v1.tar+gzip`.
-- **Lifecycle owner:** The db-operator owns the migrations runner via the `PostgresMigrationSet` CRD. The wp-operator creates one `PostgresMigrationSet` per Application (named `wasm-<namespace>-<app_name>-migrations`) and patches `spec.artifact` / `spec.targetRevision` when they change. The db-operator pulls the artifact, runs the SQL files inside an advisory-locked Job, and reports `Pending` / `Running` / `Ready` / `Failed` on the set's status. The migrations role is owned and rotated entirely inside the db-operator — the wp-operator does not provision a separate `migrations` `PostgresCredential`.
+- **Lifecycle owner:** The db-operator owns the migrations runner via the `PostgresMigrationSet` CRD. The wp-operator owns one set per Application UID and patches `spec.artifact` / `spec.targetRevision` when they change. The db-operator pulls the artifact, runs the SQL files inside an advisory-locked Job, and reports `Pending` / `Running` / `Ready` / `Failed` on the set's status. The migrations role is owned and rotated entirely inside the db-operator — the wp-operator does not provision a separate `migrations` `PostgresCredential`.
 - **Activation gate:** The wp-operator does not push an `ApplicationConfig` to execution hosts until the `PostgresMigrationSet` reaches `Ready` phase. Applications without `spec.sql.migrations` are unaffected.
-- **Failure model:** If the migration runner fails, the set enters `Failed` phase. The wp-operator surfaces `MigrationFailed: True` on the Application status (with the failure message copied from the set's status conditions) and does not push config. No traffic flows. Recovery is by updating `spec.sql.migrations.artifact` (push a new immutable tag) or `spec.sql.migrations.targetRevision`; both trigger a fresh run via the same `PostgresMigrationSet`.
+- **Failure model:** If the migration runner fails, the set enters `Failed` phase. The wp-operator sets Application `Ready: False` with reason `MigrationFailed` and withholds the desired configuration. Inspect the set's status conditions for details. Previously published configuration can continue serving. Recovery is by updating `spec.sql.migrations.artifact` (push a new immutable tag) or `spec.sql.migrations.targetRevision`; both trigger a fresh run via the same `PostgresMigrationSet`.
 - **Rollback:** Bidirectional in principle (rollback files are required by the file-pair contract), but not yet wired through the platform — `targetRevision` is intended as monotonically increasing for v1alpha1. Forward-correcting SQL is the supported recovery path.
 
 ---

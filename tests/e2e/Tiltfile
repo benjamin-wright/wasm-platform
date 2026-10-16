@@ -19,6 +19,7 @@ def e2e_tests(resource_deps=[]):
     )
     local_resource(
         'e2e: harness-tests',
+        allow_parallel = True,
         cmd = 'cd tests/e2e && GOWORK=off go vet -mod=readonly ./... && GOWORK=off go test -mod=readonly -count=1 -timeout=1m ./...',
         deps = ['tests/e2e'],
         resource_deps = ['ci: record-revision'] if CI_MODE else [],

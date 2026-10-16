@@ -195,6 +195,12 @@ type FunctionSpec struct {
 //
 // +kubebuilder:validation:XValidation:rule="!has(self.sql) || !has(self.sql.users) || self.sql.users.size() == 0 || self.functions.all(f, !has(f.sqlUser) || self.sql.users.exists(u, u.name == f.sqlUser))",message="each function's sqlUser must reference a user name defined in spec.sql.users"
 type ApplicationSpec struct {
+	// ResourceCleanupPolicy controls whether deletion waits or hands cleanup to the inventory.
+	// +optional
+	// +kubebuilder:default=Wait
+	// +kubebuilder:validation:Enum=Wait;OrphanInventory
+	ResourceCleanupPolicy ResourceCleanupPolicy `json:"resourceCleanupPolicy,omitempty"`
+
 	// Functions is the list of deployable functions in this Application.
 	// Each function has its own module and trigger.
 	// +kubebuilder:validation:Required
@@ -246,6 +252,15 @@ type ResolvedModuleStatus struct {
 
 // ApplicationStatus defines the observed state of an Application.
 type ApplicationStatus struct {
+	// ResourceInventory is a derived summary of the authoritative ResourceInventory spec.
+	// +optional
+	// +kubebuilder:validation:MaxItems=128
+	// +listType=map
+	// +listMapKey=kind
+	// +listMapKey=namespace
+	// +listMapKey=name
+	ResourceInventory []ResourceBinding `json:"resourceInventory,omitempty"`
+
 	// ResolvedModules contains only the current desired generation's module identities.
 	// +optional
 	// +kubebuilder:validation:MaxItems=50

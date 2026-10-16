@@ -6,10 +6,8 @@ import (
 	"net/url"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -80,6 +78,7 @@ type Config struct {
 // +kubebuilder:rbac:groups=db-operator.benjamin-wright.github.com,resources=rediscredentials,verbs=get;list;watch;create;update;patch;delete
 type ApplicationReconciler struct {
 	client.Client
+	APIReader  client.Reader
 	Scheme     *runtime.Scheme
 	Store      *configstore.Store
 	RouteStore *routestore.Store
@@ -135,51 +134,6 @@ func (r *ApplicationReconciler) recordInitialized(app *wasmplatformv1alpha1.Appl
 func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
-	infraNS := app.Namespace
-
-	if app.Spec.SQL != nil {
-		for _, userName := range sqlUsersForApp(app.Spec.SQL) {
-			credName := K8sCredentialName(app.Namespace, app.Name, userName)
-			var cred dboperator.PostgresCredential
-			err := r.Get(ctx, types.NamespacedName{
-				Namespace: infraNS,
-				Name:      credName,
-			}, &cred)
-			if err == nil {
-				if delErr := r.Delete(ctx, &cred); delErr != nil && !apierrors.IsNotFound(delErr) {
-					return ctrl.Result{}, fmt.Errorf("deleting PostgresCredential %q: %w", credName, delErr)
-				}
-			} else if !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("getting PostgresCredential %q for deletion: %w", credName, err)
-			}
-		}
-
-		if app.Spec.SQL.Migrations != nil {
-			msName := MigrationSetName(app.Namespace, app.Name)
-			var ms dboperator.PostgresMigrationSet
-			err := r.Get(ctx, types.NamespacedName{
-				Namespace: infraNS,
-				Name:      msName,
-			}, &ms)
-			if err == nil {
-				if delErr := r.Delete(ctx, &ms); delErr != nil && !apierrors.IsNotFound(delErr) {
-					return ctrl.Result{}, fmt.Errorf("deleting PostgresMigrationSet %q: %w", msName, delErr)
-				}
-			} else if !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("getting PostgresMigrationSet %q for deletion: %w", msName, err)
-			}
-		}
-
-		if err := r.maybeDeletePostgresDatabase(ctx, app); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if app.Spec.KV {
-		if err := r.maybeDeleteRedisDatabase(ctx, app); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
 
 	r.Store.Delete(key)
 	r.Store.BroadcastUpdate(buildDeleteUpdate(r.Store, app))
@@ -188,6 +142,14 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	if len(oldRoutes) > 0 {
 		r.RouteStore.Delete(key)
 		r.RouteStore.BroadcastUpdate(buildRouteDeleteUpdate(oldRoutes))
+	}
+
+	pending, err := r.reconcileResourceInventory(ctx, app, true)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if pending {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	controllerutil.RemoveFinalizer(app, applicationFinalizer)
@@ -199,80 +161,21 @@ func (r *ApplicationReconciler) reconcileDelete(ctx context.Context, app *wasmpl
 	return ctrl.Result{}, nil
 }
 
-func (r *ApplicationReconciler) maybeDeletePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
-	var allApps wasmplatformv1alpha1.ApplicationList
-	if err := r.List(ctx, &allApps, client.InNamespace(app.Namespace)); err != nil {
-		return fmt.Errorf("listing applications in namespace %q for Postgres cleanup: %w", app.Namespace, err)
-	}
-	for i := range allApps.Items {
-		a := &allApps.Items[i]
-		if a.Name == app.Name {
-			continue
-		}
-		if a.DeletionTimestamp.IsZero() && a.Spec.SQL != nil {
-			return nil // still needed
-		}
-	}
-
-	pgdbName := postgresDatabaseCRName(app.Namespace)
-	var pgdb dboperator.PostgresDatabase
-	err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: pgdbName}, &pgdb)
-	if err == nil {
-		if delErr := r.Delete(ctx, &pgdb); delErr != nil && !apierrors.IsNotFound(delErr) {
-			return fmt.Errorf("deleting PostgresDatabase %q: %w", pgdbName, delErr)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("getting PostgresDatabase %q for deletion: %w", pgdbName, err)
-	}
-	return nil
-}
-
-func (r *ApplicationReconciler) maybeDeleteRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) error {
-	var allApps wasmplatformv1alpha1.ApplicationList
-	if err := r.List(ctx, &allApps); err != nil {
-		return fmt.Errorf("listing applications for Redis cleanup: %w", err)
-	}
-	for i := range allApps.Items {
-		a := &allApps.Items[i]
-		if a.Namespace == app.Namespace && a.Name == app.Name {
-			continue
-		}
-		if a.DeletionTimestamp.IsZero() && a.Spec.KV {
-			return nil // still needed
-		}
-	}
-
-	infraNS := r.Config.PostgresCredentialNamespace
-
-	var cred dboperator.RedisCredential
-	err := r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisCredExecHostName}, &cred)
-	if err == nil {
-		if delErr := r.Delete(ctx, &cred); delErr != nil && !apierrors.IsNotFound(delErr) {
-			return fmt.Errorf("deleting RedisCredential %q: %w", redisCredExecHostName, delErr)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("getting RedisCredential %q for deletion: %w", redisCredExecHostName, err)
-	}
-
-	var rdb dboperator.RedisDatabase
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisDatabaseName}, &rdb)
-	if err == nil {
-		if delErr := r.Delete(ctx, &rdb); delErr != nil && !apierrors.IsNotFound(delErr) {
-			return fmt.Errorf("deleting RedisDatabase %q: %w", redisDatabaseName, delErr)
-		}
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("getting RedisDatabase %q for deletion: %w", redisDatabaseName, err)
-	}
-
-	if r.Store.SetRedisConfig(nil) {
-		r.Store.BroadcastUpdate(buildInfraUpdate(r.Store))
-	}
-	return nil
-}
-
 func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmplatformv1alpha1.Application) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
+
+	pending, err := r.reconcileResourceInventory(ctx, app, false)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if pending {
+		r.setReadyCondition(app, metav1.ConditionFalse, "ResourceCleanupPending", "Waiting for removed resource bindings to finish cleanup.")
+		if err := r.Status().Update(ctx, app); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 
 	modules, err := r.resolveModules(ctx, app)
 	if err != nil {
@@ -383,6 +286,9 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 			pgUsernames[i] = PGUsername(app.Namespace, app.Name, u)
 		}
 		app.Status.SQLUsernames = pgUsernames
+	} else {
+		app.Status.SQLDatabaseName = ""
+		app.Status.SQLUsernames = nil
 	}
 
 	if r.Store.Set(key, cfg) {
@@ -414,205 +320,108 @@ func (r *ApplicationReconciler) reconcileUpsert(ctx context.Context, app *wasmpl
 }
 
 // Returns (true, nil) when pending.
-func (r *ApplicationReconciler) reconcilePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
-	infraNS := app.Namespace
-	pgdbName := postgresDatabaseCRName(app.Namespace)
-	pgVersion := r.Config.PostgresVersion
-	if pgVersion == "" {
-		pgVersion = "16"
-	}
-	pgStorageSize := r.Config.PostgresStorageSize
-	if pgStorageSize == "" {
-		pgStorageSize = "1Gi"
-	}
-
-	var pgdb dboperator.PostgresDatabase
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: pgdbName}, &pgdb)
-	if apierrors.IsNotFound(err) {
-		desired := &dboperator.PostgresDatabase{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pgdbName,
-				Namespace: infraNS,
-				Labels:    infraLabels(),
-			},
-			Spec: dboperator.PostgresDatabaseSpec{
-				PostgresVersion: pgVersion,
-				StorageSize:     resource.MustParse(pgStorageSize),
-			},
-		}
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return false, fmt.Errorf("creating PostgresDatabase %q: %w", pgdbName, createErr)
-		}
-		return true, nil
-	}
+func (r *ApplicationReconciler) reconcilePostgresDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (bool, error) {
+	entry, err := r.sharedResourceIntent(ctx, app, "PostgresDatabase", app.Namespace, postgresDatabaseCRName(app.Namespace))
 	if err != nil {
-		return false, fmt.Errorf("getting PostgresDatabase %q: %w", pgdbName, err)
+		return false, err
+	}
+	pgdb, err := r.resources().EnsurePostgres(ctx, app.Namespace, r.Config.PostgresVersion, r.Config.PostgresStorageSize, entry.UID)
+	if err != nil {
+		return false, err
+	}
+	if err := r.recordResourceUID(ctx, app, entry, pgdb); err != nil {
+		return false, err
 	}
 	return pgdb.Status.Phase != dboperator.DatabasePhaseReady, nil
 }
 
-// Returns (true, nil) when pending.
-func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (requeue bool, err error) {
-	infraNS := r.Config.PostgresCredentialNamespace
-	redisStorageSize := r.Config.RedisStorageSize
-	if redisStorageSize == "" {
-		redisStorageSize = "1Gi"
-	}
-
-	var rdb dboperator.RedisDatabase
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisDatabaseName}, &rdb)
-	if apierrors.IsNotFound(err) {
-		desired := &dboperator.RedisDatabase{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      redisDatabaseName,
-				Namespace: infraNS,
-				Labels:    infraLabels(),
-			},
-			Spec: dboperator.RedisDatabaseSpec{
-				StorageSize: resource.MustParse(redisStorageSize),
-			},
-		}
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return false, fmt.Errorf("creating RedisDatabase %q: %w", redisDatabaseName, createErr)
-		}
-		return true, nil
-	}
+func (r *ApplicationReconciler) reconcileRedisDatabase(ctx context.Context, app *wasmplatformv1alpha1.Application) (bool, error) {
+	resources := r.resources()
+	namespace := r.Config.PostgresCredentialNamespace
+	entry, err := r.sharedResourceIntent(ctx, app, "RedisDatabase", namespace, redisDatabaseName)
 	if err != nil {
-		return false, fmt.Errorf("getting RedisDatabase %q: %w", redisDatabaseName, err)
+		return false, err
 	}
-	if rdb.Status.Phase != dboperator.RedisDatabasePhaseReady {
-		return true, nil
-	}
-
-	var rcred dboperator.RedisCredential
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisCredExecHostName}, &rcred)
-	if apierrors.IsNotFound(err) {
-		desired := &dboperator.RedisCredential{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      redisCredExecHostName,
-				Namespace: infraNS,
-				Labels:    infraLabels(),
-			},
-			Spec: dboperator.RedisCredentialSpec{
-				DatabaseRef:   redisDatabaseName,
-				Username:      "execution-host",
-				SecretName:    redisExecHostSecretName,
-				KeyPatterns:   []string{"*"},
-				ACLCategories: []dboperator.RedisACLCategory{dboperator.RedisACLCategoryAll},
-			},
-		}
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return false, fmt.Errorf("creating RedisCredential %q: %w", redisCredExecHostName, createErr)
-		}
-		return true, nil
-	}
+	database, err := resources.EnsureRedis(ctx, namespace, r.Config.RedisStorageSize, entry.UID)
 	if err != nil {
-		return false, fmt.Errorf("getting RedisCredential %q: %w", redisCredExecHostName, err)
+		return false, err
 	}
-	if rcred.Status.Phase != dboperator.RedisCredentialPhaseReady {
+	if err := r.recordResourceUID(ctx, app, entry, database); err != nil {
+		return false, err
+	}
+	if database.Status.Phase != dboperator.RedisDatabasePhaseReady {
 		return true, nil
 	}
-
-	var redisSecret corev1.Secret
-	err = r.Get(ctx, types.NamespacedName{Namespace: infraNS, Name: redisExecHostSecretName}, &redisSecret)
+	entry, err = r.sharedResourceIntent(ctx, app, "RedisCredential", namespace, redisCredExecHostName)
+	if err != nil {
+		return false, err
+	}
+	credential, err := resources.EnsureRedisCredential(ctx, namespace, entry.UID)
+	if err != nil {
+		return false, err
+	}
+	if err := r.recordResourceUID(ctx, app, entry, credential); err != nil {
+		return false, err
+	}
+	if credential.Status.Phase != dboperator.RedisCredentialPhaseReady {
+		return true, nil
+	}
+	secret, err := resources.RedisSecret(ctx, credential)
 	if apierrors.IsNotFound(err) {
 		return true, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("getting Redis secret %q: %w", redisExecHostSecretName, err)
+		return false, err
 	}
-
-	redisUser := string(redisSecret.Data["REDIS_USERNAME"])
-	redisPass := string(redisSecret.Data["REDIS_PASSWORD"])
-	redisHost := string(redisSecret.Data["REDIS_HOST"])
-	redisPort := string(redisSecret.Data["REDIS_PORT"])
-	if redisHost == "" || redisPort == "" {
+	host, port := string(secret.Data["REDIS_HOST"]), string(secret.Data["REDIS_PORT"])
+	if host == "" || port == "" || len(secret.Data["REDIS_PASSWORD"]) == 0 {
 		return true, nil
 	}
-
-	redisURL := (&url.URL{
-		Scheme: "redis",
-		User:   url.UserPassword(redisUser, redisPass),
-		Host:   redisHost + ":" + redisPort,
-	}).String()
-
-	redisCfg := &configsync.RedisConnectionConfig{Url: redisURL}
-	if r.Store.SetRedisConfig(redisCfg) {
+	connection := (&url.URL{Scheme: "redis", User: url.UserPassword(string(secret.Data["REDIS_USERNAME"]), string(secret.Data["REDIS_PASSWORD"])), Host: host + ":" + port}).String()
+	if r.Store.SetRedisConfig(&configsync.RedisConnectionConfig{Url: connection}) {
 		r.Store.BroadcastUpdate(buildInfraUpdate(r.Store))
 	}
 	return false, nil
 }
 
-func infraLabels() map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/managed-by": "wp-operator",
-	}
-}
-
 // Returns (nil, true, nil) when any credential or Secret is not yet ready.
 func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wasmplatformv1alpha1.Application) ([]*configsync.SqlUserConfig, bool, error) {
-	credNS := app.Namespace
-	dbName := PGDatabaseName(app.Namespace, app.Name)
-	userNames := sqlUsersForApp(app.Spec.SQL)
-	userPermissions := sqlPermissionsForApp(app.Spec.SQL)
-	pgdbName := postgresDatabaseCRName(app.Namespace)
-
-	var sqlUsers []*configsync.SqlUserConfig
-
-	for _, userName := range userNames {
-		pgUsername := PGUsername(app.Namespace, app.Name, userName)
-		credName := K8sCredentialName(app.Namespace, app.Name, userName)
-		secretName := credName + "-creds"
-
-		var cred dboperator.PostgresCredential
-		err := r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: credName}, &cred)
-		if apierrors.IsNotFound(err) {
-			desired := buildPostgresCredentialForUser(
-				credName, credNS, secretName,
-				pgUsername, dbName,
-				userPermissions[userName],
-				pgdbName,
-			)
-			if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-				return nil, false, fmt.Errorf("creating PostgresCredential %q: %w", credName, createErr)
-			}
-			return nil, true, nil
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("getting PostgresCredential %q: %w", credName, err)
-		}
-
-		if cred.Status.Phase != dboperator.CredentialPhaseReady {
-			return nil, true, nil
-		}
-
-		var secret corev1.Secret
-		err = r.Get(ctx, types.NamespacedName{Namespace: credNS, Name: secretName}, &secret)
-		if apierrors.IsNotFound(err) {
-			return nil, true, nil
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("getting Secret %q: %w", secretName, err)
-		}
-
-		pgUser := string(secret.Data["PGUSER"])
-		pgPass := string(secret.Data["PGPASSWORD"])
-		pgHost := string(secret.Data["PGHOST"])
-		pgPort := string(secret.Data["PGPORT"])
-
-		connURL := &url.URL{
-			Scheme: "postgres",
-			User:   url.UserPassword(pgUser, pgPass),
-			Host:   pgHost + ":" + pgPort,
-			Path:   "/" + dbName,
-		}
-
-		sqlUsers = append(sqlUsers, &configsync.SqlUserConfig{
-			Username:      pgUsername,
-			ConnectionUrl: connURL.String(),
-		})
+	resources, err := r.applicationResources(ctx, app)
+	if err != nil {
+		return nil, false, err
 	}
-
+	permissions := sqlPermissionsForApp(app.Spec.SQL)
+	var sqlUsers []*configsync.SqlUserConfig
+	for _, user := range sqlUsersForApp(app.Spec.SQL) {
+		entry, err := r.applicationResource(ctx, app, "PostgresCredential", user)
+		if err != nil {
+			return nil, false, err
+		}
+		desired := buildPostgresCredentialForUser(entry.Name, entry.Namespace, entry.SecretName, entry.Username, entry.Database, permissions[user], entry.DatabaseRef)
+		credential, err := resources.EnsureCredential(ctx, app, entry, desired.Spec)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := r.recordResourceUID(ctx, app, entry, credential); err != nil {
+			return nil, false, err
+		}
+		if credential.Status.Phase != dboperator.CredentialPhaseReady {
+			return nil, true, nil
+		}
+		secret, err := resources.CredentialSecret(ctx, credential)
+		if apierrors.IsNotFound(err) {
+			return nil, true, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		host, port := string(secret.Data["PGHOST"]), string(secret.Data["PGPORT"])
+		if host == "" || port == "" || len(secret.Data["PGPASSWORD"]) == 0 {
+			return nil, true, nil
+		}
+		connection := (&url.URL{Scheme: "postgres", User: url.UserPassword(string(secret.Data["PGUSER"]), string(secret.Data["PGPASSWORD"])), Host: host + ":" + port, Path: "/" + entry.Database}).String()
+		sqlUsers = append(sqlUsers, &configsync.SqlUserConfig{Username: entry.Username, ConnectionUrl: connection})
+	}
 	return sqlUsers, false, nil
 }
 
@@ -621,65 +430,29 @@ func (r *ApplicationReconciler) reconcileSQLBinding(ctx context.Context, app *wa
 // reconcileMigrationSet ensures a PostgresMigrationSet CR exists for the Application
 // and reports whether it has reached Ready phase. On failure it returns a non-empty
 // failMsg and no automatic requeue is performed — the user must correct the artifact.
-func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *wasmplatformv1alpha1.Application) (done bool, failMsg string, err error) {
-	msName := MigrationSetName(app.Namespace, app.Name)
-	msNS := app.Namespace
-	dbName := PGDatabaseName(app.Namespace, app.Name)
-
-	desiredSpec := dboperator.PostgresMigrationSetSpec{
-		DatabaseRef:    postgresDatabaseCRName(app.Namespace),
-		Database:       dbName,
-		Artifact:       app.Spec.SQL.Migrations.Artifact,
-		TargetRevision: app.Spec.SQL.Migrations.TargetRevision,
-	}
-
-	var existing dboperator.PostgresMigrationSet
-	err = r.Get(ctx, types.NamespacedName{Namespace: msNS, Name: msName}, &existing)
-	if apierrors.IsNotFound(err) {
-		desired := &dboperator.PostgresMigrationSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      msName,
-				Namespace: msNS,
-				Labels: map[string]string{
-					"wasm-platform.io/app-namespace": app.Namespace,
-					"wasm-platform.io/app-name":      app.Name,
-				},
-			},
-			Spec: desiredSpec,
-		}
-		if createErr := r.Create(ctx, desired); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return false, "", fmt.Errorf("creating PostgresMigrationSet %q: %w", msName, createErr)
-		}
-		return false, "", nil
-	}
+func (r *ApplicationReconciler) reconcileMigrationSet(ctx context.Context, app *wasmplatformv1alpha1.Application) (bool, string, error) {
+	entry, err := r.applicationResource(ctx, app, "PostgresMigrationSet", "migrations")
 	if err != nil {
-		return false, "", fmt.Errorf("getting PostgresMigrationSet %q: %w", msName, err)
+		return false, "", err
 	}
-
-	if existing.Spec.Artifact != desiredSpec.Artifact || existing.Spec.TargetRevision != desiredSpec.TargetRevision {
-		patch := client.MergeFrom(existing.DeepCopy())
-		existing.Spec.Artifact = desiredSpec.Artifact
-		existing.Spec.TargetRevision = desiredSpec.TargetRevision
-		if patchErr := r.Patch(ctx, &existing, patch); patchErr != nil {
-			return false, "", fmt.Errorf("patching PostgresMigrationSet %q: %w", msName, patchErr)
-		}
-		return false, "", nil // requeue to observe new status
+	desired := dboperator.PostgresMigrationSetSpec{DatabaseRef: entry.DatabaseRef, Database: entry.Database, Artifact: app.Spec.SQL.Migrations.Artifact, TargetRevision: app.Spec.SQL.Migrations.TargetRevision}
+	resources, err := r.applicationResources(ctx, app)
+	if err != nil {
+		return false, "", err
 	}
-
-	switch existing.Status.Phase {
+	migration, err := resources.EnsureMigration(ctx, app, entry, desired)
+	if err != nil {
+		return false, "", err
+	}
+	if err := r.recordResourceUID(ctx, app, entry, migration); err != nil {
+		return false, "", err
+	}
+	switch migration.Status.Phase {
 	case dboperator.MigrationSetPhaseReady:
 		return true, "", nil
 	case dboperator.MigrationSetPhaseFailed:
-		msg := fmt.Sprintf("PostgresMigrationSet %s failed", msName)
-		for _, c := range existing.Status.Conditions {
-			if c.Status == metav1.ConditionFalse && c.Message != "" {
-				msg = fmt.Sprintf("PostgresMigrationSet %s: %s", msName, c.Message)
-				break
-			}
-		}
-		return false, msg, nil
+		return false, "PostgresMigrationSet failed; inspect its status conditions.", nil
 	default:
-		// Pending or Running — wait.
 		return false, "", nil
 	}
 }
@@ -801,6 +574,14 @@ func (r *ApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&wasmplatformv1alpha1.Application{}).
+		Watches(&wasmplatformv1alpha1.ResourceInventory{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			inventory := obj.(*wasmplatformv1alpha1.ResourceInventory)
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: inventory.Spec.ApplicationRef.Namespace, Name: inventory.Spec.ApplicationRef.Name}}}
+		})).
+		Owns(&dboperator.PostgresCredential{}).
+		Watches(&dboperator.PostgresCredential{}, handler.EnqueueRequestsFromMapFunc(r.applicationsForInventoryResource)).
+		Watches(&dboperator.PostgresMigrationSet{}, handler.EnqueueRequestsFromMapFunc(r.applicationsForInventoryResource)).
+		Owns(&dboperator.PostgresMigrationSet{}).
 		Watches(
 			&dboperator.PostgresMigrationSet{},
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {

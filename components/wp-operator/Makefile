@@ -18,6 +18,7 @@ generate-crds: ## Regenerate CRD manifests and deepcopy functions via controller
 	controller-gen crd paths="./api/..." output:crd:artifacts:config=helm/crds
 	controller-gen object paths="./api/..."
 	cp helm/crds/wasm-platform.io_applications.yaml $(REPO_ROOT)/helm/wasm-platform/crds/applications.yaml
+	cp helm/crds/wasm-platform.io_resourceinventories.yaml $(REPO_ROOT)/helm/wasm-platform/crds/resourceinventories.yaml
 
 .PHONY: setup-envtest
 setup-envtest: $(LOCALBIN) ## Download setup-envtest into ./bin.

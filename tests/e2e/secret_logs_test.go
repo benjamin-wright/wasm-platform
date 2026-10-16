@@ -35,13 +35,23 @@ func TestProductionLogsExcludeCredentials(t *testing.T) {
 		namespace, name, key string
 	}
 	forbidden := invokeGuestErrorForLogRegression(t, client)
-	for _, ref := range []credentialRef{
+	credentialRefs := []credentialRef{
 		{"wasm-platform", "execution-host-redis-credentials", "REDIS_PASSWORD"},
 		{"wasm-platform", "execution-host-nats-credentials", "NATS_PASSWORD"},
 		{"wasm-platform", "gateway-nats-credentials", "NATS_PASSWORD"},
-		{"default", "wasm-default-sql-hello-writer-pg-creds", "PGPASSWORD"},
-		{"default", "wasm-default-sql-hello-reader-pg-creds", "PGPASSWORD"},
-	} {
+	}
+	sqlApp, err := lifecycleReadApplication(t.Context(), "default", "sql-hello")
+	if err != nil {
+		t.Fatal("could not read sql-hello resource inventory")
+	}
+	for _, user := range []string{"writer", "reader"} {
+		credential := lifecycleInventoryResource(t, sqlApp, "PostgresCredential", user)
+		if credential.SecretName == "" {
+			t.Fatalf("sql-hello inventory has no Secret binding for SQL user %s", user)
+		}
+		credentialRefs = append(credentialRefs, credentialRef{credential.Namespace, credential.SecretName, "PGPASSWORD"})
+	}
+	for _, ref := range credentialRefs {
 		out := kubectlForLogRegression(t, t.Context(), "get", "secret", ref.name, "-n", ref.namespace, "-o", "json")
 		var secret struct {
 			Data map[string][]byte `json:"data"`

@@ -191,6 +191,14 @@ spec:
                       || l == ''app_namespace'')'
                 maxItems: 50
                 type: array
+              resourceCleanupPolicy:
+                default: Wait
+                description: ResourceCleanupPolicy controls whether deletion waits
+                  or hands cleanup to the inventory.
+                enum:
+                - Wait
+                - OrphanInventory
+                type: string
               sql:
                 description: |-
                   SQL configures optional SQL database access for this Application.
@@ -392,6 +400,62 @@ spec:
                 maxItems: 50
                 type: array
                 x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              resourceInventory:
+                description: ResourceInventory is a derived summary of the authoritative
+                  ResourceInventory spec.
+                items:
+                  description: |-
+                    ResourceBinding records an immutable resource identity and desired disposition.
+                    An empty UID is a persisted creation intent; a nonempty UID fences later reuse and deletion.
+                  properties:
+                    database:
+                      type: string
+                    databaseRef:
+                      description: Credential identity fields contain no secrets.
+                      type: string
+                    disposition:
+                      default: Active
+                      enum:
+                      - Active
+                      - Release
+                      type: string
+                    kind:
+                      enum:
+                      - PostgresDatabase
+                      - RedisDatabase
+                      - RedisCredential
+                      - PostgresCredential
+                      - PostgresMigrationSet
+                      type: string
+                    logicalName:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    retained:
+                      description: Retained resources survive capability removal and
+                        Application deletion.
+                      type: boolean
+                    secretName:
+                      type: string
+                    uid:
+                      type: string
+                    username:
+                      type: string
+                  required:
+                  - kind
+                  - logicalName
+                  - name
+                  - namespace
+                  type: object
+                maxItems: 128
+                type: array
+                x-kubernetes-list-map-keys:
+                - kind
+                - namespace
                 - name
                 x-kubernetes-list-type: map
               sqlDatabaseName:

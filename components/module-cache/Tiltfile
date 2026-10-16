@@ -28,6 +28,7 @@ def module_cache(namespace='wasm-platform', resource_deps=[]):
 
     local_resource(
         'module-cache: regression-tests',
+        allow_parallel = True,
         cmd = 'cargo test --locked -p module-cache',
         deps = source_deps,
         resource_deps = ['ci: record-revision'] if CI_MODE else [],
@@ -36,6 +37,7 @@ def module_cache(namespace='wasm-platform', resource_deps=[]):
 
     local_resource(
         'module-cache: lint',
+        allow_parallel = True,
         cmd = 'cargo clippy --locked -p module-cache --all-targets -- -D warnings',
         deps = source_deps,
         resource_deps = ['ci: record-revision'] if CI_MODE else [],

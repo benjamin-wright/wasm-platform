@@ -113,8 +113,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.ResourceInventoryReconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader()}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to create controller", "controller", "ResourceInventory")
+		os.Exit(1)
+	}
 	if err = (&controller.ApplicationReconciler{
 		Client:     mgr.GetClient(),
+		APIReader:  mgr.GetAPIReader(),
 		Scheme:     mgr.GetScheme(),
 		Store:      store,
 		RouteStore: routeStore,

@@ -158,7 +158,7 @@ spec:
 
 **Failure path**
 
-If a migration fails, the `PostgresMigrationSet` enters `Failed` phase. The wp-operator surfaces this as `Ready: False, reason: MigrationFailed` on the Application, with the failure message copied from the migration set's status conditions. There is no automatic retry; recovery requires fixing the SQL files, pushing a new immutable artifact tag, and updating `spec.sql.migrations.artifact` (or `targetRevision`) — both trigger a fresh migrations run via the same `PostgresMigrationSet` CR.
+If a migration fails, the `PostgresMigrationSet` enters `Failed` phase. The wp-operator surfaces this as `Ready: False, reason: MigrationFailed` on the Application; inspect the migration set's status conditions for details. Recovery requires fixing the SQL files, pushing a new immutable artifact tag, and updating `spec.sql.migrations.artifact` (or `targetRevision`) — both trigger a fresh migrations run via the same `PostgresMigrationSet` CR.
 
 Rollback is not yet wired through the platform; if a schema rollback is needed, add forward-correcting SQL rather than editing existing migration files.
 
@@ -184,50 +184,51 @@ The derived database name and per-user PG usernames are surfaced in `status.sqlD
 **On create/update:**
 
 1. The admission webhook has already enforced topic uniqueness, metric name uniqueness, and identifier constraints before the reconciler runs. The reconciler re-validates the identifier constraint as defense-in-depth.
-2. **NATS infrastructure (always):** ensures a `NatsCluster` CR (`wasm-platform-nats`) and two `NatsAccount` CRs (`wasm-platform-nats-execution-host` and `wasm-platform-nats-gateway`) exist in the operator namespace and are `Ready`. While any is pending, sets `Ready: False, reason: NatsProvisioningPending` and requeues every 5 s. Once ready, reads the execution-host NATS Secret and publishes the connection info to all connected execution hosts via configsync.
-3. If `spec.sql` is set:
-   a. Validates that namespace and app name contain no consecutive hyphens (`--`).
-   b. Derives the PostgresDatabase CR name as `wasm-<namespace>-postgres`; creates the CR (in the application's own namespace, using `databases.postgres.version` and `databases.postgres.storageSize` from Helm values) if not present. Returns `RequeueAfter: 5s` while the DB is provisioning.
-   c. Creates one `PostgresCredential` CR per SQL user (including the implicit `app` user when `spec.sql.users` is absent). Each credential targets the derived PG username, derived database name, and declared privileges.
-   d. Waits until all credentials reach `Ready` phase and their Secrets are available. Returns `RequeueAfter: 5s` while any credential or Secret is pending.
-   e. If `spec.sql.migrations` is set: creates (or patches) a `PostgresMigrationSet` CR named `wasm-<namespace>-<app_name>-migrations`. Returns `RequeueAfter: 5s` while pending/running; surfaces failures as `Ready: False, reason: MigrationFailed`.
-   f. Assembles per-user connection URLs from the db-operator Secrets and the derived database name.
-4. If `spec.kv` is set: ensures a `RedisDatabase` CR (`wasm-platform-redis`) and `RedisCredential` (`wasm-platform-redis-execution-host`) exist in the operator namespace. Returns `RequeueAfter: 5s` while pending. Once ready, reads the Redis Secret and publishes the connection URL to all connected execution hosts via configsync.
-5. Pushes an incremental config update (with all functions and current infra connection info) to all connected execution hosts via `PushIncrementalUpdate`.
-6. For each HTTP-triggered function, pushes a route update to all connected gateways via `PushRouteUpdate`.
+2. Reconciles the persisted resource inventory, including credentials for removed users and migration sets removed from the spec. Cleanup blocks the desired configuration with `Ready: False, reason: ResourceCleanupPending`, retrying every 5 s.
+3. Resolves immutable module identities. If `spec.sql` is set, ensures the namespace's shared `PostgresDatabase`, one credential per SQL user, and the optional migration set. Credentials must be `Ready` with verified Secrets; migrations must be `Ready` before publishing the desired configuration.
+4. If `spec.kv` is set, ensures the shared `RedisDatabase` and execution-host `RedisCredential`. Once ready, verifies the Redis Secret and publishes the connection URL to connected execution hosts.
+5. Publishes the Application configuration and HTTP routes. Provisioning and migration waits requeue every 5 s; ownership, binding, or existing credential policy mismatches report `ReconcileError`.
 
 **On delete:**
 
-1. Pushes a delete config update to execution hosts.
-2. Pushes route delete updates for all HTTP-triggered functions to gateways.
-3. If `spec.sql` is set, deletes all associated `PostgresCredential` CRs. The db-operator cleans up the PG users; the `PostgresDatabase` CR is also deleted (it is per-namespace; if another Application in the same namespace still uses SQL, the CR is preserved).
-4. If `spec.kv` is set and no other Application in the cluster has `spec.kv`, deletes the `RedisCredential` and `RedisDatabase` CRs.
+1. Withdraws the Application configuration and HTTP routes and publishes deletion updates, even when resource cleanup encounters an ownership or binding conflict.
+2. Reconciles cleanup from the persisted inventory, even when SQL users, SQL access, or migrations have already been removed from the spec.
+3. By default (`spec.resourceCleanupPolicy: Wait`), keeps the Application finalizer until its ephemeral CRs and credential Secrets have disappeared. With `OrphanInventory`, removes the Application after persisting the release request and transferring child ownership; the independent inventory continues cleanup. Deletion uses UID and resource-version preconditions with foreground propagation and confirms cached absence against the API. Downstream finalizers and garbage collection may keep cleanup pending.
+
+Shared PostgreSQL and Redis resources remain provisioned after the last Application stops using them. Application deletion does not purge its logical SQL database or KV prefix. See the [data ownership contract](../../docs/architecture.md#data-ownership-and-retention).
+
+Kubernetes cleanup is not proof of backend SQL revocation: the pinned db-operator uses best-effort role deletion, so CR disappearance does not establish that old credentials or existing SQL sessions can no longer access data.
 
 ## Infrastructure CR Naming
 
-NATS and Redis CRs are created in the operator's own namespace (`POD_NAMESPACE`). PostgreSQL CRs are created in the same namespace as the Application that requested them.
+The operator creates shared Redis resources in `POD_NAMESPACE` and shared PostgreSQL infrastructure in each requesting Application's namespace. The umbrella Helm chart owns NATS resources.
 
 | Resource | CR name | Namespace |
 |---|---|---|
-| `NatsCluster` | `wasm-platform-nats` | operator namespace |
-| `NatsAccount` (execution host) | `wasm-platform-nats-execution-host` | operator namespace |
-| `NatsAccount` (gateway) | `wasm-platform-nats-gateway` | operator namespace |
 | `PostgresDatabase` | `wasm-<namespace>-postgres` | application namespace |
 | `RedisDatabase` | `wasm-platform-redis` | operator namespace |
 | `RedisCredential` (execution host) | `wasm-platform-redis-execution-host` | operator namespace |
 
-All operator-managed CRs carry the label `app.kubernetes.io/managed-by: wp-operator`.
+Shared resources have no Application owner reference. Reuse requires `app.kubernetes.io/managed-by: wp-operator`, no foreign owner, an expected specification and a matching `wasm-platform.io/resource-scope` annotation; a missing scope annotation is added only after those checks. Redis Secret use additionally requires the exact credential owner UID and expected username.
 
 ## SQL Credential Lifecycle
 
 For each SQL user (or the synthetic `app` user when `spec.sql: {}`):
 
-- **`PostgresCredential` name:** `wasm-<namespace>-<app_name>-<user_name>-pg` (Kubernetes-name-safe; hash-truncated at 238 chars to leave room for suffixes).
-- **Secret name:** `wasm-<namespace>-<app_name>-<user_name>-pg-creds` (created by db-operator).
+- **New `PostgresCredential` name:** `wasm-pg-<32-hex-digest>`, derived from the resource kind, namespace, Application name and UID, and logical user name as an unambiguous tuple.
+- **Secret name:** `<credential-name>-creds` (created and owned by db-operator's credential CR).
 - **Namespace:** the same namespace as the Application.
 - **Privileges:** declared in `spec.sql.users[*].permissions`; defaults to `ALL` on all tables when permissions are absent.
 
-When `spec.sql.migrations` is set, the operator additionally creates a `PostgresMigrationSet` CR (one per Application) that the db-operator reconciles — see [Database Migrations](#database-migrations). The set is named `wasm-<namespace>-<app_name>-migrations` and is deleted alongside the user credentials on Application deletion. The migrations runner uses an internal db-operator-owned role; the wp-operator does not provision a separate `migrations` `PostgresCredential`.
+When `spec.sql.migrations` is set, the operator creates one `PostgresMigrationSet` named `wasm-migrations-<32-hex-digest>` using the same identity tuple and logical name `migrations`. The migrations runner uses an internal db-operator-owned role; the wp-operator does not provision a separate `migrations` credential.
+
+Both CR kinds carry a `ResourceInventory` controller owner reference, `wasm-platform.io/application-uid` label, and `wasm-platform.io/logical-name` annotation. The inventory is namespaced with the Application, has an immutable `spec.applicationRef` identifying its namespace/name/UID, and has no Application owner reference. Its `spec.resources` records up to 128 intended bindings, observed UIDs, retention flags, and `Active` or `Release` dispositions before resources are used. The inventory finalizer preserves unresolved cleanup, including credential Secrets whose parent CR has already disappeared.
+
+The inventory controller continues cleanup independently after Application deletion and removes a released inventory only once its originating Application and ephemeral obligations are gone. A same-name Application with SQL waits for older inventories to finish cleanup before provisioning new credentials. Shared infrastructure is retained. Inventory status reports observed progress; Application `status.resourceInventory` is a derived summary. Clearing either status does not discard resource obligations.
+
+The operator verifies ownership and database, username, and Secret bindings before reuse, updates, or deletion. SQL Secret reads require the exact credential owner UID and expected `PGUSER`. Existing Application-owned children and recorded status bindings are verified and transferred to their inventory without changing child names or UIDs.
+
+Existing unowned migration sets with the deterministic name `wasm-<namespace>-<app_name>-migrations` and matching Application namespace/name labels can be adopted after their database binding and observed UID are verified. Unowned credentials require an administrator to attest the current Application UID with `wasm-platform.io/legacy-application-uid`; credentials for users absent from the current spec also need `wasm-platform.io/logical-name`. Attestation does not bypass owner, UID, or binding checks. Adopted resources retain their existing names; unverified resources are not adopted or deleted.
 
 The operator does not push an `ApplicationConfig` to execution hosts until all `PostgresCredential` CRs for the Application have reached `Ready` phase **and**, if `spec.sql.migrations` is set, the `PostgresMigrationSet` has reached `Ready` phase.
 
@@ -287,12 +288,13 @@ wp-operator exposes a validating admission webhook on port 9443, registered as `
 | Condition | Description |
 |-----------|-------------|
 | `Ready` | `True` when config is pushed to all hosts. `False` while provisioning or on error. |
-| `NatsProvisioningPending` | Set while `NatsCluster` or `NatsAccount` CRs are not yet `Ready`. |
-| `PostgresProvisioningPending` | Set while the per-namespace `PostgresDatabase` CR is not yet `Ready`. |
-| `RedisProvisioningPending` | Set while the `RedisDatabase` or `RedisCredential` CR is not yet `Ready` (only when `spec.kv` is set). |
+| `DatabaseProvisioningPending` | Set while the per-namespace `PostgresDatabase` CR is not yet `Ready`. |
+| `KVProvisioningPending` | Set while the `RedisDatabase` or `RedisCredential` CR is not yet `Ready` (only when `spec.kv` is set). |
+| `ResourceCleanupPending` | Set while removed credential or migration bindings await CR and Secret cleanup. |
+| `ReconcileError` | Reconciliation failed, including an ownership, inventory, or resource binding conflict. |
 | `InvalidIdentifier` | Set when namespace or app name contains consecutive hyphens, preventing PG identifier derivation. |
 | `MigrationsRunning` | Set while the `PostgresMigrationSet` is in `Pending` or `Running` phase. |
-| `MigrationFailed` | Set when the `PostgresMigrationSet` reports `Failed`. Message is copied from the set's status conditions. No automatic retry — update `spec.sql.migrations.artifact` or `targetRevision` to trigger a new run. |
+| `MigrationFailed` | Set when the `PostgresMigrationSet` reports `Failed`; inspect that CR's status conditions. Update `spec.sql.migrations.artifact` or `targetRevision` to trigger a new run. |
 
 **Status fields:**
 
@@ -301,3 +303,4 @@ wp-operator exposes a validating admission webhook on port 9443, registered as `
 | `status.sqlDatabaseName` | Derived PostgreSQL database name. Populated when `spec.sql` is set. |
 | `status.sqlUsernames` | Derived PostgreSQL usernames, one per provisioned user. Populated when `spec.sql` is set. |
 | `status.resolvedModules` | Current desired generation's per-function requested reference, pinned module reference, manifest digest and raw Wasm digest. |
+| `status.resourceInventory` | Derived summary of the independent ResourceInventory spec; not the cleanup authority. |

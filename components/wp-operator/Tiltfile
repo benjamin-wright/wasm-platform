@@ -56,6 +56,7 @@ def wp_operator(namespace='wasm-platform', resource_deps=[]):
 
     local_resource(
         'wp: unit-tests',
+        allow_parallel = True,
         cmd = 'cd components/wp-operator && GOWORK=off go test -mod=readonly -count=1 -timeout=5m ./...',
         deps = source_deps,
         resource_deps = ['ci: record-revision'] if CI_MODE else [],
@@ -72,7 +73,7 @@ def wp_operator(namespace='wasm-platform', resource_deps=[]):
 
     local_resource(
         'wp: format',
-        cmd = 'gofmt -w components/wp-operator/cmd/main.go components/wp-operator/api/v1alpha1/application_types.go components/wp-operator/internal/artifacts/*.go components/wp-operator/internal/controller/artifacts*.go components/wp-operator/internal/controller/application_controller.go components/wp-operator/internal/integration/integration_test.go',
+        cmd = 'gofmt -w components/wp-operator/cmd/main.go components/wp-operator/api/v1alpha1/*_types.go components/wp-operator/internal/artifacts/*.go components/wp-operator/internal/controller/*.go components/wp-operator/internal/provisioning/*.go components/wp-operator/internal/integration/integration_test.go',
         labels = ['wp-operator'],
         auto_init = False,
         trigger_mode = TRIGGER_MODE_MANUAL,
@@ -80,6 +81,7 @@ def wp_operator(namespace='wasm-platform', resource_deps=[]):
 
     local_resource(
         'wp: lint',
+        allow_parallel = True,
         cmd = 'cd components/wp-operator && GOWORK=off go vet -mod=readonly ./...',
         deps = source_deps,
         resource_deps = ['ci: record-revision'] if CI_MODE else [],

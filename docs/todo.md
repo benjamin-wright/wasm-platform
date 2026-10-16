@@ -56,7 +56,6 @@ Use these policies and slices to implement the [architecture proposal](proposal.
 
 Deliver each slice through its production entry points, add regressions for its changed external behavior, and pass the full existing `e2e-tests` resource through Tilt MCP. Run all builds, deployments and tests through Tilt MCP. Preserve the permanent fixtures and the additional fixtures already required by that resource; report validation evidence in the task conversation.
 
-- [ ] **6 — Application lifecycle and inventory.** Persist owned resources, safely transition legacy identities, and implement verified retention, recreation and reclamation.
 - [ ] **7 — Effective capability authorization and revocation.** Enforce SQL/KV/metric isolation, current permission removal and mutual messaging grants. Release/pin and verify required downstream db-operator enforcement.
 - [ ] **8 — ApplicationRevision foundation.** Add the immutable CRD, durable revision identity/configuration, participant and cleanup status, metric reservations, admission checks and protected retirement.
 - [ ] **9 — Publication and replay.** Publish coherent configuration/routes and watermarks; implement restart epochs, bounded replay/resync, exact acknowledgements and recipient session ownership.
